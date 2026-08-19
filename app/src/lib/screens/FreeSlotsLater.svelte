@@ -2,6 +2,7 @@
   import { planner } from '../store.svelte';
   import Icon from '../components/Icon.svelte';
   import Button from '../components/Button.svelte';
+  import DayCalendar from '../components/DayCalendar.svelte';
 
   const slots = $derived(planner.laterSlots);
 </script>
@@ -20,6 +21,12 @@
     {#each slots as slot}
       <button class="slot" onclick={() => planner.tryPlanLaterSlot(slot)}>{slot}</button>
     {/each}
+
+    {#if !planner.showCustomTimeLater}
+      <button class="slot" onclick={() => planner.toggleCustomTimeLater()}>Pick a time</button>
+    {:else if planner.chosenDate && planner.focusTaskRaw}
+      <DayCalendar date={planner.chosenDate} excludeTaskId={planner.focusTaskRaw.id} onPickTime={(hhmm) => planner.tryPlanLaterSlot(hhmm)} />
+    {/if}
   </div>
   <div class="footer">
     <Button variant="secondary" size="md" invertedBorder onclick={() => planner.backToPlanLater()}>back</Button>

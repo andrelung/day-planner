@@ -2,7 +2,9 @@
   import { planner } from '../store.svelte';
   import Icon from '../components/Icon.svelte';
   import Button from '../components/Button.svelte';
-  import Input from '../components/Input.svelte';
+  import DayCalendar from '../components/DayCalendar.svelte';
+
+  const todayDate = $derived(planner.workloadDays.find((d) => d.key === 'today')?.date ?? null);
 </script>
 
 <div class="screen">
@@ -23,11 +25,8 @@
 
     {#if !planner.showCustomTimeToday}
       <button class="slot" onclick={() => planner.toggleCustomTimeToday()}>Pick a time</button>
-    {:else}
-      <div class="custom-time">
-        <Input type="time" value={planner.customTimeToday} onchange={(v) => planner.onCustomTimeTodayChange(v)} />
-        <Button variant="primary" size="sm" fullWidth onclick={() => planner.confirmCustomTimeToday()}>Confirm time</Button>
-      </div>
+    {:else if todayDate && planner.focusTaskRaw}
+      <DayCalendar date={todayDate} excludeTaskId={planner.focusTaskRaw.id} onPickTime={(hhmm) => planner.tryPlanTodaySlot(hhmm)} />
     {/if}
   </div>
 
@@ -100,15 +99,6 @@
     font-weight: var(--font-weight-bold);
     font-size: 15px;
     color: var(--color-text-primary);
-  }
-  .custom-time {
-    background: var(--color-bg-surface);
-    border-radius: var(--radius-md);
-    padding: 16px;
-    margin-bottom: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
   }
   .footer {
     padding: 14px 20px;

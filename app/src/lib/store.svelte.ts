@@ -56,8 +56,8 @@ class PlannerStore {
   laterDayKey: string | null = $state(null);
   customDateValue = $state('');
   customDayLabel = $state('');
-  customTimeToday = $state('');
   showCustomTimeToday = $state(false);
+  showCustomTimeLater = $state(false);
   planTodaySlots: string[] = $state([]);
   laterSlots: string[] = $state([]);
 
@@ -598,6 +598,12 @@ class PlannerStore {
     if (key === 'custom') return this.customDateValue || null;
     return this.workloadDays.find((d) => d.key === key)?.date ?? null;
   }
+  /// The concrete "YYYY-MM-DD" behind whichever later day is currently
+  /// chosen (laterDayKey) — for FreeSlotsLater's calendar view, which needs
+  /// an actual date rather than a bucket key.
+  get chosenDate(): string | null {
+    return this.laterDayKey ? this.dateFor(this.laterDayKey) : null;
+  }
 
   async openPlanToday() {
     if (this.isDayFull('today')) {
@@ -663,6 +669,7 @@ class PlannerStore {
     } else if (p.key) {
       await this.loadLaterSlots(p.key);
       this.laterDayKey = p.key;
+      this.showCustomTimeLater = false;
       this.screen = 'freeSlotsLater';
     }
   }
@@ -741,6 +748,41 @@ class PlannerStore {
     }
   }
 
+  /// Drag-to-move on the day calendar (see DayCalendar.svelte) — moves a
+  /// *different* task than the one currently being planned, without
+  /// disturbing the current planning flow (no screen change, no toast
+  /// success spam beyond a quiet confirmation). A conflict just reverts the
+  /// drag with a toast rather than routing to the full slotConflict screen,
+  /// since that screen's "plan anyway" flow is built around the task
+  /// actually being planned, not an incidental drag elsewhere on the day.
+  /// Refreshing `tasks` re-sorts the whole queue, which can shift the
+  /// currently-focused task to a different index — re-point focusIndex at
+  /// the same task (by id) afterward so the planning flow the user's
+  /// actually in the middle of doesn't silently jump to a different task.
+  private async refreshTasksKeepingFocus() {
+    const focusId = this.focusTaskRaw?.id ?? null;
+    await this.refreshTasks();
+    if (focusId) this.selectFocus(focusId);
+  }
+  async moveOtherTask(taskId: string, date: string, hhmm: string): Promise<boolean> {
+    const dueAtIso = this.toIsoDateTime(date, hhmm);
+    const ok = await this.commitDueAt(taskId, dueAtIso);
+    if (ok) {
+      this.showToast(`Moved to ${hhmm} · synced to Asana`);
+      await this.refreshTasksKeepingFocus();
+    } else {
+      this.showToast('That time is already taken');
+    }
+    return ok;
+  }
+  async clearOtherTaskDueDate(taskId: string): Promise<void> {
+    const ok = await this.commitDueAt(taskId, null);
+    if (ok) {
+      this.showToast('Due time cleared · synced to Asana');
+      await this.refreshTasksKeepingFocus();
+    }
+  }
+
   async tryPlanTodaySlot(slot: string) {
     const task = this.focusTaskRaw;
     const date = this.dateFor('today');
@@ -757,13 +799,6 @@ class PlannerStore {
 
   toggleCustomTimeToday() {
     this.showCustomTimeToday = !this.showCustomTimeToday;
-  }
-  onCustomTimeTodayChange(v: string) {
-    this.customTimeToday = v;
-  }
-  async confirmCustomTimeToday() {
-    if (!this.customTimeToday) return;
-    await this.tryPlanTodaySlot(this.customTimeToday);
   }
 
   private async loadLaterSlots(dayKey: string) {
@@ -850,6 +885,7 @@ class PlannerStore {
     }
     await this.loadLaterSlots(key);
     this.laterDayKey = key;
+    this.showCustomTimeLater = false;
     this.screen = 'freeSlotsLater';
   }
   onCustomDateChange(v: string) {
@@ -862,7 +898,11 @@ class PlannerStore {
     this.customDayLabel = label;
     this.laterDayKey = 'custom';
     await this.loadLaterSlots('custom');
+    this.showCustomTimeLater = false;
     this.screen = 'freeSlotsLater';
+  }
+  toggleCustomTimeLater() {
+    this.showCustomTimeLater = !this.showCustomTimeLater;
   }
 
   // --- estimate editing (focus card) ---
