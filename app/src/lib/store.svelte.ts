@@ -18,6 +18,8 @@ interface MeResponse {
   primaryProvider: 'ASANA' | 'OUTLOOK';
   asanaConnected: boolean;
   outlookConnected: boolean;
+  asanaAccountLabel: string | null;
+  outlookAccountLabel: string | null;
   settings: { prefStartTime: string; prefEndTime: string; bufferMinutes: number };
 }
 
@@ -28,6 +30,8 @@ class PlannerStore {
   primaryProvider: 'ASANA' | 'OUTLOOK' | null = $state(null);
   asanaConnected = $state(false);
   outlookConnected = $state(false);
+  asanaAccountLabel: string | null = $state(null);
+  outlookAccountLabel: string | null = $state(null);
 
   tasks: Task[] = $state([]);
   projects: Project[] = $state([]);
@@ -142,6 +146,8 @@ class PlannerStore {
     this.primaryProvider = me.primaryProvider;
     this.asanaConnected = me.asanaConnected;
     this.outlookConnected = me.outlookConnected;
+    this.asanaAccountLabel = me.asanaAccountLabel;
+    this.outlookAccountLabel = me.outlookAccountLabel;
     this.prefStartTime = me.settings.prefStartTime;
     this.prefEndTime = me.settings.prefEndTime;
     this.bufferMinutes = me.settings.bufferMinutes;
@@ -299,6 +305,15 @@ class PlannerStore {
     return this.primaryProvider === 'ASANA'
       ? 'See free slots from your calendar and turn unlinked meetings into tasks.'
       : 'Pull in your Asana tasks so you can pre-plan them here.';
+  }
+  get primaryProviderLabel() {
+    return this.primaryProvider === 'ASANA' ? 'Asana' : 'Outlook';
+  }
+  /// "Name <email>" for whichever provider is primary — shown on the
+  /// connect-secondary screen so it's clear the first sign-in worked and
+  /// which account it landed on.
+  get primaryAccountLabel() {
+    return this.primaryProvider === 'ASANA' ? this.asanaAccountLabel : this.outlookAccountLabel;
   }
 
   // --- day-full check ---

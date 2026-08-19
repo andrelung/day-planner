@@ -1,14 +1,25 @@
 <script lang="ts">
   import { planner } from '../store.svelte';
+  import Icon from '../components/Icon.svelte';
   import Button from '../components/Button.svelte';
 
   const label = $derived(planner.secondaryProviderLabel);
   const initial = $derived(planner.secondaryProviderInitial);
   const detail = $derived(planner.secondaryProviderDetail);
+
+  // "Name <email>" -> "Name (email)" — reads more like normal UI copy than
+  // raw angle brackets.
+  const primaryAccountDisplay = $derived(planner.primaryAccountLabel?.replace(/^(.*) <(.+)>$/, '$1 ($2)') ?? null);
 </script>
 
 <div class="screen">
   <div class="content">
+    <div class="signed-in-hint">
+      <Icon name="check-circle" size={16} color="var(--color-feedback-correct)" />
+      <span>
+        Signed in with {planner.primaryProviderLabel}{#if primaryAccountDisplay}<span class="signed-in-hint__account"> as {primaryAccountDisplay}</span>{/if}
+      </span>
+    </div>
     <div class="heading">Connect {label}</div>
     <div class="subtitle">{detail}</div>
 
@@ -34,6 +45,20 @@
     padding: 48px 28px 0;
     flex: 1;
     overflow-y: auto;
+  }
+  .signed-in-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-feedback-correct);
+    margin-bottom: 16px;
+  }
+  .signed-in-hint__account {
+    color: var(--color-text-muted);
+    font-weight: var(--font-weight-normal);
   }
   .heading {
     font-family: var(--font-family-base);

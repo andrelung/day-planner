@@ -19,6 +19,11 @@ meRouter.get('/', requireAuth, async (req, res) => {
     primaryProvider: user.primaryProvider,
     asanaConnected: !!asana,
     outlookConnected: !!outlook,
+    // "Name <email>", as captured at connect time — lets the UI confirm
+    // *which* account is signed in (e.g. on the "connect the other
+    // provider" screen, so it's clear the first sign-in actually worked).
+    asanaAccountLabel: asana?.accountLabel ?? null,
+    outlookAccountLabel: outlook?.accountLabel ?? null,
     settings: {
       prefStartTime: user.settings?.prefStartTime ?? '09:00',
       prefEndTime: user.settings?.prefEndTime ?? '18:00',
