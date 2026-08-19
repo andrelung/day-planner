@@ -5,7 +5,7 @@ import { getValidAccessToken } from '../lib/tokens.js';
 import { deriveQueue } from '../lib/taskQueue.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { enqueueAction } from '../lib/pendingActionQueue.js';
-import { createSubtask, createTaskInProject, listIncompleteAssignedTasks } from '../providers/asana.js';
+import { createSubtask, createTaskInProject, listIncompleteAssignedTasks, typeahead } from '../providers/asana.js';
 import type { DueUpdate } from '../providers/asana.js';
 import type { RemoteTask } from '../providers/types.js';
 
@@ -79,6 +79,31 @@ tasksRouter.get('/stream', async (req, res) => {
     res.write(`event: failed\ndata: ${JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to load tasks' })}\n\n`);
   }
   res.end();
+});
+
+const typeaheadQuerySchema = z.object({
+  query: z.string().default(''),
+  resourceType: z.enum(['task', 'project']).default('task'),
+});
+
+/// Backs the project/subtask/task search in Overview's "add as task"/"link
+/// to task" panels — Asana's own typeahead endpoint instead of filtering
+/// the client's already-loaded task list (which is only ever "incomplete
+/// tasks assigned to me with a due date", missing plenty of tasks someone
+/// might actually want to link/add under). Requires the
+/// workspaces.typeahead:read scope; an account connected before that scope
+/// was added will 403 here until reconnected — the frontend falls back to
+/// the old client-side filtering if this fails, so search still works
+/// either way.
+tasksRouter.get('/typeahead', async (req, res) => {
+  const parsed = typeaheadQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const results = await typeahead(accessToken, parsed.data.resourceType, parsed.data.query);
+  res.json({ results: results.map((r) => ({ gid: r.gid, name: r.name })) });
 });
 
 const patchSchema = z

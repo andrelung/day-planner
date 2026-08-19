@@ -34,7 +34,7 @@ function redirectUri(): string {
 // Asana developer console (My Apps → your app → OAuth → scopes) — granting
 // them in the console but not requesting them here (or vice versa) still
 // fails, both sides need to agree.
-const SCOPES = 'openid email profile tasks:read tasks:write projects:read users:read workspaces:read';
+const SCOPES = 'openid email profile tasks:read tasks:write projects:read users:read workspaces:read workspaces.typeahead:read';
 
 export function getAsanaAuthorizeUrl(state: string): string {
   const { clientId } = requireCredentials();
@@ -248,6 +248,33 @@ async function resolveBreadcrumbs(
 export async function listWorkspaces(accessToken: string): Promise<{ gid: string; name: string }[]> {
   const me = await asanaFetch(accessToken, '/users/me?opt_fields=workspaces.gid,workspaces.name');
   return me.workspaces ?? [];
+}
+
+/// Asana's typeahead search — the same fast, relevance-ranked endpoint the
+/// real Asana app's own search box uses, and unlike the loaded-tasks list
+/// this app already has client-side, it isn't limited to "incomplete
+/// assigned to me" — it can find any task or project you're allowed to
+/// see. Needs the `workspaces.typeahead:read` scope specifically (distinct
+/// from `tasks:read`/`projects:read`); if a connected account's token
+/// predates this scope being added, calls here 403 until they reconnect.
+/// Searches every workspace the user belongs to and merges results, same
+/// as listIncompleteAssignedTasks does for the task list.
+export async function typeahead(
+  accessToken: string,
+  resourceType: 'task' | 'project',
+  query: string,
+): Promise<{ gid: string; name: string }[]> {
+  const workspaces = await listWorkspaces(accessToken);
+  const results = await Promise.all(
+    workspaces.map((ws) =>
+      asanaFetch(
+        accessToken,
+        `/workspaces/${ws.gid}/typeahead?resource_type=${resourceType}&query=${encodeURIComponent(query)}&count=20&opt_fields=name`,
+      ) as Promise<{ gid: string; name: string }[]>,
+    ),
+  );
+  const seen = new Set<string>();
+  return results.flat().filter((r) => (seen.has(r.gid) ? false : (seen.add(r.gid), true)));
 }
 
 /// Fetches every incomplete task assigned to the caller, across all of their

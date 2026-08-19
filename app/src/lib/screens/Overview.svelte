@@ -48,7 +48,28 @@
     return { pre: label.slice(0, idx), match: label.slice(idx, idx + query.length), post: label.slice(idx + query.length) };
   }
 
+  /// Asana's typeahead is the primary source (see planner.runTypeahead) —
+  /// this only falls back to filtering the client's already-loaded
+  /// projects/tasks if that failed (e.g. the connected account predates
+  /// the workspaces.typeahead:read scope and hasn't been reconnected yet),
+  /// so search still works either way.
   function resultsFor(eventId: string, mode: 'add' | 'link' | null): SearchResult[] {
+    if (!mode) return [];
+    if (planner.typeaheadOk) {
+      if (mode === 'add') {
+        return planner.typeaheadResults
+          .map((r) =>
+            r.resourceType === 'project'
+              ? { label: r.name, typeLabel: 'Project', onSelect: () => planner.addEventAsTaskWithProject(eventId, r.gid, r.name) }
+              : { label: r.name, typeLabel: 'Subtask of', onSelect: () => planner.addEventAsSubtask(eventId, r.gid) },
+          )
+          .slice(0, RESULT_LIMIT);
+      }
+      return planner.typeaheadResults
+        .filter((r) => r.resourceType === 'task')
+        .slice(0, RESULT_LIMIT)
+        .map((r) => ({ label: r.name, typeLabel: 'Task', onSelect: () => planner.linkEventToTask(eventId, r.gid) }));
+    }
     if (mode === 'add') {
       return [
         ...planner.projects
@@ -62,13 +83,11 @@
           .filter((t) => !query || t.name.toLowerCase().includes(query))
           .map((t) => ({ label: t.name, typeLabel: 'Subtask of', onSelect: () => planner.addEventAsSubtask(eventId, t.id) })),
       ].slice(0, RESULT_LIMIT);
-    } else if (mode === 'link') {
-      return planner.tasks
-        .filter((t) => !query || t.name.toLowerCase().includes(query))
-        .slice(0, RESULT_LIMIT)
-        .map((t) => ({ label: t.name, typeLabel: 'Task', onSelect: () => planner.linkEventToTask(eventId, t.id) }));
     }
-    return [];
+    return planner.tasks
+      .filter((t) => !query || t.name.toLowerCase().includes(query))
+      .slice(0, RESULT_LIMIT)
+      .map((t) => ({ label: t.name, typeLabel: 'Task', onSelect: () => planner.linkEventToTask(eventId, t.id) }));
   }
 </script>
 

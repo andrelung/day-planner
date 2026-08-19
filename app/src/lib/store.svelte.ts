@@ -233,10 +233,35 @@ class PlannerStore {
   // happening, not just a static "Loading your day…" for the whole
   // several-second stretch — especially the phases before any task-fetch
   // progress event has arrived to drive loadingProgressLabel.
-  bootStatus = $state('Connecting…');
+  bootStatus = $state('Starting app…');
+
+  // The wait for Asana's *first* API response (workspace lookup + the
+  // first page of tasks) has no sub-progress to report at all — there's
+  // nothing between "asked" and "got the first batch". Rather than sit on
+  // one static label the whole time, this cycles through a small set of
+  // honest, generic phrases so the screen still visibly changes. It
+  // deliberately doesn't claim specific steps that aren't real (no on-
+  // device cache is being built, calendar events aren't fetched at boot)
+  // — seeing loadingProgressLabel take over once real data starts
+  // arriving is the actual first concrete milestone.
+  private bootStatusTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly bootWaitingMessages = ['Connecting to Asana…', 'Fetching your tasks…', 'Getting things organized…', 'Almost there…'];
+  private startBootStatusCycle() {
+    let i = 0;
+    this.bootStatus = this.bootWaitingMessages[0];
+    clearInterval(this.bootStatusTimer);
+    this.bootStatusTimer = setInterval(() => {
+      i = (i + 1) % this.bootWaitingMessages.length;
+      this.bootStatus = this.bootWaitingMessages[i];
+    }, 1800);
+  }
+  private stopBootStatusCycle() {
+    clearInterval(this.bootStatusTimer);
+    this.bootStatusTimer = undefined;
+  }
 
   async boot() {
-    this.bootStatus = 'Connecting…';
+    this.bootStatus = 'Starting app…';
     const params = new URLSearchParams(window.location.search);
     const onboarding = params.get('onboarding') === 'secondary';
     if (onboarding) {
@@ -313,7 +338,7 @@ class PlannerStore {
       this.screen = 'triage';
       return;
     }
-    this.bootStatus = 'Loading your tasks…';
+    this.startBootStatusCycle();
     this.loadingTasksCount = 0;
     const cached = localStorage.getItem('lastTaskCount');
     this.loadingTasksEstimate = cached ? parseInt(cached, 10) : null;
@@ -325,6 +350,8 @@ class PlannerStore {
       // Land on Triage with whatever (possibly nothing) came in rather than
       // leaving the user stuck on the loading screen after a failure.
       if (this.screen === 'loading') this.screen = 'triage';
+    } finally {
+      this.stopBootStatusCycle();
     }
   }
 
@@ -350,6 +377,7 @@ class PlannerStore {
     this.projects = data.projects;
     if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     if (this.screen === 'loading') {
+      this.stopBootStatusCycle();
       this.focusIndex = 0;
       this.screen = 'triage';
     }
@@ -1337,19 +1365,63 @@ class PlannerStore {
     this.activePanelEventId = eventId;
     this.activePanelMode = 'add';
     this.searchQuery = '';
+    void this.runTypeahead();
   }
   openLinkPanel(eventId: string) {
     this.activePanelEventId = eventId;
     this.activePanelMode = 'link';
     this.searchQuery = '';
+    void this.runTypeahead();
   }
   closeSearchPanel() {
     this.activePanelEventId = null;
     this.activePanelMode = null;
     this.searchQuery = '';
+    this.typeaheadResults = [];
   }
   onSearchChange(v: string) {
     this.searchQuery = v;
+    this.scheduleTypeahead();
+  }
+
+  /// Backs the project/subtask/task search in the add/link panels — Asana's
+  /// own typeahead endpoint (see routes/tasks.ts) instead of filtering the
+  /// tasks already loaded client-side, which is only ever "incomplete,
+  /// assigned to me, has a due date" (excludes plenty of tasks someone
+  /// might actually want to link/add under, including anything without a
+  /// due date at all). Falls back to the old client-side filtering — see
+  /// Overview.svelte's resultsFor — if this fails, e.g. the connected
+  /// Asana account predates the workspaces.typeahead:read scope and hasn't
+  /// been reconnected yet.
+  typeaheadResults: { gid: string; name: string; resourceType: 'task' | 'project' }[] = $state([]);
+  typeaheadOk = $state(true);
+  private typeaheadTimer: ReturnType<typeof setTimeout> | undefined;
+  private typeaheadSeq = 0;
+
+  private scheduleTypeahead() {
+    clearTimeout(this.typeaheadTimer);
+    this.typeaheadTimer = setTimeout(() => void this.runTypeahead(), 250);
+  }
+  private async runTypeahead() {
+    const mode = this.activePanelMode;
+    if (!mode) return;
+    const q = this.searchQuery.trim();
+    const seq = ++this.typeaheadSeq;
+    const fetchOne = (resourceType: 'task' | 'project') =>
+      api.get<{ results: { gid: string; name: string }[] }>(`/api/tasks/typeahead?resourceType=${resourceType}&query=${encodeURIComponent(q)}`);
+    try {
+      const [tasks, projects] = await Promise.all([fetchOne('task'), mode === 'add' ? fetchOne('project') : Promise.resolve({ results: [] })]);
+      if (seq !== this.typeaheadSeq) return; // superseded by a newer keystroke
+      this.typeaheadResults = [
+        ...projects.results.map((p) => ({ ...p, resourceType: 'project' as const })),
+        ...tasks.results.map((t) => ({ ...t, resourceType: 'task' as const })),
+      ];
+      this.typeaheadOk = true;
+    } catch {
+      if (seq !== this.typeaheadSeq) return;
+      this.typeaheadOk = false;
+      this.typeaheadResults = [];
+    }
   }
 
   // --- overview: per-event popup ("›") — Link to task / Ignore. "Add as
