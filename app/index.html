@@ -3,8 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#F7FCFF" />
     <title>Day Planner</title>
+
+    <!-- "Install as an app" support — see README "Install as an app" -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Day Planner" />
+    <!-- "default" (not "black-translucent") since the app has no
+         safe-area-inset padding yet — translucent would let the header
+         sit under the iPhone's notch/status bar when installed. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="mobile-web-app-capable" content="yes" />
   </head>
   <body>
     <div id="app"></div>

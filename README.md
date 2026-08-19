@@ -64,6 +64,23 @@ ngrok's free tier gives you a new random subdomain every time you restart the tu
 
 `vite.config.ts` sets `allowedHosts: true` so Vite accepts requests carrying an ngrok (or LAN-IP) `Host` header instead of 403ing them — that's dev-only (`vite build`/production is unaffected) and fine for a local dev server with no real data behind it directly.
 
+## Install as an app (iOS / Android)
+
+Day Planner ships a web app manifest and icons (`app/public/manifest.webmanifest`, `apple-touch-icon.png`, `pwa-192.png`/`pwa-512.png`), so once you have it open in a mobile browser — over `http://localhost:3000` in the simulator, a LAN IP, or an ngrok URL (see above) — you can add it to the home screen and it opens full-screen, without Safari/Chrome's address bar.
+
+**iOS (Safari):**
+1. Open the app's URL in **Safari** specifically — the "Add to Home Screen" option isn't in Chrome or Firefox on iOS.
+2. Tap the **Share** icon (square with an arrow pointing up) in the toolbar.
+3. Scroll down and tap **Add to Home Screen**.
+4. Confirm the name ("Day Planner") and tap **Add**.
+
+**Android (Chrome):**
+1. Open the app's URL in **Chrome**.
+2. Tap the **⋮** menu in the top-right.
+3. Tap **Add to Home screen** (or **Install app**, if Chrome already recognized it as installable) → **Install** / **Add**.
+
+Either way you get a real navy-and-yellow app icon and a standalone window — no browser chrome, just like a native app. Note this only affects how the page is *presented*; it's still the same web app hitting the same backend, not an offline-capable PWA (no service worker/caching is set up, so it still needs network access to `/api` each time, same as the browser tab).
+
 ## Testing
 
 Unit tests cover the pure business logic — the pieces most likely to silently regress: the `[4]`-in-title duration convention, doubled-task/queue-ordering, free-slot computation, workload day-bucketing, and token encryption. They don't need a database, Docker, or real OAuth credentials.
