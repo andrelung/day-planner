@@ -149,6 +149,48 @@ void test('listIncompleteAssignedTasks leaves subtasks as "No project" when with
   }
 });
 
+/// onProgress should report a running total across pages AND across
+/// workspaces (not reset back to a per-page or per-workspace count), since
+/// the loading screen shows it as one cumulative "N tasks loaded" figure.
+void test('listIncompleteAssignedTasks reports a cumulative running count via onProgress', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) {
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }, { gid: 'ws2', name: 'Workspace 2' }] } });
+    }
+    if (u.includes('workspace=ws1') && !u.includes('offset=')) {
+      return jsonResponse({
+        data: [{ gid: 't1', name: 'One', due_on: null, due_at: null, permalink_url: 'https://x/1', projects: [], parent: null }],
+        next_page: { uri: 'https://app.asana.com/api/1.0/tasks?offset=ws1b' },
+      });
+    }
+    if (u.includes('offset=ws1b')) {
+      return jsonResponse({
+        data: [{ gid: 't2', name: 'Two', due_on: null, due_at: null, permalink_url: 'https://x/2', projects: [], parent: null }],
+        next_page: null,
+      });
+    }
+    if (u.includes('workspace=ws2')) {
+      return jsonResponse({
+        data: [{ gid: 't3', name: 'Three', due_on: null, due_at: null, permalink_url: 'https://x/3', projects: [], parent: null }],
+        next_page: null,
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const progressCalls: number[] = [];
+    await listIncompleteAssignedTasks('fake-token', { onProgress: (count) => progressCalls.push(count) });
+    // ws1 page1 -> 1, ws1 page2 -> 2, ws2 page1 -> 3: always cumulative, never resets.
+    assert.deepEqual(progressCalls, [1, 2, 3]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }

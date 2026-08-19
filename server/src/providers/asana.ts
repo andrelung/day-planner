@@ -131,7 +131,7 @@ async function asanaFetch(accessToken: string, path: string, init?: RequestInit)
 /// a real workspace's incomplete-assigned-to-me count can easily exceed a
 /// single page (Asana caps a page at 100 and errors with "result is too
 /// large" rather than silently truncating).
-async function asanaFetchAllPages(accessToken: string, path: string): Promise<any[]> {
+async function asanaFetchAllPages(accessToken: string, path: string, onPage?: (soFar: number) => void): Promise<any[]> {
   const all: any[] = [];
   // Asana hands back a ready-to-use `next_page.uri` for the following page —
   // simpler and less error-prone than reconstructing offset/limit by hand.
@@ -143,6 +143,7 @@ async function asanaFetchAllPages(accessToken: string, path: string): Promise<an
     }
     const json = (await res.json()) as any;
     all.push(...json.data);
+    onPage?.(all.length);
     url = json.next_page?.uri ?? null;
   }
   return all;
@@ -253,13 +254,14 @@ export async function listWorkspaces(accessToken: string): Promise<{ gid: string
 /// project (slot-conflict checks, free-slot busy calculations) can skip it.
 export async function listIncompleteAssignedTasks(
   accessToken: string,
-  options?: { withBreadcrumbs?: boolean },
+  options?: { withBreadcrumbs?: boolean; onProgress?: (count: number) => void },
 ): Promise<(RemoteTask & { projectGid: string | null })[]> {
   const workspaces = await listWorkspaces(accessToken);
   const entries: { dto: AsanaTaskDto; task: RemoteTask & { projectGid: string | null } }[] = [];
   for (const ws of workspaces) {
     const path = `/tasks?assignee=me&workspace=${ws.gid}&completed_since=now&opt_fields=${TASK_OPT_FIELDS}`;
-    const tasks = (await asanaFetchAllPages(accessToken, path)) as AsanaTaskDto[];
+    const alreadyFetched = entries.length;
+    const tasks = (await asanaFetchAllPages(accessToken, path, (soFar) => options?.onProgress?.(alreadyFetched + soFar))) as AsanaTaskDto[];
     for (const dto of tasks) entries.push({ dto, task: toRemoteTask(dto) });
   }
   if (options?.withBreadcrumbs) {

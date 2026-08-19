@@ -58,6 +58,9 @@
             <div class="loading__ring"></div>
           </div>
           <p>Loading your day…</p>
+          {#if planner.loadingProgressLabel}
+            <p class="loading__progress">{planner.loadingProgressLabel}</p>
+          {/if}
         {/if}
       </div>
     {:else if planner.screen === 'login'}
@@ -149,6 +152,13 @@
     border-top-color: var(--color-brand-accent);
     border-radius: 50%;
     animation: loading-spin 0.9s linear infinite;
+  }
+  .loading__progress {
+    margin-top: -12px;
+    font-size: 12px;
+    font-weight: var(--font-weight-normal);
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
   }
   @keyframes loading-spin {
     to {

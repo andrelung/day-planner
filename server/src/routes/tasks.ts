@@ -3,23 +3,20 @@ import { z } from 'zod';
 import { requireAuth } from '../lib/auth.js';
 import { getValidAccessToken } from '../lib/tokens.js';
 import { deriveQueue } from '../lib/taskQueue.js';
-import { prisma } from '../lib/prisma.js';
+import { getOrCreateSettings } from '../lib/settings.js';
 import { createSubtask, createTaskInProject, listIncompleteAssignedTasks, setTaskDueAt, setTaskHours } from '../providers/asana.js';
+import type { RemoteTask } from '../providers/types.js';
 
 export const tasksRouter = Router();
 tasksRouter.use(requireAuth);
 
-tasksRouter.get('/', async (req, res) => {
-  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-  const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true });
+function buildTasksPayload(raw: (RemoteTask & { projectGid: string | null })[]) {
   const queued = deriveQueue(raw);
-
   const projects = new Map<string, string>();
   for (const t of raw) {
     if (t.projectGid) projects.set(t.projectGid, t.project);
   }
-
-  res.json({
+  return {
     tasks: queued.map((t) => ({
       id: t.gid,
       name: t.name,
@@ -31,7 +28,44 @@ tasksRouter.get('/', async (req, res) => {
       permalinkUrl: t.permalinkUrl,
     })),
     projects: [...projects.entries()].map(([gid, name]) => ({ gid, name })),
-  });
+  };
+}
+
+tasksRouter.get('/', async (req, res) => {
+  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true });
+  res.json(buildTasksPayload(raw));
+});
+
+/// Same result as GET / (used for the initial boot fetch specifically),
+/// but as an SSE stream emitting `progress` events with a running count as
+/// Asana's cursor-paginated /tasks pages come in, then one final `done`
+/// event with the full payload. A "crowded" workspace can mean dozens of
+/// pages plus per-subtask breadcrumb lookups, multi-second real work — this
+/// gives the loading screen something honest to show instead of a bare
+/// spinner. Other refreshes (after committing a plan, etc.) still use the
+/// plain GET / above; streaming is only worth the complexity for the
+/// long boot-time fetch.
+tasksRouter.get('/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  try {
+    const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+    const raw = await listIncompleteAssignedTasks(accessToken, {
+      withBreadcrumbs: true,
+      onProgress: (count) => res.write(`event: progress\ndata: ${JSON.stringify({ count })}\n\n`),
+    });
+    res.write(`event: done\ndata: ${JSON.stringify(buildTasksPayload(raw))}\n\n`);
+  } catch (err) {
+    // Named "failed", not "error" — SSE's native connection-error event is
+    // itself dispatched as an "error" event on the client's EventSource, so
+    // reusing that name would be ambiguous with a real connection drop.
+    res.write(`event: failed\ndata: ${JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to load tasks' })}\n\n`);
+  }
+  res.end();
 });
 
 const patchSchema = z
@@ -54,7 +88,7 @@ tasksRouter.patch('/:gid', async (req, res) => {
   const { gid } = req.params;
   const { dueAt, hours, name, force } = parsed.data;
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-  const settings = await prisma.settings.upsert({ where: { userId: req.userId! }, create: { userId: req.userId! }, update: {} });
+  const settings = await getOrCreateSettings(req.userId!);
 
   if (dueAt !== undefined) {
     if (dueAt && !force) {
@@ -90,7 +124,7 @@ tasksRouter.post('/', async (req, res) => {
     return;
   }
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-  const settings = await prisma.settings.upsert({ where: { userId: req.userId! }, create: { userId: req.userId! }, update: {} });
+  const settings = await getOrCreateSettings(req.userId!);
   const created =
     'projectGid' in parsed.data
       ? await createTaskInProject(accessToken, parsed.data.projectGid, parsed.data.name, settings.timezone)

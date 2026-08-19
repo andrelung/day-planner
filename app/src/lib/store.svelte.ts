@@ -165,10 +165,81 @@ class PlannerStore {
   }
 
   private async enterTriage() {
-    await Promise.all([this.refreshTasks(), this.refreshWorkload()]);
+    await Promise.all([this.bootRefreshTasks(), this.refreshWorkload()]);
     this.focusIndex = 0;
     this.screen = 'triage';
     this.maybeShowIosInstallBanner();
+  }
+
+  // --- boot-time task loading progress ---
+  // A "crowded" Asana workspace can mean many paginated requests plus
+  // per-subtask breadcrumb lookups server-side — genuinely multi-second
+  // work the plain GET /api/tasks used by refreshTasks() gives no
+  // visibility into. Only the boot path uses this SSE variant; every other
+  // refresh (after committing a plan, etc.) is fast enough in practice and
+  // isn't shown on a loading screen anyway, so it keeps using the simple GET.
+  loadingTasksCount = $state(0);
+  loadingTasksEstimate: number | null = $state(null);
+
+  get loadingProgressLabel(): string | null {
+    if (this.loadingTasksCount <= 0) return null;
+    if (this.loadingTasksEstimate && this.loadingTasksEstimate > 0) {
+      const pct = Math.min(100, Math.round((this.loadingTasksCount / this.loadingTasksEstimate) * 100));
+      return `${this.loadingTasksCount} / ~${this.loadingTasksEstimate} tasks · ${pct}%`;
+    }
+    return `${this.loadingTasksCount} tasks loaded`;
+  }
+
+  private async bootRefreshTasks() {
+    if (!this.asanaConnected) return;
+    this.loadingTasksCount = 0;
+    const cached = localStorage.getItem('lastTaskCount');
+    this.loadingTasksEstimate = cached ? parseInt(cached, 10) : null;
+    try {
+      const res = await this.streamTasks();
+      this.tasks = res.tasks;
+      this.projects = res.projects;
+      if (this.focusIndex >= this.tasks.length) this.focusIndex = Math.max(0, this.tasks.length - 1);
+      localStorage.setItem('lastTaskCount', String(this.tasks.length));
+    } catch (err) {
+      this.reportError(err, 'Could not load tasks from Asana');
+    }
+  }
+
+  private streamTasks(): Promise<{ tasks: Task[]; projects: Project[] }> {
+    return new Promise((resolve, reject) => {
+      const es = new EventSource('/api/tasks/stream');
+      es.addEventListener('progress', (e) => {
+        try {
+          this.loadingTasksCount = JSON.parse((e as MessageEvent).data).count;
+        } catch {
+          // malformed progress event — harmless, just skip this tick
+        }
+      });
+      es.addEventListener('failed', (e) => {
+        es.close();
+        const msg = (() => {
+          try {
+            return JSON.parse((e as MessageEvent).data).error;
+          } catch {
+            return undefined;
+          }
+        })();
+        reject(new Error(msg || 'Failed to load tasks'));
+      });
+      es.addEventListener('done', (e) => {
+        es.close();
+        try {
+          resolve(JSON.parse((e as MessageEvent).data));
+        } catch (err) {
+          reject(err);
+        }
+      });
+      es.onerror = () => {
+        es.close();
+        reject(new Error('Lost connection to the server while loading tasks'));
+      };
+    });
   }
 
   // --- install banner ---
