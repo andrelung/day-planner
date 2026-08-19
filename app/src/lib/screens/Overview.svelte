@@ -14,6 +14,16 @@
 
   const overviewDays = $derived<DayRow[]>(
     planner.workloadDays.map((d) => {
+      if (!d.loaded) {
+        return {
+          label: d.label,
+          hoursLabel: '—',
+          barWidth: '0%',
+          barColor: 'var(--color-text-muted)',
+          textColor: 'var(--color-text-muted)',
+          active: d.date === planner.activeDayDateStr,
+        };
+      }
       const ratio = d.capacity > 0 ? d.planned / d.capacity : 0;
       const over = ratio >= 1;
       return {

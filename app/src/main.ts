@@ -18,4 +18,8 @@ const app = mount(App, {
   target: document.getElementById('app')!,
 });
 
+// The static pre-boot splash in index.html has served its purpose now that
+// Svelte's own (visually identical) loading screen has taken over.
+document.getElementById('splash-viewport')?.remove();
+
 export default app;

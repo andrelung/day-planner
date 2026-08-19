@@ -5,6 +5,7 @@
   import Badge from '../components/Badge.svelte';
 
   const laterDays = $derived(planner.laterDays);
+  const weekDeferOptions = $derived(planner.weekDeferOptions);
 </script>
 
 <div class="screen">
@@ -23,6 +24,12 @@
       <button class="day-row" onclick={() => planner.selectLaterDay(d.key)}>
         <div class="day-row__label">{d.label}</div>
         <Badge tone={d.tone}>{d.badgeLabel}</Badge>
+      </button>
+    {/each}
+    {#each weekDeferOptions as w}
+      <button class="day-row" onclick={() => planner.deferToWeek(w.key)}>
+        <div class="day-row__label">{w.label}</div>
+        <Icon name="arrow-right" size={16} color="var(--color-text-muted)" />
       </button>
     {/each}
     <button class="day-row day-row--center" onclick={() => planner.openPickDate()}>Pick a date</button>

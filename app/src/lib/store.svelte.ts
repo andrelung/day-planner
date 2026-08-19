@@ -34,6 +34,48 @@ function stepHours(current: number, dir: 1 | -1, max = 40): number {
   return prev ?? steps[0];
 }
 
+/// Mirrors the server's buildWorkloadDays (workload.ts) exactly — the day
+/// structure (which keys, which labels, which dates) is a pure function of
+/// "now", no server round-trip actually needed for it, only the real
+/// planned/capacity numbers are. Used to seed `workloadDays` immediately
+/// so day rows (Overview, "When later?") and date-dependent actions
+/// (loading free slots) work right away instead of waiting on
+/// /api/workload — each entry's `loaded` stays false, and its
+/// planned/capacity are just zeroed, until refreshWorkload() replaces them
+/// with the real thing.
+function buildSkeletonWorkloadDays(now: Date): WorkloadDay[] {
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const isWeekend = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
+  const addDays = (d: Date, n: number) => {
+    const r = new Date(d);
+    r.setDate(r.getDate() + n);
+    return r;
+  };
+  const toDateStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const today = startOfDay(now);
+  const named: Date[] = [today];
+  let cursor = today;
+  while (named.length < 6) {
+    cursor = addDays(cursor, 1);
+    if (!isWeekend(cursor)) named.push(cursor);
+  }
+  const [d0, d1, d2, d3, d4, d5] = named;
+  const base = { planned: 0, capacity: 0, loaded: false, rangeStart: null, rangeEnd: null };
+  const days: WorkloadDay[] = [
+    { ...base, key: 'today', label: 'Today', date: toDateStr(d0) },
+    { ...base, key: 'tomorrow', label: 'Tomorrow', date: toDateStr(d1) },
+    { ...base, key: 'day2', label: d2.toLocaleDateString('en-US', { weekday: 'long' }), date: toDateStr(d2) },
+    { ...base, key: 'day3', label: d3.toLocaleDateString('en-US', { weekday: 'long' }), date: toDateStr(d3) },
+    { ...base, key: 'day4', label: d4.toLocaleDateString('en-US', { weekday: 'long' }), date: toDateStr(d4) },
+    { ...base, key: 'day5', label: d5.toLocaleDateString('en-US', { weekday: 'long' }), date: toDateStr(d5) },
+  ];
+  const nextWeekStart = addDays(d5, 1);
+  const nextWeekEnd = addDays(nextWeekStart, 7);
+  days.push({ ...base, key: 'nextweek', label: 'Next week', date: null, rangeStart: nextWeekStart.toISOString(), rangeEnd: nextWeekEnd.toISOString() });
+  return days;
+}
+
 interface MeResponse {
   primaryProvider: 'ASANA' | 'OUTLOOK';
   asanaConnected: boolean;
@@ -88,7 +130,7 @@ class PlannerStore {
   editingRestId: string | null = $state(null);
   restHoursDraft = $state(0);
 
-  workloadDays: WorkloadDay[] = $state([]);
+  workloadDays: WorkloadDay[] = $state(buildSkeletonWorkloadDays(new Date()));
 
   laterDayKey: string | null = $state(null);
   customDateValue = $state('');
@@ -145,12 +187,12 @@ class PlannerStore {
   /// would misleadingly read as "you're under capacity" when the truth is
   /// just "unknown yet".
   get todayBadgeBg() {
-    if (this.workloadLoading || !this.todayWorkload) return 'var(--color-text-muted)';
+    if (this.workloadLoading || !this.todayWorkload?.loaded) return 'var(--color-text-muted)';
     return this.todayRatio >= 1 ? 'var(--color-feedback-wrong)' : 'var(--color-feedback-correct)';
   }
   get todayBadgeLabel() {
     const t = this.todayWorkload;
-    return t ? `${t.planned}/${t.capacity}h` : '';
+    return t?.loaded ? `${t.planned}/${t.capacity}h` : '';
   }
   private get todayDateStr(): string {
     const now = new Date();
@@ -502,8 +544,8 @@ class PlannerStore {
   async refreshWorkload() {
     this.workloadLoading = true;
     try {
-      const res = await api.get<{ days: WorkloadDay[] }>('/api/workload');
-      this.workloadDays = res.days;
+      const res = await api.get<{ days: Omit<WorkloadDay, 'loaded'>[] }>('/api/workload');
+      this.workloadDays = res.days.map((d) => ({ ...d, loaded: true }));
     } catch (err) {
       this.reportError(err, 'Could not load workload');
     } finally {
@@ -735,7 +777,7 @@ class PlannerStore {
   /// dontAskDayFullToday/Ever below).
   isDayFull(key: string): boolean {
     const d = this.workloadDays.find((w) => w.key === key);
-    if (!d || d.planned / d.capacity < 1) return false;
+    if (!d || !d.loaded || d.planned / d.capacity < 1) return false;
     if (this.skipDayFullWarning) return false;
     const date = this.dateFor(key);
     if (date && localStorage.getItem(this.dayFullDismissKey(date)) === '1') return false;
@@ -898,9 +940,52 @@ class PlannerStore {
       .map((d) => ({
         key: d.key,
         label: d.label,
-        badgeLabel: `${d.planned}/${d.capacity}h`,
-        tone: d.planned / d.capacity >= 1 ? ('wrong' as const) : ('correct' as const),
+        badgeLabel: d.loaded ? `${d.planned}/${d.capacity}h` : '—',
+        tone: !d.loaded ? ('neutral' as const) : d.planned / d.capacity >= 1 ? ('wrong' as const) : ('correct' as const),
       }));
+  }
+
+  /// "Further in the future, I'll plan it later" quick actions — unlike
+  /// laterDays, these don't lead to a time-slot picker and aren't
+  /// capacity-tracked; they just push the due date out to a future week's
+  /// Monday with no due time (see deferToWeek). Calendar-week Monday, not
+  /// tied to the today/day2../day5 weekday run above.
+  get weekDeferOptions(): { key: string; label: string; date: string }[] {
+    const now = new Date();
+    const day = now.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const thisWeekMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + mondayOffset);
+    const toDateStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return [2, 3, 4].map((n) => {
+      const monday = new Date(thisWeekMonday);
+      monday.setDate(monday.getDate() + n * 7);
+      return { key: `week+${n}`, label: `In ${n} weeks`, date: toDateStr(monday) };
+    });
+  }
+
+  /// Moves the task being planned out to a future week's Monday with no
+  /// specific due time — a deliberate "I'll figure out the time later"
+  /// deferral, not a placement. Reuses restoreTaskDueFieldsLocally (see its
+  /// comment) purely for its "set these exact due fields and write through"
+  /// mechanics — this isn't an undo, just the same field-setting shape.
+  deferToWeek(key: string) {
+    const task = this.focusTaskRaw;
+    const opt = this.weekDeferOptions.find((w) => w.key === key);
+    if (!task || !opt) return;
+    const previousDueOn = task.dueOn;
+    const previousDueAt = task.dueAt;
+    this.restoreTaskDueFieldsLocally(task.id, opt.date, null);
+    if (!this.justPlannedIds.includes(task.id)) this.justPlannedIds = [...this.justPlannedIds, task.id];
+    this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+    this.screen = 'triage';
+    this.showToast(`Moved "${task.name}" to ${opt.label} · syncing to Asana`, {
+      label: 'Undo',
+      onClick: () => {
+        this.restoreTaskDueFieldsLocally(task.id, previousDueOn, previousDueAt);
+        this.justPlannedIds = this.justPlannedIds.filter((id) => id !== task.id);
+        this.selectFocus(task.id);
+      },
+    });
   }
 
   private toIsoDateTime(date: string, hhmm: string): string {

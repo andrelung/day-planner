@@ -8,7 +8,8 @@
     /// The task currently being planned — excluded from the calendar's own
     /// blocks (it's not "placed" yet, that's what this view is for).
     excludeTaskId: string;
-    /// Tap an open spot on the timeline to plan the current task there.
+    /// Fires once the user confirms a tentative placement (see the pending
+    /// block below) — not on the first tap.
     onPickTime: (hhmm: string) => void;
   }
   let { date, excludeTaskId, onPickTime }: Props = $props();
@@ -61,39 +62,61 @@
     return Math.round(mins / SNAP_MIN) * SNAP_MIN;
   }
 
-  // --- drag-to-move an already-placed task ---
-  let dragTaskId: string | null = $state(null);
+  // --- tentative placement for the task being planned: first tap sets this
+  // (without committing anything), then the user can drag it to adjust or
+  // tap Confirm/Remove. ---
+  let pendingMin: number | null = $state(null);
+  const focusHours = $derived(planner.focusTaskRaw?.hours ?? 1);
+  const pendingHeight = $derived(Math.max(MIN_BLOCK_HEIGHT, focusHours * 60 * PX_PER_MIN));
+  const pendingTop = $derived(pendingMin === null ? 0 : Math.max(0, (pendingMin - startMin) * PX_PER_MIN));
+  const pendingHHMM = $derived(pendingMin === null ? '' : toHHMM(pendingMin));
+
+  // --- drag-to-move, shared by already-placed tasks and the pending block ---
+  type DragTarget = { kind: 'other'; taskId: string } | { kind: 'pending' };
+  let dragTarget: DragTarget | null = $state(null);
   let dragTop = $state(0);
   let dragStartY = 0;
   let dragOrigTop = 0;
 
-  function beginDrag(e: PointerEvent, block: Block) {
+  function beginDrag(e: PointerEvent, target: DragTarget, origTop: number) {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    dragTaskId = block.task.id;
+    dragTarget = target;
     dragStartY = e.clientY;
-    dragOrigTop = block.top;
-    dragTop = block.top;
+    dragOrigTop = origTop;
+    dragTop = origTop;
   }
   function onDragMove(e: PointerEvent) {
-    if (!dragTaskId) return;
+    if (!dragTarget) return;
     const next = dragOrigTop + (e.clientY - dragStartY);
     dragTop = Math.max(0, Math.min(next, totalHeight - MIN_BLOCK_HEIGHT));
   }
   async function endDrag() {
-    if (!dragTaskId) return;
-    const taskId = dragTaskId;
+    if (!dragTarget) return;
+    const target = dragTarget;
     const draggedFrom = dragOrigTop;
-    dragTaskId = null;
+    const finalTop = dragTop;
+    dragTarget = null;
+    if (target.kind === 'pending') {
+      pendingMin = clampMin(snap(startMin + finalTop / PX_PER_MIN));
+      return;
+    }
     // A tap that never really moved shouldn't count as a "move" attempt.
-    if (Math.abs(dragTop - draggedFrom) < SNAP_MIN * PX_PER_MIN * 0.5) return;
-    const hhmm = toHHMM(clampMin(snap(startMin + dragTop / PX_PER_MIN)));
-    await planner.moveOtherTask(taskId, date, hhmm);
+    if (Math.abs(finalTop - draggedFrom) < SNAP_MIN * PX_PER_MIN * 0.5) return;
+    const hhmm = toHHMM(clampMin(snap(startMin + finalTop / PX_PER_MIN)));
+    await planner.moveOtherTask(target.taskId, date, hhmm);
   }
 
   function onTrackClick(e: MouseEvent, trackEl: HTMLElement) {
-    if (dragTaskId) return;
+    if (dragTarget) return;
     const y = e.clientY - trackEl.getBoundingClientRect().top;
-    onPickTime(toHHMM(clampMin(snap(startMin + y / PX_PER_MIN))));
+    pendingMin = clampMin(snap(startMin + y / PX_PER_MIN));
+  }
+  function confirmPending() {
+    if (pendingMin === null) return;
+    onPickTime(toHHMM(pendingMin));
+  }
+  function removePending() {
+    pendingMin = null;
   }
 </script>
 
@@ -107,9 +130,9 @@
     {#each blocks as b (b.task.id)}
       <div
         class="task-block"
-        class:task-block--dragging={dragTaskId === b.task.id}
-        style="top:{dragTaskId === b.task.id ? dragTop : b.top}px; height:{b.height}px;"
-        onpointerdown={(e) => beginDrag(e, b)}
+        class:task-block--dragging={dragTarget?.kind === 'other' && dragTarget.taskId === b.task.id}
+        style="top:{dragTarget?.kind === 'other' && dragTarget.taskId === b.task.id ? dragTop : b.top}px; height:{b.height}px;"
+        onpointerdown={(e) => beginDrag(e, { kind: 'other', taskId: b.task.id }, b.top)}
         onpointermove={onDragMove}
         onpointerup={endDrag}
         onpointercancel={endDrag}
@@ -132,8 +155,55 @@
         </button>
       </div>
     {/each}
+    {#if pendingMin !== null}
+      <div
+        class="pending-block"
+        class:pending-block--dragging={dragTarget?.kind === 'pending'}
+        style="top:{dragTarget?.kind === 'pending' ? dragTop : pendingTop}px; height:{pendingHeight}px;"
+        onpointerdown={(e) => beginDrag(e, { kind: 'pending' }, pendingTop)}
+        onpointermove={onDragMove}
+        onpointerup={endDrag}
+        onpointercancel={endDrag}
+        onclick={(e) => e.stopPropagation()}
+      >
+        <div class="pending-block__text">
+          <div class="pending-block__name">{planner.focusTaskRaw?.name ?? ''}</div>
+          <div class="pending-block__time">{pendingHHMM}</div>
+        </div>
+        <div class="pending-block__actions">
+          <button
+            class="pending-block__btn pending-block__btn--confirm"
+            title="Confirm"
+            aria-label="Confirm"
+            onclick={(e) => {
+              e.stopPropagation();
+              confirmPending();
+            }}
+          >
+            ✓
+          </button>
+          <button
+            class="pending-block__btn pending-block__btn--remove"
+            title="Remove"
+            aria-label="Remove"
+            onclick={(e) => {
+              e.stopPropagation();
+              removePending();
+            }}
+          >
+            ×
+          </button>
+        </div>
+      </div>
+    {/if}
   </div>
-  <div class="hint">Tap an open time to plan here · drag a task to move it</div>
+  <div class="hint">
+    {#if pendingMin !== null}
+      Drag to adjust the time, then confirm
+    {:else}
+      Tap an open time to plan here · drag a task to move it
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -226,5 +296,71 @@
     color: var(--color-text-muted);
     text-align: center;
     margin-top: 8px;
+  }
+  .pending-block {
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    background: var(--color-bg-page);
+    border: 2px dashed var(--color-brand-primary);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    cursor: grab;
+    touch-action: none;
+    overflow: hidden;
+    z-index: 4;
+  }
+  .pending-block--dragging {
+    cursor: grabbing;
+    box-shadow: var(--shadow-overlay-sm);
+    z-index: 6;
+  }
+  .pending-block__text {
+    min-width: 0;
+  }
+  .pending-block__name {
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 12px;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pending-block__time {
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    color: var(--color-text-muted);
+  }
+  .pending-block__actions {
+    flex-shrink: 0;
+    display: flex;
+    gap: 4px;
+  }
+  .pending-block__btn {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: none;
+    font-size: 12px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .pending-block__btn--confirm {
+    background: var(--color-feedback-correct);
+    color: var(--color-text-inverse);
+  }
+  .pending-block__btn--remove {
+    background: var(--color-feedback-wrong);
+    color: var(--color-text-inverse);
   }
 </style>

@@ -49,6 +49,11 @@ export interface WorkloadDay {
   rangeEnd: string | null;
   planned: number;
   capacity: number;
+  /// False for the client-computed placeholder shown before the real
+  /// workload has loaded from the server — `planned`/`capacity` are just
+  /// zeroed in that case, not real numbers. See store.svelte.ts's
+  /// buildSkeletonWorkloadDays.
+  loaded: boolean;
 }
 
 export interface CalendarEvent {

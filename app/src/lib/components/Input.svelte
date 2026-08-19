@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Icon from './Icon.svelte';
+
   interface Props {
     label?: string;
     placeholder?: string;
@@ -26,8 +28,20 @@
       {placeholder}
       {disabled}
       class:center
+      class:date-empty={type === 'date' && !value}
       oninput={handleInput}
     />
+    {#if type === 'date' && !value}
+      <!-- Native date inputs render blank when empty on several browsers
+           (notably iOS Safari, no "mm/dd/yyyy" placeholder like desktop
+           Chrome) — this non-interactive overlay makes the field read as
+           "tap to choose a date" instead of looking broken/unfilled. Taps
+           pass straight through to the real input underneath. -->
+      <div class="ds-input__date-placeholder">
+        <Icon name="calendar" size={18} color="var(--color-text-muted)" />
+        <span>Choose a date</span>
+      </div>
+    {/if}
   </div>
 </label>
 
@@ -87,5 +101,24 @@
   }
   input.center {
     text-align: center;
+  }
+  /* Hides the browser's own "mm/dd/yyyy" placeholder segments (Chrome/
+     desktop draws these even with no value; iOS Safari draws nothing) so
+     they don't collide with .ds-input__date-placeholder's overlay text —
+     the picker-indicator icon is a separate element and stays visible. */
+  input.date-empty {
+    color: transparent;
+  }
+  .ds-input__date-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 14px;
+    pointer-events: none;
+    font-family: var(--font-family-base);
+    font-size: 16px;
+    color: var(--color-text-muted);
   }
 </style>

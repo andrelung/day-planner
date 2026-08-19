@@ -17,8 +17,87 @@
          sit under the iPhone's notch/status bar when installed. -->
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Static splash shown instantly at first paint, before the JS bundle
+         has loaded/mounted — main.ts removes it once the real app (whose
+         own 'loading' screen looks identical) has mounted. Styled inline
+         and with hardcoded colors rather than tokens.css so it doesn't wait
+         on anything but this HTML document itself. -->
+    <style>
+      #splash-viewport {
+        height: 100vh;
+        height: 100dvh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f7fcff;
+        overflow: hidden;
+      }
+      #splash-phone {
+        width: 100%;
+        max-width: 480px;
+        height: 100%;
+        margin: 0 auto;
+        background: #ffffff;
+        overflow: hidden;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+      }
+      #splash-loading {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        padding: 24px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-size: 13px;
+        font-weight: 700;
+        color: #73798a;
+        text-align: center;
+      }
+      #splash-mark {
+        position: relative;
+        width: 56px;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #splash-ring {
+        position: absolute;
+        inset: 0;
+        border: 3px solid #d6d7dc;
+        border-top-color: #ffd80a;
+        border-radius: 50%;
+        animation: splash-spin 0.9s linear infinite;
+      }
+      @keyframes splash-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="splash-viewport">
+      <div id="splash-phone">
+        <div id="splash-loading">
+          <div id="splash-mark">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#16203c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="8" height="8" rx="1.5"></rect>
+              <rect x="13" y="3" width="8" height="8" rx="1.5"></rect>
+              <rect x="3" y="13" width="8" height="8" rx="1.5"></rect>
+              <rect x="13" y="13" width="8" height="8" rx="1.5"></rect>
+            </svg>
+            <div id="splash-ring"></div>
+          </div>
+          <p>Starting app…</p>
+        </div>
+      </div>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

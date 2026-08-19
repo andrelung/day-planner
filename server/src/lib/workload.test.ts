@@ -13,28 +13,32 @@ function ymd(d: Date | null): string | null {
   return `${y}-${m}-${day}`;
 }
 
-void test('buildWorkloadDays skips the weekend when picking the next 2 named weekdays', () => {
-  // 2026-08-20 is a Thursday: the next 2 weekdays after Friday should skip
-  // Sat/Sun and land on Monday, Tuesday.
+void test('buildWorkloadDays skips the weekend when picking the next 4 named weekdays', () => {
+  // 2026-08-20 is a Thursday: the next 4 weekdays after Friday should skip
+  // Sat/Sun and land on Monday, Tuesday, Wednesday, Thursday.
   const days = buildWorkloadDays(new Date('2026-08-20T08:00:00'));
   assert.deepEqual(
     days.map((d) => d.key),
-    ['today', 'tomorrow', 'day2', 'day3', 'nextweek'],
+    ['today', 'tomorrow', 'day2', 'day3', 'day4', 'day5', 'nextweek'],
   );
   assert.equal(ymd(days[0].date), '2026-08-20'); // today (Thu)
   assert.equal(ymd(days[1].date), '2026-08-21'); // tomorrow (Fri)
   assert.equal(ymd(days[2].date), '2026-08-24'); // day2 (Mon, skipping the weekend)
   assert.equal(ymd(days[3].date), '2026-08-25'); // day3 (Tue)
+  assert.equal(ymd(days[4].date), '2026-08-26'); // day4 (Wed)
+  assert.equal(ymd(days[5].date), '2026-08-27'); // day5 (Thu)
   assert.equal(days[2].label, 'Monday');
   assert.equal(days[3].label, 'Tuesday');
+  assert.equal(days[4].label, 'Wednesday');
+  assert.equal(days[5].label, 'Thursday');
 });
 
-void test('the nextweek bucket is a 7-day range starting the day after day3, not a concrete date', () => {
+void test('the nextweek bucket is a 7-day range starting the day after day5, not a concrete date', () => {
   const days = buildWorkloadDays(new Date('2026-08-20T08:00:00'));
   const nextWeek = days.find((d) => d.key === 'nextweek')!;
   assert.equal(nextWeek.date, null);
-  assert.equal(ymd(nextWeek.rangeStart), '2026-08-26');
-  assert.equal(ymd(nextWeek.rangeEnd), '2026-09-02');
+  assert.equal(ymd(nextWeek.rangeStart), '2026-08-28');
+  assert.equal(ymd(nextWeek.rangeEnd), '2026-09-04');
 });
 
 void test('starting from a Friday, the "tomorrow" bucket skips the weekend too and means the next workday (Monday)', () => {
