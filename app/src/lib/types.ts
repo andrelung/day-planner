@@ -81,6 +81,13 @@ export interface ConflictItem {
   hours: number;
 }
 
+/// An optional action shown alongside a toast — "Retry" on a load failure,
+/// "Undo" on most task-mutating actions.
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 /// A queued Asana write — set due time, set estimate, etc. — being applied
 /// by the background worker instead of blocking the action that queued it.
 /// See Settings' "Pending & Failed Actions".

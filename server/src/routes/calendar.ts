@@ -147,6 +147,16 @@ calendarRouter.post('/events/:eventId/ignore', async (req, res) => {
   res.status(204).end();
 });
 
+/// Reverses the above — the Undo action on the "Ignored" toast. A no-op if
+/// nothing was ever ignored (nothing to reverse), rather than an error.
+calendarRouter.post('/events/:eventId/unignore', async (req, res) => {
+  await prisma.calendarEventLink.updateMany({
+    where: { userId: req.userId!, externalEventId: req.params.eventId },
+    data: { ignored: false },
+  });
+  res.status(204).end();
+});
+
 const addTaskSchema = z.object({
   title: z.string().min(1),
   target: z.union([z.object({ projectGid: z.string().min(1) }), z.object({ parentGid: z.string().min(1) })]),

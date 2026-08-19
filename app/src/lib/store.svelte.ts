@@ -8,6 +8,7 @@ import type {
   Provider,
   Screen,
   Task,
+  ToastAction,
   WorkloadDay,
 } from './types';
 import { api, ApiError } from './api';
@@ -202,17 +203,28 @@ class PlannerStore {
   }
 
   // --- toast ---
-  showToast(msg: string) {
+  toastAction: ToastAction | null = $state(null);
+  /// `action` gets its own longer window (5s vs 2.6s) since it takes a
+  /// moment to notice there's something to tap, on top of reading the
+  /// message itself.
+  showToast(msg: string, action?: ToastAction) {
     clearTimeout(toastTimer);
     this.toastMsg = msg;
+    this.toastAction = action ?? null;
     toastTimer = setTimeout(() => {
       this.toastMsg = null;
-    }, 2600);
+      this.toastAction = null;
+    }, action ? 5000 : 2600);
+  }
+  dismissToast() {
+    clearTimeout(toastTimer);
+    this.toastMsg = null;
+    this.toastAction = null;
   }
 
-  private reportError(err: unknown, fallback: string) {
+  private reportError(err: unknown, fallback: string, action?: ToastAction) {
     const msg = err instanceof ApiError ? err.message : fallback;
-    this.showToast(msg);
+    this.showToast(msg, action);
   }
 
   // --- boot ---
@@ -309,7 +321,7 @@ class PlannerStore {
       await this.streamTasks();
       localStorage.setItem('lastTaskCount', String(this.tasks.length));
     } catch (err) {
-      this.reportError(err, 'Could not load tasks from Asana');
+      this.reportError(err, 'Could not load tasks from Asana', { label: 'Retry', onClick: () => void this.bootRefreshTasks() });
       // Land on Triage with whatever (possibly nothing) came in rather than
       // leaving the user stuck on the loading screen after a failure.
       if (this.screen === 'loading') this.screen = 'triage';
@@ -432,16 +444,25 @@ class PlannerStore {
     localStorage.setItem('installBannerDismissed', '1');
   }
 
+  /// Re-fetches tasks fresh from Asana — used after returning from
+  /// backgrounding the app (e.g. tapping a task's Asana link and coming
+  /// back; there's a good chance its name, time, or estimate changed over
+  /// there) as well as anywhere else that wants an authoritative resync.
+  /// Re-sorting can shift the focused task to a different array index, so
+  /// this re-points focusIndex at the same task by id afterward rather
+  /// than leaving it as a raw number that might now land on something else.
   async refreshTasks() {
     if (!this.asanaConnected) return;
+    const focusId = this.focusTaskRaw?.id ?? null;
     try {
       const res = await api.get<{ tasks: Task[]; tasksWithoutDueDate: Task[]; projects: Project[] }>('/api/tasks');
       this.tasks = res.tasks;
       this.tasksWithoutDueDate = res.tasksWithoutDueDate;
       this.projects = res.projects;
+      if (focusId) this.selectFocus(focusId);
       if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     } catch (err) {
-      this.reportError(err, 'Could not load tasks from Asana');
+      this.reportError(err, 'Could not load tasks from Asana', { label: 'Retry', onClick: () => void this.refreshTasks() });
     }
   }
 
@@ -608,15 +629,24 @@ class PlannerStore {
   /// block on N Asana writes; check Settings' pending-actions lookup (or
   /// just refresh) to see them actually land.
   async resetToday() {
-    const gids = this.tasksDueToday.filter((t) => t.dueAt).map((t) => t.id);
-    if (gids.length === 0) {
+    const targets = this.tasksDueToday.filter((t): t is Task & { dueAt: string } => !!t.dueAt).map((t) => ({ id: t.id, previousDueAt: t.dueAt }));
+    if (targets.length === 0) {
       this.showToast('No tasks scheduled today');
       return;
     }
     try {
-      const res = await api.post<{ queued: number }>('/api/tasks/reset-day', { taskGids: gids });
-      await Promise.all([this.refreshTasks(), this.refreshWorkload()]);
-      this.showToast(`Queued ${res.queued} task${res.queued === 1 ? '' : 's'} to reset`);
+      const res = await api.post<{ queued: number }>('/api/tasks/reset-day', { taskGids: targets.map((t) => t.id) });
+      for (const t of targets) this.setTaskDueDateLocally(t.id, null);
+      this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+      this.showToast(`Queued ${res.queued} task${res.queued === 1 ? '' : 's'} to reset`, {
+        label: 'Undo',
+        onClick: () => {
+          for (const t of targets) {
+            this.setTaskDueDateLocally(t.id, t.previousDueAt);
+            this.enqueueDueAtFireAndForget(t.id, t.previousDueAt);
+          }
+        },
+      });
     } catch (err) {
       this.reportError(err, 'Could not reset today');
     }
@@ -863,32 +893,51 @@ class PlannerStore {
     return this.tasks.filter((t) => t.id !== excludeTaskId && t.dueAt === dueAtIso).map((t) => ({ name: t.name, hours: t.hours }));
   }
 
-  /// Updates a task's due fields in local state to match what the write
-  /// below will (eventually) make true server-side — the same slicing the
-  /// server itself uses (see asana.ts's toRemoteTask), so this stays
-  /// consistent with what a real refresh would show. Also handles a task
-  /// coming from the "Tasks without Due Date" backlog review
-  /// (reviewingBacklog) — it isn't in `tasks` at all yet, so planning it
-  /// moves it from tasksWithoutDueDate into tasks, matching what a real
-  /// refresh would do once it actually has a due date.
-  private applyOptimisticDueAt(taskId: string, dueAtIso: string | null) {
-    const idx = this.tasks.findIndex((t) => t.id === taskId);
-    if (idx !== -1) {
-      const updated: Task = {
-        ...this.tasks[idx],
-        dueAt: dueAtIso,
-        dueOn: dueAtIso ? dueAtIso.slice(0, 10) : null,
-        dueHour: dueAtIso ? dueAtIso.slice(11, 16) : null,
-        doubled: false,
-      };
-      this.tasks = [...this.tasks.slice(0, idx), updated, ...this.tasks.slice(idx + 1)];
-      return;
-    }
-    if (!dueAtIso) return;
-    const backlogTask = this.tasksWithoutDueDate.find((t) => t.id === taskId);
-    if (!backlogTask) return;
+  /// The one place local state changes to reflect a due-date write —
+  /// setting one (the task moves into `tasks` if it wasn't there yet, e.g.
+  /// planning a "Tasks without Due Date" backlog item) or clearing one
+  /// entirely (the task moves into `tasksWithoutDueDate`, since no due date
+  /// at all takes it out of the server's queue too — see taskQueue.ts and
+  /// setTaskDueAt's "clears due_at *and* due_on" behavior). Symmetric by
+  /// construction: calling it again with the previous value is exactly
+  /// what undoing any of these actions needs.
+  private setTaskDueDateLocally(taskId: string, dueAtIso: string | null) {
+    const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
+    if (!existing) return;
+    const updated: Task = {
+      ...existing,
+      dueAt: dueAtIso,
+      dueOn: dueAtIso ? dueAtIso.slice(0, 10) : null,
+      dueHour: dueAtIso ? dueAtIso.slice(11, 16) : null,
+      doubled: false,
+    };
+    this.tasks = this.tasks.filter((t) => t.id !== taskId);
     this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
-    this.tasks = [...this.tasks, { ...backlogTask, dueAt: dueAtIso, dueOn: dueAtIso.slice(0, 10), dueHour: dueAtIso.slice(11, 16), doubled: false }];
+    if (dueAtIso) this.tasks = [...this.tasks, updated];
+    else this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, updated];
+  }
+
+  /// Undo needs to restore a task's exact previous state, not just its
+  /// previous `dueAt` — a task due today with no specific *time* (common:
+  /// most tasks enter the queue this way) has `dueAt: null` but `dueOn`
+  /// set, which setTaskDueDateLocally alone can't tell apart from "no due
+  /// date at all" (also dueAt: null). This restores both fields directly.
+  /// The one thing it can't do is push a date-only restore to Asana itself
+  /// — setTaskDueAt only ever writes a full instant or clears both fields
+  /// entirely, it has no "due_on without due_at" mode — so that specific
+  /// case (undoing a plan made on a date-only task) only fixes the local
+  /// view; the actual Asana due_at stays whatever the undone action set.
+  /// Every other case (restoring a real previous time, or restoring "no
+  /// due date at all") writes through normally.
+  private restoreTaskDueFieldsLocally(taskId: string, previousDueOn: string | null, previousDueAt: string | null) {
+    const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
+    if (!existing) return;
+    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? previousDueAt.slice(11, 16) : null, doubled: false };
+    this.tasks = this.tasks.filter((t) => t.id !== taskId);
+    this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
+    if (previousDueOn) this.tasks = [...this.tasks, updated];
+    else this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, updated];
+    if (previousDueAt || !previousDueOn) this.enqueueDueAtFireAndForget(taskId, previousDueAt);
   }
 
   /// Fires the actual Asana write without making the caller wait on it —
@@ -921,15 +970,26 @@ class PlannerStore {
   /// queue until the user leaves and returns to Triage (see
   /// justPlannedIds), and fire the actual write in the background — all of
   /// which makes the screen close the instant you tap, not once Asana
-  /// confirms.
+  /// confirms. The toast's Undo restores the task's previous due date
+  /// (also fired in the background) and jumps focus back to it.
   private commitPlanLocally(task: Task, dueAtIso: string, toastMsg: string, dayKey: string) {
-    this.applyOptimisticDueAt(task.id, dueAtIso);
+    const previousDueOn = task.dueOn;
+    const previousDueAt = task.dueAt;
+    this.setTaskDueDateLocally(task.id, dueAtIso);
     if (!this.justPlannedIds.includes(task.id)) this.justPlannedIds = [...this.justPlannedIds, task.id];
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
     this.screen = 'triage';
-    this.showToast(toastMsg);
     this.bumpWorkloadLocally(dayKey, task.hours);
     this.enqueueDueAtFireAndForget(task.id, dueAtIso);
+    this.showToast(toastMsg, {
+      label: 'Undo',
+      onClick: () => {
+        this.restoreTaskDueFieldsLocally(task.id, previousDueOn, previousDueAt);
+        this.justPlannedIds = this.justPlannedIds.filter((id) => id !== task.id);
+        this.bumpWorkloadLocally(dayKey, -task.hours);
+        this.selectFocus(task.id);
+      },
+    });
   }
 
   /// Drag-to-move on the day calendar (see DayCalendar.svelte) — moves a
@@ -940,14 +1000,21 @@ class PlannerStore {
   /// around the task actually being planned, not an incidental drag
   /// elsewhere on the day.
   moveOtherTask(taskId: string, date: string, hhmm: string): boolean {
+    const task = this.tasks.find((t) => t.id === taskId);
+    if (!task) return false;
     const dueAtIso = this.toIsoDateTime(date, hhmm);
     if (this.findConflicts(dueAtIso, taskId).length) {
       this.showToast('That time is already taken');
       return false;
     }
-    this.applyOptimisticDueAt(taskId, dueAtIso);
-    this.showToast(`Moved to ${hhmm} · syncing to Asana`);
+    const previousDueOn = task.dueOn;
+    const previousDueAt = task.dueAt;
+    this.setTaskDueDateLocally(taskId, dueAtIso);
     this.enqueueDueAtFireAndForget(taskId, dueAtIso);
+    this.showToast(`Moved to ${hhmm} · syncing to Asana`, {
+      label: 'Undo',
+      onClick: () => this.restoreTaskDueFieldsLocally(taskId, previousDueOn, previousDueAt),
+    });
     return true;
   }
   /// Clearing a due date entirely takes a task out of deriveQueue's queue
@@ -955,12 +1022,16 @@ class PlannerStore {
   /// optimistic update here moves it out of `tasks` into
   /// `tasksWithoutDueDate` rather than just updating it in place.
   clearOtherTaskDueDate(taskId: string): void {
-    const t = this.tasks.find((x) => x.id === taskId);
-    if (!t) return;
-    this.tasks = this.tasks.filter((x) => x.id !== taskId);
-    this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, { ...t, dueAt: null, dueOn: null, dueHour: null, doubled: false }];
-    this.showToast('Due time cleared · syncing to Asana');
+    const task = this.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const previousDueOn = task.dueOn;
+    const previousDueAt = task.dueAt;
+    this.setTaskDueDateLocally(taskId, null);
     this.enqueueDueAtFireAndForget(taskId, null);
+    this.showToast('Due time cleared · syncing to Asana', {
+      label: 'Undo',
+      onClick: () => this.restoreTaskDueFieldsLocally(taskId, previousDueOn, previousDueAt),
+    });
   }
 
   tryPlanTodaySlot(slot: string) {
@@ -1042,11 +1113,18 @@ class PlannerStore {
   removeDueDate() {
     const task = this.focusTaskRaw;
     if (!task || !task.dueOn) return; // already has no due date (e.g. reviewing the backlog) — nothing to remove
-    this.tasks = this.tasks.filter((t) => t.id !== task.id);
-    this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, { ...task, dueAt: null, dueOn: null, dueHour: null, doubled: false }];
+    const previousDueOn = task.dueOn;
+    const previousDueAt = task.dueAt;
+    this.setTaskDueDateLocally(task.id, null);
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
-    this.showToast(`Removed due date on "${task.name}" · syncing to Asana`);
     this.enqueueDueAtFireAndForget(task.id, null);
+    this.showToast(`Removed due date on "${task.name}" · syncing to Asana`, {
+      label: 'Undo',
+      onClick: () => {
+        this.restoreTaskDueFieldsLocally(task.id, previousDueOn, previousDueAt);
+        this.selectFocus(task.id);
+      },
+    });
   }
 
   async selectLaterDay(key: string) {
@@ -1287,11 +1365,20 @@ class PlannerStore {
   /// gone across reloads.
   async ignoreEvent(eventId: string) {
     const ev = this.events.find((e) => e.id === eventId);
+    if (!ev) return;
     try {
       await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/ignore`, {});
       this.events = this.events.filter((e) => e.id !== eventId);
       this.closeEventPopup();
-      if (ev) this.showToast(`Ignored "${ev.title}"`);
+      this.showToast(`Ignored "${ev.title}"`, {
+        label: 'Undo',
+        onClick: () => {
+          this.events = [...this.events, ev];
+          api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/unignore`, {}).catch((err) => {
+            this.reportError(err, 'Could not restore this event');
+          });
+        },
+      });
     } catch (err) {
       this.reportError(err, 'Could not ignore this event');
     }
