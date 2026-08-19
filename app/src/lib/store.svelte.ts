@@ -168,6 +168,57 @@ class PlannerStore {
     await Promise.all([this.refreshTasks(), this.refreshWorkload()]);
     this.focusIndex = 0;
     this.screen = 'triage';
+    this.maybeShowIosInstallBanner();
+  }
+
+  // --- install banner ---
+  // Chrome/Edge/Android fire beforeinstallprompt (captured as early as
+  // possible in main.ts, before this store's UI even exists, in case it
+  // fires immediately on load) and support a real programmatic install
+  // prompt. iOS Safari never fires that event at all — "Add to Home
+  // Screen" only exists as a manual Share-sheet action — so that path is
+  // detected separately and just shows instructions instead of a button.
+  // Either way the banner only renders once the user reaches Triage
+  // (main.ts sets planner.screen via boot() before this can show), not on
+  // first load, and a dismissal is remembered so it never nags again.
+  private installPromptEvent: { prompt(): void; userChoice: Promise<{ outcome: string }> } | null = null;
+  showInstallBanner = $state(false);
+  installBannerKind: 'android' | 'ios' | null = $state(null);
+
+  private isStandalone(): boolean {
+    return window.matchMedia?.('(display-mode: standalone)').matches || (navigator as unknown as { standalone?: boolean }).standalone === true;
+  }
+  private installDismissed(): boolean {
+    return localStorage.getItem('installBannerDismissed') === '1';
+  }
+
+  captureInstallPrompt(e: { prompt(): void; userChoice: Promise<{ outcome: string }> }) {
+    this.installPromptEvent = e;
+    if (this.isStandalone() || this.installDismissed()) return;
+    this.installBannerKind = 'android';
+    this.showInstallBanner = true;
+  }
+  onAppInstalled() {
+    this.showInstallBanner = false;
+    this.installPromptEvent = null;
+  }
+  private maybeShowIosInstallBanner() {
+    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    if (!isIos || this.isStandalone() || this.installDismissed()) return;
+    this.installBannerKind = 'ios';
+    this.showInstallBanner = true;
+  }
+  async promptInstall() {
+    if (!this.installPromptEvent) return;
+    this.installPromptEvent.prompt();
+    await this.installPromptEvent.userChoice;
+    this.installPromptEvent = null;
+    this.showInstallBanner = false;
+    localStorage.setItem('installBannerDismissed', '1');
+  }
+  dismissInstallBanner() {
+    this.showInstallBanner = false;
+    localStorage.setItem('installBannerDismissed', '1');
   }
 
   async refreshTasks() {
@@ -399,6 +450,28 @@ class PlannerStore {
   }
   closeOverview() {
     this.screen = 'triage';
+  }
+
+  /// Clicking a day (or the aggregate "Next week" row) in Overview jumps the
+  /// triage queue to the earliest task due that day/week — goNext() from
+  /// there naturally continues on to later due dates since `tasks` is
+  /// already sorted ascending by due date.
+  focusQueueForDay(day: WorkloadDay) {
+    const rangeStart = day.date ? new Date(day.date) : day.rangeStart ? new Date(day.rangeStart) : null;
+    const rangeEnd = day.date ? new Date(new Date(day.date).getTime() + 86_400_000) : day.rangeEnd ? new Date(day.rangeEnd) : null;
+    if (!rangeStart || !rangeEnd) return;
+
+    const matches = this.tasks
+      .filter((t): t is Task & { dueAt: string } => !!t.dueAt && new Date(t.dueAt) >= rangeStart && new Date(t.dueAt) < rangeEnd)
+      .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+
+    if (!matches.length) {
+      this.showToast(`No tasks due ${day.label}`);
+      return;
+    }
+    const idx = this.tasks.findIndex((t) => t.id === matches[0].id);
+    if (idx >= 0) this.focusIndex = idx;
+    this.closeOverview();
   }
 
   get laterDays() {

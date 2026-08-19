@@ -89,6 +89,8 @@ Day Planner ships a web app manifest and icons (`app/public/manifest.webmanifest
 2. Tap the **⋮** menu in the top-right.
 3. Tap **Add to Home screen** (or **Install app**, if Chrome already recognized it as installable) → **Install** / **Add**.
 
+The app also prompts for this itself: once you reach the main Triage screen (not on first load), a dismissible banner offers to install — a real one-tap **Install** button on Chrome/Edge/Android (via `beforeinstallprompt`, captured as early as possible in `main.ts`), or Share-sheet instructions on iOS Safari (which never fires that event — "Add to Home Screen" is a manual gesture there). It never appears if the app is already running standalone, and dismissing it is remembered (`localStorage`) so it doesn't nag on every visit.
+
 Either way you get a real navy-and-yellow app icon and a standalone window — no browser chrome, just like a native app. Note this only affects how the page is *presented*; it's still the same web app hitting the same backend, not an offline-capable PWA (no service worker/caching is set up, so it still needs network access to `/api` each time, same as the browser tab).
 
 ## Testing

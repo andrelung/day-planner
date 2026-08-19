@@ -11,7 +11,7 @@ tasksRouter.use(requireAuth);
 
 tasksRouter.get('/', async (req, res) => {
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-  const raw = await listIncompleteAssignedTasks(accessToken);
+  const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true });
   const queued = deriveQueue(raw);
 
   const projects = new Map<string, string>();
@@ -26,6 +26,7 @@ tasksRouter.get('/', async (req, res) => {
       project: t.project,
       hours: t.hours,
       dueHour: t.dueHour,
+      dueAt: t.dueAt,
       doubled: t.doubled,
       permalinkUrl: t.permalinkUrl,
     })),

@@ -55,6 +55,8 @@ workloadRouter.get('/', async (req, res) => {
       key: d.key,
       label: d.label,
       date: d.date ? d.date.toISOString().slice(0, 10) : null,
+      rangeStart: d.rangeStart ? d.rangeStart.toISOString() : null,
+      rangeEnd: d.rangeEnd ? d.rangeEnd.toISOString() : null,
       planned: Math.round(planned * 10) / 10,
       capacity: Math.round(capacity * 10) / 10,
     };

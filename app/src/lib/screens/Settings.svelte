@@ -94,6 +94,7 @@
     border-radius: var(--radius-md);
     outline: none;
     width: 100%;
+    box-sizing: border-box;
   }
   .ds-select select:focus {
     border-color: var(--color-brand-primary);

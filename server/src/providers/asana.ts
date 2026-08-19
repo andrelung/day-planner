@@ -155,9 +155,15 @@ interface AsanaTaskDto {
   due_at: string | null;
   permalink_url: string;
   projects: { gid: string; name: string }[];
+  parent: { gid: string; name: string; projects?: { gid: string; name: string }[] } | null;
 }
 
-const TASK_OPT_FIELDS = 'name,due_on,due_at,permalink_url,projects.gid,projects.name';
+// parent.projects.* is a best-effort one-level-deep lookahead — a subtask's
+// immediate parent is usually the one that actually sits in a project, so
+// this resolves the common case for free in the same request. Deeper
+// nesting (subtask of a subtask) falls back to live lookups in
+// resolveBreadcrumbs below.
+const TASK_OPT_FIELDS = 'name,due_on,due_at,permalink_url,projects.gid,projects.name,parent.gid,parent.name,parent.projects.gid,parent.projects.name';
 
 function toRemoteTask(dto: AsanaTaskDto): RemoteTask & { projectGid: string | null } {
   const dueHour = dto.due_at ? dto.due_at.slice(11, 16) : null;
@@ -175,6 +181,65 @@ function toRemoteTask(dto: AsanaTaskDto): RemoteTask & { projectGid: string | nu
   };
 }
 
+/// Asana subtasks don't belong to a project directly — only their top-level
+/// ancestor does — so a subtask's `projects` field comes back empty and
+/// otherwise shows as "No project" even though it clearly belongs
+/// somewhere. This walks up the parent chain (deduped/cached across tasks,
+/// since siblings usually share a parent) until it finds an ancestor that's
+/// actually in a project, and rewrites `task.project` to a breadcrumb trail
+/// like "Marketing Site › Q3 Campaign › Design Review".
+async function resolveBreadcrumbs(
+  accessToken: string,
+  entries: { dto: AsanaTaskDto; task: RemoteTask & { projectGid: string | null } }[],
+): Promise<void> {
+  const known = new Map<string, AsanaTaskDto>(entries.map((e) => [e.dto.gid, e.dto]));
+  const fetching = new Map<string, Promise<AsanaTaskDto | null>>();
+  const fetchNode = (gid: string): Promise<AsanaTaskDto | null> => {
+    const cached = known.get(gid);
+    if (cached) return Promise.resolve(cached);
+    let p = fetching.get(gid);
+    if (!p) {
+      p = asanaFetch(accessToken, `/tasks/${gid}?opt_fields=name,projects.gid,projects.name,parent.gid,parent.name`)
+        .then((node: AsanaTaskDto) => {
+          known.set(gid, node);
+          return node;
+        })
+        .catch(() => null);
+      fetching.set(gid, p);
+    }
+    return p;
+  };
+
+  await Promise.all(
+    entries.map(async ({ dto, task }) => {
+      if (dto.projects?.length || !dto.parent) return;
+      if (dto.parent.projects?.length) {
+        task.project = `${dto.parent.projects[0].name} › ${dto.parent.name}`;
+        return;
+      }
+      const chain = [dto.parent.name];
+      let currentGid: string | null = dto.parent.gid;
+      let projectName: string | null = null;
+      // Capped depth: a real ancestry this deep would be unusual, and this
+      // guards against ever looping indefinitely on bad/cyclic data.
+      for (let depth = 0; depth < 5 && currentGid; depth++) {
+        const node = await fetchNode(currentGid);
+        if (!node) break;
+        if (node.projects?.length) {
+          projectName = node.projects[0].name;
+          break;
+        }
+        if (!node.parent) break;
+        chain.push(node.parent.name);
+        currentGid = node.parent.gid;
+      }
+      // chain was built closest-ancestor-first while walking up; a
+      // breadcrumb reads root-to-leaf, so flip it before joining.
+      if (projectName) task.project = [projectName, ...chain.reverse()].join(' › ');
+    }),
+  );
+}
+
 export async function listWorkspaces(accessToken: string): Promise<{ gid: string; name: string }[]> {
   const me = await asanaFetch(accessToken, '/users/me?opt_fields=workspaces.gid,workspaces.name');
   return me.workspaces ?? [];
@@ -182,15 +247,25 @@ export async function listWorkspaces(accessToken: string): Promise<{ gid: string
 
 /// Fetches every incomplete task assigned to the caller, across all of their
 /// workspaces. Asana's API requires querying one workspace at a time.
-export async function listIncompleteAssignedTasks(accessToken: string): Promise<(RemoteTask & { projectGid: string | null })[]> {
+/// `withBreadcrumbs` resolves subtasks' project via their parent chain (see
+/// resolveBreadcrumbs) — opt-in and off by default since it can mean extra
+/// Asana API calls, so latency-sensitive callers that don't display the
+/// project (slot-conflict checks, free-slot busy calculations) can skip it.
+export async function listIncompleteAssignedTasks(
+  accessToken: string,
+  options?: { withBreadcrumbs?: boolean },
+): Promise<(RemoteTask & { projectGid: string | null })[]> {
   const workspaces = await listWorkspaces(accessToken);
-  const all: (RemoteTask & { projectGid: string | null })[] = [];
+  const entries: { dto: AsanaTaskDto; task: RemoteTask & { projectGid: string | null } }[] = [];
   for (const ws of workspaces) {
     const path = `/tasks?assignee=me&workspace=${ws.gid}&completed_since=now&opt_fields=${TASK_OPT_FIELDS}`;
     const tasks = (await asanaFetchAllPages(accessToken, path)) as AsanaTaskDto[];
-    all.push(...tasks.map(toRemoteTask));
+    for (const dto of tasks) entries.push({ dto, task: toRemoteTask(dto) });
   }
-  return all;
+  if (options?.withBreadcrumbs) {
+    await resolveBreadcrumbs(accessToken, entries);
+  }
+  return entries.map((e) => e.task);
 }
 
 export async function setTaskDueAt(accessToken: string, taskGid: string, dueAtIso: string | null, timezone: string): Promise<void> {

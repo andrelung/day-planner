@@ -54,6 +54,7 @@
     outline: none;
     transition: border-color var(--duration-fast) var(--ease-standard);
     width: 100%;
+    box-sizing: border-box;
   }
   input:focus {
     border-color: var(--color-brand-primary);

@@ -65,8 +65,8 @@
 
   <div class="content">
     <div class="section-label">Workload by day</div>
-    {#each overviewDays as d}
-      <div class="day-row">
+    {#each overviewDays as d, i}
+      <button class="day-row" onclick={() => planner.focusQueueForDay(planner.workloadDays[i])}>
         <div class="day-row__top">
           <div class="day-row__label">{d.label}</div>
           <div class="day-row__hours" style="color:{d.textColor};">{d.hoursLabel}</div>
@@ -74,7 +74,7 @@
         <div class="day-row__track">
           <div class="day-row__fill" style="width:{d.barWidth}; background:{d.barColor};"></div>
         </div>
-      </div>
+      </button>
     {/each}
 
     <div class="section-label" style="margin-top:22px;">From your calendar</div>
@@ -153,7 +153,19 @@
     margin: 10px 0 8px;
   }
   .day-row {
+    display: block;
+    width: 100%;
     padding: 10px 0;
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .day-row:active {
+    opacity: 0.6;
   }
   .day-row__top {
     display: flex;
