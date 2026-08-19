@@ -11,22 +11,29 @@ export const tasksRouter = Router();
 tasksRouter.use(requireAuth);
 
 function buildTasksPayload(raw: (RemoteTask & { projectGid: string | null })[]) {
+  // Tasks with no due date at all don't belong in the swipeable triage
+  // queue (see taskQueue.ts) — surfaced separately instead, e.g. under
+  // "Tasks without Due Date" on the Overview screen.
+  const withoutDueDate = raw.filter((t) => t.dueOn === null);
   const queued = deriveQueue(raw);
   const projects = new Map<string, string>();
   for (const t of raw) {
     if (t.projectGid) projects.set(t.projectGid, t.project);
   }
+  const toTaskDto = (t: RemoteTask & { doubled?: boolean }) => ({
+    id: t.gid,
+    name: t.name,
+    project: t.project,
+    hours: t.hours,
+    dueHour: t.dueHour,
+    dueAt: t.dueAt,
+    dueOn: t.dueOn,
+    doubled: t.doubled ?? false,
+    permalinkUrl: t.permalinkUrl,
+  });
   return {
-    tasks: queued.map((t) => ({
-      id: t.gid,
-      name: t.name,
-      project: t.project,
-      hours: t.hours,
-      dueHour: t.dueHour,
-      dueAt: t.dueAt,
-      doubled: t.doubled,
-      permalinkUrl: t.permalinkUrl,
-    })),
+    tasks: queued.map(toTaskDto),
+    tasksWithoutDueDate: withoutDueDate.map(toTaskDto),
     projects: [...projects.entries()].map(([gid, name]) => ({ gid, name })),
   };
 }
@@ -110,6 +117,28 @@ tasksRouter.patch('/:gid', async (req, res) => {
   }
 
   res.status(204).end();
+});
+
+const resetDaySchema = z.object({ taskGids: z.array(z.string().min(1)).min(1) });
+
+/// Clears due_at (and due_on, per setTaskDueAt's existing "remove due date"
+/// behavior) for a caller-supplied set of tasks — used by Settings' "Reset
+/// today's plan". The frontend already knows exactly which of its loaded
+/// tasks are due today (same data queueLabel's x/y count is built from), so
+/// it sends those gids directly rather than the server re-deriving "today's
+/// tasks" via another full Asana fetch. Each task's un-scheduling is logged
+/// to the change log same as any other due-date removal (see setTaskDueAt).
+tasksRouter.post('/reset-day', async (req, res) => {
+  const parsed = resetDaySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const settings = await getOrCreateSettings(req.userId!);
+  const results = await Promise.allSettled(parsed.data.taskGids.map((gid) => setTaskDueAt(accessToken, gid, null, settings.timezone)));
+  const cleared = results.filter((r) => r.status === 'fulfilled').length;
+  res.json({ cleared, failed: results.length - cleared });
 });
 
 const createSchema = z.union([

@@ -17,5 +17,9 @@ export interface RemoteTask {
   /// ISO datetime this task is due, for queue sorting and doubled-slot
   /// detection — null when there's no due_at.
   dueAt: string | null;
+  /// "YYYY-MM-DD", set whenever there's any due date at all (with or
+  /// without a time) — Asana always populates this alongside due_at, so
+  /// it's the reliable "is this due on day X at all" check.
+  dueOn: string | null;
   permalinkUrl: string;
 }

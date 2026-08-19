@@ -8,9 +8,11 @@ function fmtTime(d: Date): string {
 }
 
 /// Computes open slots for one day within the employee's preferred working
-/// hours, treating each calendar event (padded by `bufferMinutes` on both
-/// sides for setup/context-switch time) as unavailable. Returned as
-/// "HH:MM–HH:MM" labels chunked to `slotMinutes`, matching the UI's slot list.
+/// hours, treating each calendar event as unavailable through `end +
+/// bufferMinutes` — wrap-up/context-switch time *after* something finishes,
+/// not preparation time before it starts, so nothing is padded before a
+/// block's own start. Returned as "HH:MM–HH:MM" labels chunked to
+/// `slotMinutes`, matching the UI's slot list.
 export function computeFreeSlots(
   day: Date,
   prefStartTime: string,
@@ -29,7 +31,7 @@ export function computeFreeSlots(
 
   const bufMs = bufferMinutes * 60_000;
   const padded = busy
-    .map((b) => ({ start: new Date(b.start.getTime() - bufMs), end: new Date(b.end.getTime() + bufMs) }))
+    .map((b) => ({ start: b.start, end: new Date(b.end.getTime() + bufMs) }))
     .sort((a, b) => a.start.getTime() - b.start.getTime());
 
   const merged: BusyBlock[] = [];

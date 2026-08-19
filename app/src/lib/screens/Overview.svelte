@@ -10,6 +10,7 @@
     barWidth: string;
     barColor: string;
     textColor: string;
+    active: boolean;
   }
 
   const overviewDays = $derived<DayRow[]>(
@@ -22,6 +23,7 @@
         barWidth: Math.min(100, ratio * 100) + '%',
         barColor: over ? 'var(--color-feedback-wrong)' : 'var(--color-feedback-correct)',
         textColor: over ? 'var(--color-feedback-wrong)' : 'var(--color-text-muted)',
+        active: d.date === planner.activeDayDateStr,
       };
     }),
   );
@@ -33,6 +35,8 @@
   }
 
   const query = $derived(planner.searchQuery.trim().toLowerCase());
+
+  let showNoDueDate = $state(false);
 
   function resultsFor(eventId: string, mode: 'add' | 'link' | null): SearchResult[] {
     if (mode === 'add') {
@@ -66,7 +70,7 @@
   <div class="content">
     <div class="section-label">Workload by day</div>
     {#each overviewDays as d, i}
-      <button class="day-row" onclick={() => planner.focusQueueForDay(planner.workloadDays[i])}>
+      <button class="day-row" class:day-row--active={d.active} onclick={() => planner.focusQueueForDay(planner.workloadDays[i])}>
         <div class="day-row__top">
           <div class="day-row__label">{d.label}</div>
           <div class="day-row__hours" style="color:{d.textColor};">{d.hoursLabel}</div>
@@ -76,6 +80,25 @@
         </div>
       </button>
     {/each}
+
+    {#if planner.tasksWithoutDueDate.length > 0}
+      <button class="day-row" onclick={() => (showNoDueDate = !showNoDueDate)}>
+        <div class="day-row__top">
+          <div class="day-row__label">Tasks without Due Date</div>
+          <div class="day-row__hours" style="color:var(--color-text-muted);">{planner.tasksWithoutDueDate.length}</div>
+        </div>
+      </button>
+      {#if showNoDueDate}
+        <div class="no-due-date-list">
+          {#each planner.tasksWithoutDueDate as t (t.id)}
+            <button class="search-result" onclick={() => planner.openAsana(t)}>
+              <div class="search-result__label">{t.name}</div>
+              <div class="search-result__type">{t.project}</div>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    {/if}
 
     <div class="section-label" style="margin-top:22px;">From your calendar</div>
     {#each planner.events as e (e.id)}
@@ -167,6 +190,19 @@
   .day-row:active {
     opacity: 0.6;
   }
+  .day-row--active .day-row__label {
+    color: var(--color-brand-primary);
+  }
+  .day-row--active .day-row__label::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-brand-primary);
+    margin-right: 7px;
+    vertical-align: middle;
+  }
   .day-row__top {
     display: flex;
     align-items: center;
@@ -193,6 +229,11 @@
   .day-row__fill {
     height: 100%;
     border-radius: 999px;
+  }
+  .no-due-date-list {
+    margin: -4px 0 10px;
+    padding-left: 4px;
+    border-left: 2px solid var(--color-border);
   }
   .event-row {
     padding: 10px 0;

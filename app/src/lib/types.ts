@@ -30,6 +30,10 @@ export interface Task {
   /// Full ISO instant (UTC), unlike dueHour's display-only "HH:MM" — used to
   /// figure out which calendar day/week a task actually falls on.
   dueAt: string | null;
+  /// "YYYY-MM-DD", set whenever there's any due date at all (with or
+  /// without a time) — used for "how many tasks are due today" counts,
+  /// distinct from dueAt which is null unless a specific time is set too.
+  dueOn: string | null;
   doubled: boolean;
   permalinkUrl: string;
 }

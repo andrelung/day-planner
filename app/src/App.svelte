@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { planner } from './lib/store.svelte';
   import Toast from './lib/components/Toast.svelte';
+  import Celebration from './lib/components/Celebration.svelte';
   import Icon from './lib/components/Icon.svelte';
   import Login from './lib/screens/Login.svelte';
   import LoginSecondary from './lib/screens/LoginSecondary.svelte';
@@ -97,6 +98,11 @@
       <BreakConfirm />
     {/if}
     <Toast />
+    {#if planner.celebrationKey > 0}
+      {#key planner.celebrationKey}
+        <Celebration />
+      {/key}
+    {/if}
   </div>
 </div>
 

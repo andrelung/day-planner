@@ -19,14 +19,16 @@
   {#if label}
     <span class="ds-input__label">{label}</span>
   {/if}
-  <input
-    {type}
-    {value}
-    {placeholder}
-    {disabled}
-    class:center
-    oninput={handleInput}
-  />
+  <div class="ds-input__field">
+    <input
+      {type}
+      {value}
+      {placeholder}
+      {disabled}
+      class:center
+      oninput={handleInput}
+    />
+  </div>
 </label>
 
 <style>
@@ -36,14 +38,21 @@
     gap: 6px;
     font-family: var(--font-family-base);
     width: 100%;
+    min-width: 0;
   }
   .ds-input__label {
     font-size: 14px;
     font-weight: var(--font-weight-bold);
     color: var(--color-text-primary);
   }
-  input {
+  .ds-input__field {
+    position: relative;
     height: 44px;
+    width: 100%;
+  }
+  input {
+    position: absolute;
+    inset: 0;
     padding: 0 14px;
     font-family: var(--font-family-base);
     font-size: 16px;
@@ -54,7 +63,21 @@
     outline: none;
     transition: border-color var(--duration-fast) var(--ease-standard);
     width: 100%;
+    min-width: 0;
     box-sizing: border-box;
+  }
+  /* iOS Safari ties box-sizing:border-box to whether the control still has
+     its native appearance: for input[type=time/date], the OS-drawn widget
+     forced box-sizing to content-box no matter what this rule said, and it
+     also kept its own pill-shaped chrome regardless of our border/radius —
+     confirmed on-device (getComputedStyle reported content-box, 392px
+     rendered in a 362px field). Stripping the appearance fixes both at
+     once: the box now honors border-box like every other field here, so it
+     needs no width compensation, same as text/number/select never did. */
+  input[type='time'],
+  input[type='date'] {
+    -webkit-appearance: none;
+    appearance: none;
   }
   input:focus {
     border-color: var(--color-brand-primary);

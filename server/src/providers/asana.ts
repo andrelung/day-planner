@@ -178,6 +178,7 @@ function toRemoteTask(dto: AsanaTaskDto): RemoteTask & { projectGid: string | nu
     hours: parseDurationFromTitle(dto.name) ?? 1,
     dueHour,
     dueAt: dto.due_at,
+    dueOn: dto.due_on,
     permalinkUrl: dto.permalink_url,
   };
 }

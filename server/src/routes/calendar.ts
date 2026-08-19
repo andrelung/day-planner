@@ -6,7 +6,7 @@ import { getValidAccessToken } from '../lib/tokens.js';
 import { computeFreeSlots } from '../lib/freeSlots.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { listEvents } from '../providers/outlook.js';
-import { createSubtask, createTaskInProject, listIncompleteAssignedTasks } from '../providers/asana.js';
+import { createSubtask, createTaskInProject } from '../providers/asana.js';
 
 export const calendarRouter = Router();
 calendarRouter.use(requireAuth);
@@ -49,17 +49,36 @@ calendarRouter.get('/events', async (req, res) => {
   });
 });
 
-// GET /api/calendar/free-slots?date=YYYY-MM-DD&excludeTaskGid=...
-// Busy time = Outlook events that day (if connected) + this user's other
-// Asana tasks already due that day (if connected), each padded by the
-// buffer-between-tasks setting.
+const freeSlotsQuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  // Duration of the task being planned — slots are chunked to exactly this
+  // size (not a fixed 30 minutes), so every returned slot is actually big
+  // enough to hold the task.
+  hours: z.coerce.number().positive().max(200),
+  // The caller's OTHER tasks already due this day (excluding the one being
+  // planned), as `[{dueAt, hours}]` JSON — the frontend already has its
+  // full task list loaded (fetched once at boot), so it can filter this
+  // down to same-day tasks itself. This avoids re-fetching and
+  // re-paginating the user's *entire* Asana backlog on every free-slots
+  // lookup, which used to be the dominant cost of this endpoint on a large
+  // workspace (real numbers: ~4-10s+ for a ~2000-task backlog, every time
+  // "Plan for this day" was opened). This is a suggestion list, not the
+  // final commit — PATCH /api/tasks/:gid still does its own authoritative
+  // conflict check against live Asana data before actually writing a due
+  // date, so trusting client-supplied data here is safe.
+  busyTasks: z.string().optional(),
+});
+
+// GET /api/calendar/free-slots?date=YYYY-MM-DD&hours=1.5&busyTasks=...
+// Busy time = Outlook events that day (if connected) + the caller-supplied
+// same-day Asana tasks, each padded by the buffer-between-tasks setting.
 calendarRouter.get('/free-slots', async (req, res) => {
-  const dateStr = typeof req.query.date === 'string' ? req.query.date : null;
-  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    res.status(400).json({ error: 'date query param (YYYY-MM-DD) is required' });
+  const parsed = freeSlotsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const excludeTaskGid = typeof req.query.excludeTaskGid === 'string' ? req.query.excludeTaskGid : null;
+  const { date: dateStr, hours, busyTasks } = parsed.data;
   const day = new Date(`${dateStr}T00:00:00`);
   const dayEnd = new Date(day.getTime() + 86_400_000);
 
@@ -67,29 +86,29 @@ calendarRouter.get('/free-slots', async (req, res) => {
 
   const busy: { start: Date; end: Date }[] = [];
 
-  const [asanaAccount, outlookAccount] = await Promise.all([
-    prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId: req.userId!, provider: 'ASANA' } } }),
-    prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId: req.userId!, provider: 'OUTLOOK' } } }),
-  ]);
-
+  const outlookAccount = await prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId: req.userId!, provider: 'OUTLOOK' } } });
   if (outlookAccount) {
     const accessToken = await getValidAccessToken(req.userId!, 'OUTLOOK');
     const events = await listEvents(accessToken, day, dayEnd);
     busy.push(...events.map((e) => ({ start: e.start, end: e.end })));
   }
-  if (asanaAccount) {
-    const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-    const tasks = await listIncompleteAssignedTasks(accessToken);
-    for (const t of tasks) {
-      if (!t.dueAt || t.gid === excludeTaskGid) continue;
-      const due = new Date(t.dueAt);
-      if (due >= day && due < dayEnd) {
-        busy.push({ start: due, end: new Date(due.getTime() + t.hours * 3_600_000) });
+
+  if (busyTasks) {
+    try {
+      const others = JSON.parse(busyTasks) as { dueAt: string; hours: number }[];
+      for (const t of others) {
+        const due = new Date(t.dueAt);
+        if (due >= day && due < dayEnd) {
+          busy.push({ start: due, end: new Date(due.getTime() + t.hours * 3_600_000) });
+        }
       }
+    } catch {
+      // malformed — treat as no other same-day tasks rather than failing
+      // the whole request over a display-only suggestion list.
     }
   }
 
-  const slots = computeFreeSlots(day, settings.prefStartTime, settings.prefEndTime, settings.bufferMinutes, busy);
+  const slots = computeFreeSlots(day, settings.prefStartTime, settings.prefEndTime, settings.bufferMinutes, busy, Math.round(hours * 60));
   res.json({ slots });
 });
 

@@ -34,6 +34,10 @@ class PlannerStore {
   outlookAccountLabel: string | null = $state(null);
 
   tasks: Task[] = $state([]);
+  /// Tasks with no due date at all — excluded from `tasks` (the swipeable
+  /// triage loop) entirely, surfaced instead via "Tasks without Due Date"
+  /// on the Overview screen.
+  tasksWithoutDueDate: Task[] = $state([]);
   projects: Project[] = $state([]);
   focusIndex = $state(0);
 
@@ -77,6 +81,12 @@ class PlannerStore {
 
   toastMsg: string | null = $state(null);
 
+  /// Bumped (never reset) each time a day gets fully planned, so the UI can
+  /// key a confetti burst off it — incrementing rather than a boolean means
+  /// two celebrations back-to-back both restart the animation instead of the
+  /// second one being a no-op because "celebrating" was already true.
+  celebrationKey = $state(0);
+
   // --- derived ---
   get focusTaskRaw(): Task | null {
     return this.tasks.length > 0 ? this.tasks[this.focusIndex] : null;
@@ -98,10 +108,42 @@ class PlannerStore {
     const t = this.todayWorkload;
     return t ? `${t.planned}/${t.capacity}h` : '';
   }
+  private get todayDateStr(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
+  /// Tasks due today, by Asana's due date (dueOn — set whether or not a
+  /// specific time is attached), independent of the "unplanned if no time"
+  /// triage-queue rule elsewhere in the app.
+  private get tasksDueToday(): Task[] {
+    const todayStr = this.todayDateStr;
+    return this.tasks.filter((t) => t.dueOn === todayStr);
+  }
+  /// The "day" the queue is currently working through, driven by whichever
+  /// task is focused rather than hardcoded to literal today — so the header
+  /// and Overview's highlight follow you as you swipe into tomorrow's tasks
+  /// or jump around. An overdue task's own due date is clamped up to today:
+  /// there's nothing to plan in the past, so it's treated as today's problem
+  /// (see resetToday's inverse case: only *today's* tasks get reset).
+  get activeDayDateStr(): string {
+    const todayStr = this.todayDateStr;
+    const focusDueOn = this.focusTaskRaw?.dueOn;
+    if (!focusDueOn || focusDueOn < todayStr) return todayStr;
+    return focusDueOn;
+  }
+  private get tasksForActiveDay(): Task[] {
+    const active = this.activeDayDateStr;
+    const todayStr = this.todayDateStr;
+    return this.tasks.filter((t) => (t.dueOn && t.dueOn < todayStr ? todayStr : t.dueOn) === active);
+  }
   get queueLabel() {
     if (!this.hasFocusTask) return '';
-    const dateLabel = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
-    return `${dateLabel} - ${this.focusIndex + 1}/${this.tasks.length} Tasks planned`;
+    const active = this.activeDayDateStr;
+    const namedDay = this.workloadDays.find((d) => d.date === active);
+    const dateLabel = namedDay ? namedDay.label : new Date(`${active}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+    const dueThatDay = this.tasksForActiveDay;
+    const withTime = dueThatDay.filter((t) => t.dueAt).length;
+    return `${dateLabel} - ${withTime}/${dueThatDay.length} Tasks planned`;
   }
   get chosenDayLabel() {
     if (this.laterDayKey === 'custom') return this.customDayLabel;
@@ -198,6 +240,7 @@ class PlannerStore {
     try {
       const res = await this.streamTasks();
       this.tasks = res.tasks;
+      this.tasksWithoutDueDate = res.tasksWithoutDueDate;
       this.projects = res.projects;
       if (this.focusIndex >= this.tasks.length) this.focusIndex = Math.max(0, this.tasks.length - 1);
       localStorage.setItem('lastTaskCount', String(this.tasks.length));
@@ -206,7 +249,7 @@ class PlannerStore {
     }
   }
 
-  private streamTasks(): Promise<{ tasks: Task[]; projects: Project[] }> {
+  private streamTasks(): Promise<{ tasks: Task[]; tasksWithoutDueDate: Task[]; projects: Project[] }> {
     return new Promise((resolve, reject) => {
       const es = new EventSource('/api/tasks/stream');
       es.addEventListener('progress', (e) => {
@@ -295,8 +338,9 @@ class PlannerStore {
   async refreshTasks() {
     if (!this.asanaConnected) return;
     try {
-      const res = await api.get<{ tasks: Task[]; projects: Project[] }>('/api/tasks');
+      const res = await api.get<{ tasks: Task[]; tasksWithoutDueDate: Task[]; projects: Project[] }>('/api/tasks');
       this.tasks = res.tasks;
+      this.tasksWithoutDueDate = res.tasksWithoutDueDate;
       this.projects = res.projects;
       if (this.focusIndex >= this.tasks.length) this.focusIndex = Math.max(0, this.tasks.length - 1);
     } catch (err) {
@@ -402,6 +446,25 @@ class PlannerStore {
     void this.patchSettings({ timezone: v });
   }
 
+  /// "Reset today's plan" in Settings — un-schedules every task due today
+  /// that has a specific due *time* (tasks due today with only a date and
+  /// no time have nothing to reset). Confirmed by the caller before this
+  /// runs, since it's a bulk, hard-to-undo-by-hand action.
+  async resetToday() {
+    const gids = this.tasksDueToday.filter((t) => t.dueAt).map((t) => t.id);
+    if (gids.length === 0) {
+      this.showToast('No tasks scheduled today');
+      return;
+    }
+    try {
+      const res = await api.post<{ cleared: number; failed: number }>('/api/tasks/reset-day', { taskGids: gids });
+      await Promise.all([this.refreshTasks(), this.refreshWorkload()]);
+      this.showToast(res.failed > 0 ? `Cleared ${res.cleared}, ${res.failed} failed` : `Cleared ${res.cleared} task${res.cleared === 1 ? '' : 's'}`);
+    } catch (err) {
+      this.reportError(err, 'Could not reset today');
+    }
+  }
+
   // --- login / provider-connect links ---
   // These are real hrefs (not window.location.href set from a click
   // handler) so the login buttons render as genuine <a> tags: on iOS,
@@ -468,14 +531,34 @@ class PlannerStore {
     this.screen = 'planToday';
   }
 
+  /// Builds the free-slots query string: the target date, the duration the
+  /// slots should be sized to (not a fixed 30 minutes — see freeSlots.ts),
+  /// and this user's OTHER tasks already due that day (excluding
+  /// `excludeId`, typically the task being planned). `tasks` is already
+  /// loaded client-side (fetched once at boot), so sending the relevant
+  /// slice here means the server doesn't have to re-fetch and re-paginate
+  /// the user's entire Asana backlog just to find same-day conflicts —
+  /// that redundant fetch was the dominant cost of this endpoint on a
+  /// large workspace.
+  private freeSlotsQuery(date: string, hours: number, excludeId: string): string {
+    const dayStart = new Date(`${date}T00:00:00`);
+    const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+    const busyTasks = this.tasks
+      .filter((t) => t.id !== excludeId && t.dueAt)
+      .filter((t) => {
+        const due = new Date(t.dueAt!);
+        return due >= dayStart && due < dayEnd;
+      })
+      .map((t) => ({ dueAt: t.dueAt, hours: t.hours }));
+    return `date=${date}&hours=${hours}&busyTasks=${encodeURIComponent(JSON.stringify(busyTasks))}`;
+  }
+
   private async loadTodaySlots() {
     const date = this.dateFor('today');
     const focus = this.focusTaskRaw;
     if (!date || !focus) return;
     try {
-      const res = await api.get<{ slots: string[] }>(
-        `/api/calendar/free-slots?date=${date}&excludeTaskGid=${encodeURIComponent(focus.id)}`,
-      );
+      const res = await api.get<{ slots: string[] }>(`/api/calendar/free-slots?${this.freeSlotsQuery(date, focus.hours, focus.id)}`);
       this.planTodaySlots = res.slots;
     } catch (err) {
       this.reportError(err, 'Could not load free slots');
@@ -609,9 +692,7 @@ class PlannerStore {
     const focus = this.focusTaskRaw;
     if (!date || !focus) return;
     try {
-      const res = await api.get<{ slots: string[] }>(
-        `/api/calendar/free-slots?date=${date}&excludeTaskGid=${encodeURIComponent(focus.id)}`,
-      );
+      const res = await api.get<{ slots: string[] }>(`/api/calendar/free-slots?${this.freeSlotsQuery(date, focus.hours, focus.id)}`);
       this.laterSlots = res.slots;
     } catch (err) {
       this.reportError(err, 'Could not load free slots');
@@ -630,7 +711,7 @@ class PlannerStore {
       this.screen = 'slotConflict';
       return;
     }
-    await this.afterCommit(`Planned "${task.name}" for ${this.chosenDayLabel} at ${slot} · due date synced to Asana`);
+    await this.afterCommit(`Planned "${task.name}" for ${this.chosenDayLabel} at ${slot} · due date synced to Asana`, dayKey);
   }
 
   async resolveConflictAnyway() {
@@ -645,7 +726,7 @@ class PlannerStore {
       const ok = await this.commitDueAt(task.id, dueAtIso, true);
       if (ok) {
         const label = p.kind === 'today' ? 'today' : this.chosenDayLabel;
-        await this.afterCommit(`Planned "${task.name}" for ${label} at ${p.slot} · synced to Asana (double-booked)`);
+        await this.afterCommit(`Planned "${task.name}" for ${label} at ${p.slot} · synced to Asana (double-booked)`, dayKey);
       }
     } else if (p.kind === 'break') {
       await this.commitBreak(p.slot, true);
@@ -662,11 +743,17 @@ class PlannerStore {
     else if (p.kind === 'break') this.screen = 'breakTime';
   }
 
-  private async afterCommit(toastMsg: string) {
+  /// `dayKey` is whichever WorkloadDay bucket the just-committed task landed
+  /// in — 'today' for the common case, but tryPlanLaterSlot/resolveConflict
+  /// pass the actual target so planning into tomorrow (etc.) can trigger the
+  /// celebration too, not just today.
+  private async afterCommit(toastMsg: string, dayKey: string = 'today') {
     this.showToast(toastMsg);
     await Promise.all([this.refreshTasks(), this.refreshWorkload()]);
     this.focusIndex = 0;
     this.screen = 'triage';
+    const day = this.workloadDays.find((d) => d.key === dayKey);
+    if (day && day.capacity > 0 && day.planned >= day.capacity) this.celebrationKey++;
   }
 
   async removeDueDate() {
@@ -767,9 +854,25 @@ class PlannerStore {
   }
   async continueBreakName() {
     if (!this.breakNameDraft.trim()) return;
-    await this.loadTodaySlots();
-    this.breakTimeSlots = this.planTodaySlots;
+    await this.loadBreakTimeSlots();
     this.screen = 'breakTime';
+  }
+
+  // Its own loader rather than reusing loadTodaySlots()/planTodaySlots:
+  // duration for a split-off part isn't chosen until the *next* screen
+  // (breakDuration), so slots here are sized to the current breakDuration
+  // default (1h, set in startBreak()) rather than the parent task's own
+  // (likely much larger) hours.
+  private async loadBreakTimeSlots() {
+    const date = this.dateFor('today');
+    const parent = this.focusTaskRaw;
+    if (!date || !parent) return;
+    try {
+      const res = await api.get<{ slots: string[] }>(`/api/calendar/free-slots?${this.freeSlotsQuery(date, this.breakDuration, parent.id)}`);
+      this.breakTimeSlots = res.slots;
+    } catch (err) {
+      this.reportError(err, 'Could not load free slots');
+    }
   }
   backToBreakName() {
     this.screen = 'breakName';

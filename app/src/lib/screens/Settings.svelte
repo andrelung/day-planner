@@ -26,17 +26,27 @@
     />
     <label class="ds-select">
       <span class="ds-select__label">Timezone</span>
-      <select value={planner.timezone} onchange={(e) => planner.onTimezoneChange((e.target as HTMLSelectElement).value)}>
-        {#each timezones as tz (tz)}
-          <option value={tz}>{tz}</option>
-        {/each}
-      </select>
+      <div class="ds-select__field">
+        <select value={planner.timezone} onchange={(e) => planner.onTimezoneChange((e.target as HTMLSelectElement).value)}>
+          {#each timezones as tz (tz)}
+            <option value={tz}>{tz}</option>
+          {/each}
+        </select>
+      </div>
     </label>
     <button class="row" onclick={() => planner.openIntegrations()}>
       <div class="row__label">Asana &amp; Outlook</div>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
         ><polyline points="9 18 15 12 9 6"></polyline></svg
       >
+    </button>
+    <button
+      class="row"
+      onclick={() => {
+        if (confirm("Remove today's due times from all of today's tasks? They'll go back to unplanned.")) planner.resetToday();
+      }}
+    >
+      <div class="row__label row__label--danger">Reset today's plan</div>
     </button>
     <div class="more-to-come">More to come</div>
   </div>
@@ -66,6 +76,7 @@
   .content {
     padding: 12px 20px;
     flex: 1;
+    min-width: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -83,8 +94,15 @@
     font-weight: var(--font-weight-bold);
     color: var(--color-text-primary);
   }
-  .ds-select select {
+  .ds-select__field {
+    position: relative;
     height: 44px;
+    width: 100%;
+  }
+  .ds-select select {
+    /* Anchored the same way as Input.svelte's input (see its comment). */
+    position: absolute;
+    inset: 0;
     padding: 0 14px;
     font-family: var(--font-family-base);
     font-size: 16px;
@@ -118,6 +136,9 @@
     font-weight: var(--font-weight-bold);
     font-size: 15px;
     color: var(--color-text-primary);
+  }
+  .row__label--danger {
+    color: var(--color-feedback-wrong);
   }
   .more-to-come {
     font-family: var(--font-family-base);
