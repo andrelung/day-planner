@@ -6,6 +6,7 @@ import { deriveQueue } from '../lib/taskQueue.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { enqueueAction } from '../lib/pendingActionQueue.js';
 import { createSubtask, createTaskInProject, listIncompleteAssignedTasks } from '../providers/asana.js';
+import type { DueUpdate } from '../providers/asana.js';
 import type { RemoteTask } from '../providers/types.js';
 
 export const tasksRouter = Router();
@@ -83,6 +84,14 @@ tasksRouter.get('/stream', async (req, res) => {
 const patchSchema = z
   .object({
     dueAt: z.string().datetime().nullable().optional(),
+    // Only meaningful when dueAt is explicitly null — "due this date, no
+    // specific time" (the common state a fresh Asana task starts in)
+    // rather than "no due date at all". See DueUpdate in providers/asana.ts.
+    dueOn: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
     hours: z.number().min(0).max(200).optional(),
     // The task's current clean (bracket-stripped) title, as already held by
     // the frontend — needed to rebuild "<name> [<hours>]" without a round trip.
@@ -104,16 +113,13 @@ tasksRouter.patch('/:gid', async (req, res) => {
     return;
   }
   const { gid } = req.params;
-  const { dueAt, hours, name } = parsed.data;
+  const { dueAt, dueOn, hours, name } = parsed.data;
   const settings = await getOrCreateSettings(req.userId!);
 
   if (dueAt !== undefined) {
-    await enqueueAction(req.userId!, dueAt ? "Set a task's due time" : "Clear a task's due time", {
-      kind: 'setTaskDueAt',
-      taskGid: gid,
-      dueAtIso: dueAt ?? null,
-      timezone: settings.timezone,
-    });
+    const due: DueUpdate = dueAt ? { kind: 'instant', dueAt } : dueOn ? { kind: 'dateOnly', dueOn } : { kind: 'clear' };
+    const label = due.kind === 'instant' ? "Set a task's due time" : due.kind === 'dateOnly' ? "Set a task's due date" : "Clear a task's due time";
+    await enqueueAction(req.userId!, label, { kind: 'setTaskDueAt', taskGid: gid, due, timezone: settings.timezone });
   }
 
   if (hours !== undefined) {
@@ -148,7 +154,7 @@ tasksRouter.post('/reset-day', async (req, res) => {
   const settings = await getOrCreateSettings(req.userId!);
   await Promise.all(
     parsed.data.taskGids.map((gid) =>
-      enqueueAction(req.userId!, "Clear a task's due time", { kind: 'setTaskDueAt', taskGid: gid, dueAtIso: null, timezone: settings.timezone }),
+      enqueueAction(req.userId!, "Clear a task's due time", { kind: 'setTaskDueAt', taskGid: gid, due: { kind: 'clear' }, timezone: settings.timezone }),
     ),
   );
   res.json({ queued: parsed.data.taskGids.length });

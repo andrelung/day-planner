@@ -643,7 +643,7 @@ class PlannerStore {
         onClick: () => {
           for (const t of targets) {
             this.setTaskDueDateLocally(t.id, t.previousDueAt);
-            this.enqueueDueAtFireAndForget(t.id, t.previousDueAt);
+            this.enqueueDueWrite(t.id, t.previousDueAt);
           }
         },
       });
@@ -921,14 +921,9 @@ class PlannerStore {
   /// previous `dueAt` — a task due today with no specific *time* (common:
   /// most tasks enter the queue this way) has `dueAt: null` but `dueOn`
   /// set, which setTaskDueDateLocally alone can't tell apart from "no due
-  /// date at all" (also dueAt: null). This restores both fields directly.
-  /// The one thing it can't do is push a date-only restore to Asana itself
-  /// — setTaskDueAt only ever writes a full instant or clears both fields
-  /// entirely, it has no "due_on without due_at" mode — so that specific
-  /// case (undoing a plan made on a date-only task) only fixes the local
-  /// view; the actual Asana due_at stays whatever the undone action set.
-  /// Every other case (restoring a real previous time, or restoring "no
-  /// due date at all") writes through normally.
+  /// date at all" (also dueAt: null). This restores both fields directly,
+  /// and writes through as a genuine "date only" update when that's the
+  /// state being restored — see enqueueDueWrite.
   private restoreTaskDueFieldsLocally(taskId: string, previousDueOn: string | null, previousDueAt: string | null) {
     const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
     if (!existing) return;
@@ -937,7 +932,7 @@ class PlannerStore {
     this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
     if (previousDueOn) this.tasks = [...this.tasks, updated];
     else this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, updated];
-    if (previousDueAt || !previousDueOn) this.enqueueDueAtFireAndForget(taskId, previousDueAt);
+    this.enqueueDueWrite(taskId, previousDueAt, previousDueOn);
   }
 
   /// Fires the actual Asana write without making the caller wait on it —
@@ -945,9 +940,15 @@ class PlannerStore {
   /// (pendingActionQueue.ts) regardless, so there's nothing left worth
   /// blocking the UI on. Errors (e.g. a genuinely dropped connection, not
   /// the write's own retries — those are the queue's problem) still surface
-  /// as a toast.
-  private enqueueDueAtFireAndForget(taskId: string, dueAtIso: string | null) {
-    api.patch(`/api/tasks/${encodeURIComponent(taskId)}`, { dueAt: dueAtIso }).catch((err) => {
+  /// as a toast. `dueOn` only matters when `dueAt` is null: it distinguishes
+  /// "due this date, no specific time" from "no due date at all" — see
+  /// DueUpdate in the server's asana.ts. Every forward-planning call site
+  /// only ever sets a real instant or clears entirely, so they can omit it;
+  /// only restoreTaskDueFieldsLocally (undo) ever needs to pass it.
+  private enqueueDueWrite(taskId: string, dueAtIso: string | null, dueOn?: string | null) {
+    const body: { dueAt: string | null; dueOn?: string | null } = { dueAt: dueAtIso };
+    if (!dueAtIso && dueOn) body.dueOn = dueOn;
+    api.patch(`/api/tasks/${encodeURIComponent(taskId)}`, body).catch((err) => {
       this.reportError(err, 'Could not update the task in Asana');
     });
   }
@@ -980,7 +981,7 @@ class PlannerStore {
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
     this.screen = 'triage';
     this.bumpWorkloadLocally(dayKey, task.hours);
-    this.enqueueDueAtFireAndForget(task.id, dueAtIso);
+    this.enqueueDueWrite(task.id, dueAtIso);
     this.showToast(toastMsg, {
       label: 'Undo',
       onClick: () => {
@@ -1010,7 +1011,7 @@ class PlannerStore {
     const previousDueOn = task.dueOn;
     const previousDueAt = task.dueAt;
     this.setTaskDueDateLocally(taskId, dueAtIso);
-    this.enqueueDueAtFireAndForget(taskId, dueAtIso);
+    this.enqueueDueWrite(taskId, dueAtIso);
     this.showToast(`Moved to ${hhmm} · syncing to Asana`, {
       label: 'Undo',
       onClick: () => this.restoreTaskDueFieldsLocally(taskId, previousDueOn, previousDueAt),
@@ -1027,7 +1028,7 @@ class PlannerStore {
     const previousDueOn = task.dueOn;
     const previousDueAt = task.dueAt;
     this.setTaskDueDateLocally(taskId, null);
-    this.enqueueDueAtFireAndForget(taskId, null);
+    this.enqueueDueWrite(taskId, null);
     this.showToast('Due time cleared · syncing to Asana', {
       label: 'Undo',
       onClick: () => this.restoreTaskDueFieldsLocally(taskId, previousDueOn, previousDueAt),
@@ -1117,7 +1118,7 @@ class PlannerStore {
     const previousDueAt = task.dueAt;
     this.setTaskDueDateLocally(task.id, null);
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
-    this.enqueueDueAtFireAndForget(task.id, null);
+    this.enqueueDueWrite(task.id, null);
     this.showToast(`Removed due date on "${task.name}" · syncing to Asana`, {
       label: 'Undo',
       onClick: () => {
@@ -1306,7 +1307,7 @@ class PlannerStore {
         return;
       }
     }
-    this.enqueueDueAtFireAndForget(created.gid, dueAtIso);
+    this.enqueueDueWrite(created.gid, dueAtIso);
 
     try {
       await api.patch(`/api/tasks/${encodeURIComponent(created.gid)}`, { hours: dur, name });

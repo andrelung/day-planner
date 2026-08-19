@@ -1,9 +1,9 @@
 import { prisma } from './prisma.js';
 import { getValidAccessToken } from './tokens.js';
-import { setTaskDueAt, setTaskHours } from '../providers/asana.js';
+import { setTaskDueAt, setTaskHours, type DueUpdate } from '../providers/asana.js';
 
 export type ActionPayload =
-  | { kind: 'setTaskDueAt'; taskGid: string; dueAtIso: string | null; timezone: string }
+  | { kind: 'setTaskDueAt'; taskGid: string; due: DueUpdate; timezone: string }
   | { kind: 'setTaskHours'; taskGid: string; name: string; hours: number; timezone: string };
 
 const MAX_ATTEMPTS = 5;
@@ -20,7 +20,7 @@ async function execute(userId: string, action: ActionPayload): Promise<void> {
   const accessToken = await getValidAccessToken(userId, 'ASANA');
   switch (action.kind) {
     case 'setTaskDueAt':
-      await setTaskDueAt(accessToken, action.taskGid, action.dueAtIso, action.timezone);
+      await setTaskDueAt(accessToken, action.taskGid, action.due, action.timezone);
       return;
     case 'setTaskHours':
       await setTaskHours(accessToken, action.taskGid, action.name, action.hours, action.timezone);

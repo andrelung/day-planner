@@ -288,17 +288,25 @@ export async function listIncompleteAssignedTasks(
   return entries.map((e) => e.task);
 }
 
-export async function setTaskDueAt(accessToken: string, taskGid: string, dueAtIso: string | null, timezone: string): Promise<void> {
-  const before = await asanaFetch(accessToken, `/tasks/${taskGid}?opt_fields=due_at,permalink_url`);
-  await asanaFetch(accessToken, `/tasks/${taskGid}`, {
-    method: 'PUT',
-    body: JSON.stringify({ data: dueAtIso ? { due_at: dueAtIso } : { due_at: null, due_on: null } }),
-  });
+/// Asana's due_at (a full instant) and due_on (a bare date) are independent
+/// task fields — 'dateOnly' sets due_on while explicitly clearing due_at,
+/// which is exactly the "due today, no specific time" state most tasks
+/// start in. Asana's update endpoint merges only the fields present in the
+/// request body (confirmed by setTaskHours below, which sends `name` alone
+/// without ever touching due_at/due_on), so each variant only needs to
+/// name the fields it actually wants to change.
+export type DueUpdate = { kind: 'instant'; dueAt: string } | { kind: 'dateOnly'; dueOn: string } | { kind: 'clear' };
+
+export async function setTaskDueAt(accessToken: string, taskGid: string, due: DueUpdate, timezone: string): Promise<void> {
+  const before = await asanaFetch(accessToken, `/tasks/${taskGid}?opt_fields=due_at,due_on,permalink_url`);
+  const data =
+    due.kind === 'instant' ? { due_at: due.dueAt } : due.kind === 'dateOnly' ? { due_on: due.dueOn, due_at: null } : { due_at: null, due_on: null };
+  await asanaFetch(accessToken, `/tasks/${taskGid}`, { method: 'PUT', body: JSON.stringify({ data }) });
   recordChange({
-    action: dueAtIso === null ? 'Remove due date' : before.due_at === null ? 'Set due date' : 'Reschedule',
+    action: due.kind === 'clear' ? 'Remove due date' : before.due_at === null && before.due_on === null ? 'Set due date' : 'Reschedule',
     taskLink: before.permalink_url,
-    dueBefore: before.due_at,
-    dueAfter: dueAtIso,
+    dueBefore: before.due_at ?? before.due_on,
+    dueAfter: due.kind === 'instant' ? due.dueAt : due.kind === 'dateOnly' ? due.dueOn : null,
     timezone,
   });
 }
