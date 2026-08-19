@@ -131,7 +131,10 @@ async function asanaFetch(accessToken: string, path: string, init?: RequestInit)
 /// a real workspace's incomplete-assigned-to-me count can easily exceed a
 /// single page (Asana caps a page at 100 and errors with "result is too
 /// large" rather than silently truncating).
-async function asanaFetchAllPages(accessToken: string, path: string, onPage?: (soFar: number) => void): Promise<any[]> {
+///
+/// `onPage` fires with each freshly-fetched page's own items (not a
+/// cumulative count) — the caller decides how to accumulate/report on them.
+async function asanaFetchAllPages(accessToken: string, path: string, onPage?: (page: any[]) => void): Promise<any[]> {
   const all: any[] = [];
   // Asana hands back a ready-to-use `next_page.uri` for the following page —
   // simpler and less error-prone than reconstructing offset/limit by hand.
@@ -143,7 +146,7 @@ async function asanaFetchAllPages(accessToken: string, path: string, onPage?: (s
     }
     const json = (await res.json()) as any;
     all.push(...json.data);
-    onPage?.(all.length);
+    onPage?.(json.data);
     url = json.next_page?.uri ?? null;
   }
   return all;
@@ -253,17 +256,31 @@ export async function listWorkspaces(accessToken: string): Promise<{ gid: string
 /// resolveBreadcrumbs) — opt-in and off by default since it can mean extra
 /// Asana API calls, so latency-sensitive callers that don't display the
 /// project (slot-conflict checks, free-slot busy calculations) can skip it.
+///
+/// `onBatch` fires after each page with everything fetched *so far*
+/// (cumulative, across workspaces) plus a running total — lets a caller
+/// like the boot-time stream hand the client a usable (if not yet fully
+/// breadcrumb-resolved) queue well before the whole fetch finishes, rather
+/// than making them wait for the entire — possibly paginated many times
+/// over — result.
 export async function listIncompleteAssignedTasks(
   accessToken: string,
-  options?: { withBreadcrumbs?: boolean; onProgress?: (count: number) => void },
+  options?: {
+    withBreadcrumbs?: boolean;
+    onBatch?: (tasksSoFar: (RemoteTask & { projectGid: string | null })[], totalSoFar: number) => void;
+  },
 ): Promise<(RemoteTask & { projectGid: string | null })[]> {
   const workspaces = await listWorkspaces(accessToken);
   const entries: { dto: AsanaTaskDto; task: RemoteTask & { projectGid: string | null } }[] = [];
   for (const ws of workspaces) {
     const path = `/tasks?assignee=me&workspace=${ws.gid}&completed_since=now&opt_fields=${TASK_OPT_FIELDS}`;
-    const alreadyFetched = entries.length;
-    const tasks = (await asanaFetchAllPages(accessToken, path, (soFar) => options?.onProgress?.(alreadyFetched + soFar))) as AsanaTaskDto[];
-    for (const dto of tasks) entries.push({ dto, task: toRemoteTask(dto) });
+    await asanaFetchAllPages(accessToken, path, (page: AsanaTaskDto[]) => {
+      for (const dto of page) entries.push({ dto, task: toRemoteTask(dto) });
+      options?.onBatch?.(
+        entries.map((e) => e.task),
+        entries.length,
+      );
+    });
   }
   if (options?.withBreadcrumbs) {
     await resolveBreadcrumbs(accessToken, entries);

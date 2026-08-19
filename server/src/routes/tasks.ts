@@ -44,15 +44,17 @@ tasksRouter.get('/', async (req, res) => {
   res.json(buildTasksPayload(raw));
 });
 
-/// Same result as GET / (used for the initial boot fetch specifically),
-/// but as an SSE stream emitting `progress` events with a running count as
-/// Asana's cursor-paginated /tasks pages come in, then one final `done`
-/// event with the full payload. A "crowded" workspace can mean dozens of
-/// pages plus per-subtask breadcrumb lookups, multi-second real work — this
-/// gives the loading screen something honest to show instead of a bare
-/// spinner. Other refreshes (after committing a plan, etc.) still use the
-/// plain GET / above; streaming is only worth the complexity for the
-/// long boot-time fetch.
+/// Same result as GET / (used for the initial boot fetch specifically), but
+/// as an SSE stream: each `progress` event carries a running count *and* a
+/// full, ready-to-render queue built from whatever's been fetched so far
+/// (via deriveQueue — cheap, no I/O), so the client can show tasks well
+/// before the whole (possibly many-paged, breadcrumb-resolving) fetch
+/// finishes, then one final `done` event with the fully-resolved payload.
+/// Early batches won't have subtasks' breadcrumb project names yet — those
+/// only get resolved once, over the complete set, right before `done`.
+/// Other refreshes (after committing a plan, etc.) still use the plain
+/// GET / above; streaming is only worth the complexity for the long
+/// boot-time fetch.
 tasksRouter.get('/stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -63,7 +65,9 @@ tasksRouter.get('/stream', async (req, res) => {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
     const raw = await listIncompleteAssignedTasks(accessToken, {
       withBreadcrumbs: true,
-      onProgress: (count) => res.write(`event: progress\ndata: ${JSON.stringify({ count })}\n\n`),
+      onBatch: (tasksSoFar, totalSoFar) => {
+        res.write(`event: progress\ndata: ${JSON.stringify({ count: totalSoFar, ...buildTasksPayload(tasksSoFar) })}\n\n`);
+      },
     });
     res.write(`event: done\ndata: ${JSON.stringify(buildTasksPayload(raw))}\n\n`);
   } catch (err) {

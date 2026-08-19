@@ -207,9 +207,10 @@ class PlannerStore {
   }
 
   private async enterTriage() {
-    await Promise.all([this.bootRefreshTasks(), this.refreshWorkload()]);
-    this.focusIndex = 0;
-    this.screen = 'triage';
+    // Workload doesn't gate entering triage — it fills in the header badges
+    // once it resolves, same as any other in-app refresh.
+    void this.refreshWorkload();
+    await this.bootRefreshTasks();
     this.maybeShowIosInstallBanner();
   }
 
@@ -220,6 +221,13 @@ class PlannerStore {
   // visibility into. Only the boot path uses this SSE variant; every other
   // refresh (after committing a plan, etc.) is fast enough in practice and
   // isn't shown on a loading screen anyway, so it keeps using the simple GET.
+  //
+  // Rather than wait for the whole (possibly large, breadcrumb-resolving)
+  // fetch to finish, each SSE `progress` event already carries a
+  // best-effort queue built from whatever's been fetched so far — as soon
+  // as the first one lands, boot jumps straight to Triage instead of
+  // sitting on the loading screen, and later events keep refining `tasks`
+  // in the background (see mergeIncomingTasks).
   loadingTasksCount = $state(0);
   loadingTasksEstimate: number | null = $state(null);
 
@@ -233,28 +241,59 @@ class PlannerStore {
   }
 
   private async bootRefreshTasks() {
-    if (!this.asanaConnected) return;
+    if (!this.asanaConnected) {
+      this.screen = 'triage';
+      return;
+    }
     this.loadingTasksCount = 0;
     const cached = localStorage.getItem('lastTaskCount');
     this.loadingTasksEstimate = cached ? parseInt(cached, 10) : null;
     try {
-      const res = await this.streamTasks();
-      this.tasks = res.tasks;
-      this.tasksWithoutDueDate = res.tasksWithoutDueDate;
-      this.projects = res.projects;
-      if (this.focusIndex >= this.tasks.length) this.focusIndex = Math.max(0, this.tasks.length - 1);
+      await this.streamTasks();
       localStorage.setItem('lastTaskCount', String(this.tasks.length));
     } catch (err) {
       this.reportError(err, 'Could not load tasks from Asana');
+      // Land on Triage with whatever (possibly nothing) came in rather than
+      // leaving the user stuck on the loading screen after a failure.
+      if (this.screen === 'loading') this.screen = 'triage';
     }
   }
 
-  private streamTasks(): Promise<{ tasks: Task[]; tasksWithoutDueDate: Task[]; projects: Project[] }> {
+  /// Applies one batch — a `progress` event's best-effort queue, or the
+  /// final `done` payload — from the boot-time task stream. The first call
+  /// jumps straight to Triage instead of waiting for the whole (possibly
+  /// large) fetch to finish. Every call after that preserves whatever's
+  /// already been shown up to and including the focused task — the user
+  /// may be mid-decision on it — and only re-sorts the tail the user
+  /// hasn't reached yet, so the queue never visibly reshuffles a task out
+  /// from under them; it just gets more complete/correct further ahead.
+  private applyTaskBatch(data: { tasks: Task[]; tasksWithoutDueDate: Task[]; projects: Project[] }) {
+    const focusId = this.focusTaskRaw?.id ?? null;
+    const focusIdx = focusId ? this.tasks.findIndex((t) => t.id === focusId) : -1;
+    if (focusIdx === -1) {
+      this.tasks = data.tasks;
+    } else {
+      const alreadyShown = this.tasks.slice(0, focusIdx + 1);
+      const shownIds = new Set(alreadyShown.map((t) => t.id));
+      this.tasks = [...alreadyShown, ...data.tasks.filter((t) => !shownIds.has(t.id))];
+    }
+    this.tasksWithoutDueDate = data.tasksWithoutDueDate;
+    this.projects = data.projects;
+    if (this.focusIndex >= this.tasks.length) this.focusIndex = Math.max(0, this.tasks.length - 1);
+    if (this.screen === 'loading') {
+      this.focusIndex = 0;
+      this.screen = 'triage';
+    }
+  }
+
+  private streamTasks(): Promise<void> {
     return new Promise((resolve, reject) => {
       const es = new EventSource('/api/tasks/stream');
       es.addEventListener('progress', (e) => {
         try {
-          this.loadingTasksCount = JSON.parse((e as MessageEvent).data).count;
+          const data = JSON.parse((e as MessageEvent).data);
+          this.loadingTasksCount = data.count;
+          this.applyTaskBatch(data);
         } catch {
           // malformed progress event — harmless, just skip this tick
         }
@@ -273,9 +312,10 @@ class PlannerStore {
       es.addEventListener('done', (e) => {
         es.close();
         try {
-          resolve(JSON.parse((e as MessageEvent).data));
+          this.applyTaskBatch(JSON.parse((e as MessageEvent).data));
+          resolve();
         } catch (err) {
-          reject(err);
+          reject(err as Error);
         }
       });
       es.onerror = () => {

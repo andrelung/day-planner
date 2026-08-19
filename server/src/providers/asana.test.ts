@@ -149,10 +149,12 @@ void test('listIncompleteAssignedTasks leaves subtasks as "No project" when with
   }
 });
 
-/// onProgress should report a running total across pages AND across
+/// onBatch should report a running total across pages AND across
 /// workspaces (not reset back to a per-page or per-workspace count), since
-/// the loading screen shows it as one cumulative "N tasks loaded" figure.
-void test('listIncompleteAssignedTasks reports a cumulative running count via onProgress', async () => {
+/// the loading screen shows it as one cumulative "N tasks loaded" figure —
+/// and each call's task list should be everything seen so far, not just
+/// the page that just arrived.
+void test('listIncompleteAssignedTasks reports a cumulative running count and task list via onBatch', async () => {
   const originalFetch = global.fetch;
 
   global.fetch = (async (url: string) => {
@@ -182,10 +184,17 @@ void test('listIncompleteAssignedTasks reports a cumulative running count via on
   }) as typeof fetch;
 
   try {
-    const progressCalls: number[] = [];
-    await listIncompleteAssignedTasks('fake-token', { onProgress: (count) => progressCalls.push(count) });
+    const progressCounts: number[] = [];
+    const progressGids: string[][] = [];
+    await listIncompleteAssignedTasks('fake-token', {
+      onBatch: (tasksSoFar, totalSoFar) => {
+        progressCounts.push(totalSoFar);
+        progressGids.push(tasksSoFar.map((t) => t.gid));
+      },
+    });
     // ws1 page1 -> 1, ws1 page2 -> 2, ws2 page1 -> 3: always cumulative, never resets.
-    assert.deepEqual(progressCalls, [1, 2, 3]);
+    assert.deepEqual(progressCounts, [1, 2, 3]);
+    assert.deepEqual(progressGids, [['t1'], ['t1', 't2'], ['t1', 't2', 't3']]);
   } finally {
     global.fetch = originalFetch;
   }
