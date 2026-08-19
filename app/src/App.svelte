@@ -79,7 +79,7 @@
             <Icon name="grid" size={26} color="var(--color-brand-primary)" />
             <div class="loading__ring"></div>
           </div>
-          <p>Loading your day…</p>
+          <p>{planner.bootStatus}</p>
           {#if planner.loadingProgressLabel}
             <p class="loading__progress">{planner.loadingProgressLabel}</p>
           {/if}

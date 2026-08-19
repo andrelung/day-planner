@@ -9,17 +9,18 @@
 
   const focusRaw = $derived(planner.focusTaskRaw);
   const hasFocusTask = $derived(planner.hasFocusTask);
-  const restTasks = $derived(hasFocusTask ? planner.tasks.filter((t) => t.id !== focusRaw!.id) : []);
+  const restTasks = $derived(hasFocusTask ? planner.queueTasks.filter((t) => t.id !== focusRaw!.id) : []);
 
   const badgeTone = $derived(focusRaw?.dueHour ? 'wrong' : 'neutral');
   const badgeLabel = $derived(focusRaw?.dueHour ? `Overdue · ${focusRaw.dueHour}` : 'Unplanned');
 
   const cardTransform = $derived(`translateX(${planner.dragX}px) rotate(${planner.dragX / 20}deg)`);
   const cardTransition = $derived(planner.dragging ? 'none' : 'transform 220ms cubic-bezier(0.4,0,0.2,1)');
-  const planTodayRevealOpacity = $derived(Math.max(0, Math.min(1, planner.dragX / 90)));
-  const planLaterRevealOpacity = $derived(Math.max(0, Math.min(1, -planner.dragX / 90)));
+  // Left = plan today, right = plan later (matches onCardPointerUp).
+  const planTodayRevealOpacity = $derived(Math.max(0, Math.min(1, -planner.dragX / 90)));
+  const planLaterRevealOpacity = $derived(Math.max(0, Math.min(1, planner.dragX / 90)));
 
-  const navDisabled = $derived(planner.tasks.length <= 1);
+  const navDisabled = $derived(planner.queueTasks.length <= 1);
 </script>
 
 <div class="screen">
@@ -161,8 +162,8 @@
           {/if}
 
           <div class="focus-card__actions">
-            <Button variant="secondary" size="md" fullWidth onclick={() => planner.openPlanLater()}>Plan later</Button>
             <Button variant="primary" size="md" fullWidth onclick={() => planner.openPlanToday()}>Plan today</Button>
+            <Button variant="secondary" size="md" fullWidth onclick={() => planner.openPlanLater()}>Plan later</Button>
           </div>
           <div class="focus-card__actions focus-card__actions--ghost">
             <Button variant="ghost" size="sm" fullWidth onclick={() => planner.startBreak()}>Split into a part</Button>

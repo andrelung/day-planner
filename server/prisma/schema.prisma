@@ -73,6 +73,12 @@ model Settings {
   /// IANA timezone name (e.g. "Europe/Berlin"), used to display due dates
   /// and change-log timestamps in the user's own local time instead of UTC.
   timezone       String   @default("UTC")
+  /// "Don't ask again for any day" from the day-full warning — skips that
+  /// screen entirely regardless of how over capacity a day is. The
+  /// per-day-only version of that dismissal is client-side (localStorage),
+  /// not here — it's a lighter-weight, session-ish preference that doesn't
+  /// need to be a real setting a user manages.
+  skipDayFullWarning Boolean @default(false)
   updatedAt      DateTime @updatedAt
 }
 

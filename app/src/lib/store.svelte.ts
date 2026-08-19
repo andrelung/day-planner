@@ -15,13 +15,31 @@ import { fmtHours } from './format';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
+/// Non-linear duration steps for every hours stepper in the app (estimate
+/// editing, split-into-a-part duration) — fine-grained near zero where the
+/// difference between e.g. 0.3h and 0.5h actually matters, coarsening as
+/// the value grows and that precision stops being useful.
+const HOUR_STEPS = [
+  0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1, 1.2, 1.5, 1.8, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40,
+];
+
+function stepHours(current: number, dir: 1 | -1, max = 40): number {
+  const steps = HOUR_STEPS.filter((v) => v <= max);
+  if (dir > 0) {
+    const next = steps.find((v) => v > current + 1e-9);
+    return next ?? steps[steps.length - 1];
+  }
+  const prev = [...steps].reverse().find((v) => v < current - 1e-9);
+  return prev ?? steps[0];
+}
+
 interface MeResponse {
   primaryProvider: 'ASANA' | 'OUTLOOK';
   asanaConnected: boolean;
   outlookConnected: boolean;
   asanaAccountLabel: string | null;
   outlookAccountLabel: string | null;
-  settings: { prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string };
+  settings: { prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string; skipDayFullWarning: boolean };
 }
 
 class PlannerStore {
@@ -41,6 +59,19 @@ class PlannerStore {
   tasksWithoutDueDate: Task[] = $state([]);
   projects: Project[] = $state([]);
   focusIndex = $state(0);
+
+  /// Tasks just committed (planned/moved/split) during this Triage visit —
+  /// hidden from the swipeable queue (queueTasks) so the loop moves on to
+  /// the next thing instead of possibly showing the same task right back,
+  /// but still fully present in `tasks` itself (still counted in workload,
+  /// still shown on the day calendar, etc.). Cleared when the user leaves
+  /// Triage for Settings/Overview and comes back — see closeSettings/
+  /// closeOverview — not on every commit, so a whole planning session
+  /// doesn't creep back in piecemeal.
+  private justPlannedIds: string[] = $state([]);
+  get queueTasks(): Task[] {
+    return this.justPlannedIds.length === 0 ? this.tasks : this.tasks.filter((t) => !this.justPlannedIds.includes(t.id));
+  }
 
   dragX = $state(0);
   dragging = $state(false);
@@ -70,6 +101,7 @@ class PlannerStore {
   prefEndTime = $state('18:00');
   bufferMinutes = $state(10);
   timezone = $state('UTC');
+  skipDayFullWarning = $state(false);
 
   activePanelEventId: string | null = $state(null);
   activePanelMode: 'add' | 'link' | null = $state(null);
@@ -90,10 +122,10 @@ class PlannerStore {
 
   // --- derived ---
   get focusTaskRaw(): Task | null {
-    return this.tasks.length > 0 ? this.tasks[this.focusIndex] : null;
+    return this.queueTasks.length > 0 ? this.queueTasks[this.focusIndex] : null;
   }
   get hasFocusTask() {
-    return this.tasks.length > 0;
+    return this.queueTasks.length > 0;
   }
   get todayWorkload(): WorkloadDay | null {
     return this.workloadDays.find((d) => d.key === 'today') ?? null;
@@ -175,7 +207,15 @@ class PlannerStore {
   }
 
   // --- boot ---
+  // Surfaced on the loading screen (see App.svelte) so the wait between
+  // "app opened" and "first task visible" always shows *something*
+  // happening, not just a static "Loading your day…" for the whole
+  // several-second stretch — especially the phases before any task-fetch
+  // progress event has arrived to drive loadingProgressLabel.
+  bootStatus = $state('Connecting…');
+
   async boot() {
+    this.bootStatus = 'Connecting…';
     const params = new URLSearchParams(window.location.search);
     const onboarding = params.get('onboarding') === 'secondary';
     if (onboarding) {
@@ -203,6 +243,7 @@ class PlannerStore {
     this.prefEndTime = me.settings.prefEndTime;
     this.bufferMinutes = me.settings.bufferMinutes;
     this.timezone = me.settings.timezone;
+    this.skipDayFullWarning = me.settings.skipDayFullWarning;
 
     if (onboarding && (!me.asanaConnected || !me.outlookConnected)) {
       this.screen = 'loginSecondary';
@@ -251,6 +292,7 @@ class PlannerStore {
       this.screen = 'triage';
       return;
     }
+    this.bootStatus = 'Loading your tasks…';
     this.loadingTasksCount = 0;
     const cached = localStorage.getItem('lastTaskCount');
     this.loadingTasksEstimate = cached ? parseInt(cached, 10) : null;
@@ -285,7 +327,7 @@ class PlannerStore {
     }
     this.tasksWithoutDueDate = data.tasksWithoutDueDate;
     this.projects = data.projects;
-    if (this.focusIndex >= this.tasks.length) this.focusIndex = Math.max(0, this.tasks.length - 1);
+    if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     if (this.screen === 'loading') {
       this.focusIndex = 0;
       this.screen = 'triage';
@@ -388,7 +430,7 @@ class PlannerStore {
       this.tasks = res.tasks;
       this.tasksWithoutDueDate = res.tasksWithoutDueDate;
       this.projects = res.projects;
-      if (this.focusIndex >= this.tasks.length) this.focusIndex = Math.max(0, this.tasks.length - 1);
+      if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     } catch (err) {
       this.reportError(err, 'Could not load tasks from Asana');
     }
@@ -426,6 +468,11 @@ class PlannerStore {
   private isDragging = false;
 
   onCardPointerDown(e: PointerEvent) {
+    // Mid-edit (the hours stepper is showing instead of the normal
+    // actions), a drag starting on the card is almost always someone
+    // interacting with the stepper, not trying to swipe away — and
+    // swiping the card out from under an in-progress edit is jarring.
+    if (this.editingHours) return;
     if ((e.target as HTMLElement).closest('button')) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     this.dragStartX = e.clientX;
@@ -444,21 +491,22 @@ class PlannerStore {
     const threshold = 90;
     this.dragX = 0;
     this.dragging = false;
-    if (dx > threshold) this.openPlanToday();
-    else if (dx < -threshold) this.openPlanLater();
+    // Left = plan today, right = plan later (matches the button order below).
+    if (dx < -threshold) this.openPlanToday();
+    else if (dx > threshold) this.openPlanLater();
   }
 
   // --- queue nav ---
   goPrev() {
-    if (this.tasks.length <= 1) return;
-    this.focusIndex = (this.focusIndex - 1 + this.tasks.length) % this.tasks.length;
+    if (this.queueTasks.length <= 1) return;
+    this.focusIndex = (this.focusIndex - 1 + this.queueTasks.length) % this.queueTasks.length;
   }
   goNext() {
-    if (this.tasks.length <= 1) return;
-    this.focusIndex = (this.focusIndex + 1) % this.tasks.length;
+    if (this.queueTasks.length <= 1) return;
+    this.focusIndex = (this.focusIndex + 1) % this.queueTasks.length;
   }
   selectFocus(id: string) {
-    this.focusIndex = Math.max(0, this.tasks.findIndex((t) => t.id === id));
+    this.focusIndex = Math.max(0, this.queueTasks.findIndex((t) => t.id === id));
   }
 
   // --- settings ---
@@ -466,6 +514,7 @@ class PlannerStore {
     this.screen = 'settings';
   }
   closeSettings() {
+    this.justPlannedIds = [];
     this.screen = 'triage';
   }
   openIntegrations() {
@@ -510,7 +559,9 @@ class PlannerStore {
     }
   }
 
-  private async patchSettings(patch: Partial<{ prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string }>) {
+  private async patchSettings(
+    patch: Partial<{ prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string; skipDayFullWarning: boolean }>,
+  ) {
     try {
       await api.put('/api/settings', patch);
     } catch (err) {
@@ -533,6 +584,10 @@ class PlannerStore {
   onTimezoneChange(v: string) {
     this.timezone = v;
     void this.patchSettings({ timezone: v });
+  }
+  onSkipDayFullWarningChange(v: boolean) {
+    this.skipDayFullWarning = v;
+    void this.patchSettings({ skipDayFullWarning: v });
   }
 
   /// "Reset today's plan" in Settings — un-schedules every task due today
@@ -602,9 +657,36 @@ class PlannerStore {
   }
 
   // --- day-full check ---
+  private dayFullDismissKey(date: string): string {
+    return `dayFullDismissed:${date}`;
+  }
+  /// True only if the day is actually over capacity AND neither dismissal
+  /// applies: the global Settings toggle ("don't ask again for any day")
+  /// or a per-day localStorage flag ("...for this day", set the moment the
+  /// user picks that option on the DayFull screen — see
+  /// dontAskDayFullToday/Ever below).
   isDayFull(key: string): boolean {
     const d = this.workloadDays.find((w) => w.key === key);
-    return d ? d.planned / d.capacity >= 1 : false;
+    if (!d || d.planned / d.capacity < 1) return false;
+    if (this.skipDayFullWarning) return false;
+    const date = this.dateFor(key);
+    if (date && localStorage.getItem(this.dayFullDismissKey(date)) === '1') return false;
+    return true;
+  }
+  /// Both dismiss the DayFull warning (for this day only, or for good) and
+  /// then proceed exactly as "Plan for this day anyway" would — the
+  /// warning was already blocking whatever the user was trying to do.
+  async dontAskDayFullToday() {
+    const p = this.pendingPlan;
+    const key = p ? (p.type === 'today' ? 'today' : p.key) : null;
+    const date = key ? this.dateFor(key) : null;
+    if (date) localStorage.setItem(this.dayFullDismissKey(date), '1');
+    await this.onPlanAnyway();
+  }
+  async dontAskDayFullEver() {
+    this.skipDayFullWarning = true;
+    void this.patchSettings({ skipDayFullWarning: true });
+    await this.onPlanAnyway();
   }
 
   private dateFor(key: string): string | null {
@@ -702,6 +784,7 @@ class PlannerStore {
     await Promise.all([this.refreshEvents(), this.refreshWorkload()]);
   }
   closeOverview() {
+    this.justPlannedIds = [];
     this.screen = 'triage';
   }
 
@@ -722,9 +805,12 @@ class PlannerStore {
       this.showToast(`No tasks due ${day.label}`);
       return;
     }
-    const idx = this.tasks.findIndex((t) => t.id === matches[0].id);
-    if (idx >= 0) this.focusIndex = idx;
+    // Clears justPlannedIds before searching, so the index below is
+    // computed against the same (now unfiltered) array it'll actually be
+    // read against once this returns to Triage.
     this.closeOverview();
+    const idx = this.queueTasks.findIndex((t) => t.id === matches[0].id);
+    if (idx >= 0) this.focusIndex = idx;
   }
 
   get laterDays() {
@@ -747,67 +833,117 @@ class PlannerStore {
     return timePart.split('–')[0];
   }
 
-  private async commitDueAt(taskId: string, dueAtIso: string | null, force = false): Promise<boolean> {
-    try {
-      await api.patch(`/api/tasks/${encodeURIComponent(taskId)}`, { dueAt: dueAtIso, force });
-      return true;
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409 && err.body?.error === 'slot_conflict') {
-        this.conflictItems = err.body.conflicts;
-        return false;
-      }
+  /// The double-book check against a live Asana re-fetch used to be the
+  /// dominant cost of planning a task — this checks the same already-loaded
+  /// `tasks` a free-slots list was built from instead, so it's instant, at
+  /// the cost of trusting client-side data that could in principle be a few
+  /// seconds stale (matches how free-slots itself already trusts it).
+  private findConflicts(dueAtIso: string, excludeTaskId: string): ConflictItem[] {
+    return this.tasks.filter((t) => t.id !== excludeTaskId && t.dueAt === dueAtIso).map((t) => ({ name: t.name, hours: t.hours }));
+  }
+
+  /// Updates a task's due fields in local state to match what the write
+  /// below will (eventually) make true server-side — the same slicing the
+  /// server itself uses (see asana.ts's toRemoteTask), so this stays
+  /// consistent with what a real refresh would show.
+  private applyOptimisticDueAt(taskId: string, dueAtIso: string | null) {
+    const idx = this.tasks.findIndex((t) => t.id === taskId);
+    if (idx === -1) return;
+    const updated: Task = {
+      ...this.tasks[idx],
+      dueAt: dueAtIso,
+      dueOn: dueAtIso ? dueAtIso.slice(0, 10) : null,
+      dueHour: dueAtIso ? dueAtIso.slice(11, 16) : null,
+      doubled: false,
+    };
+    this.tasks = [...this.tasks.slice(0, idx), updated, ...this.tasks.slice(idx + 1)];
+  }
+
+  /// Fires the actual Asana write without making the caller wait on it —
+  /// the write itself already happens on the server's background queue
+  /// (pendingActionQueue.ts) regardless, so there's nothing left worth
+  /// blocking the UI on. Errors (e.g. a genuinely dropped connection, not
+  /// the write's own retries — those are the queue's problem) still surface
+  /// as a toast.
+  private enqueueDueAtFireAndForget(taskId: string, dueAtIso: string | null) {
+    api.patch(`/api/tasks/${encodeURIComponent(taskId)}`, { dueAt: dueAtIso }).catch((err) => {
       this.reportError(err, 'Could not update the task in Asana');
-      return false;
-    }
+    });
+  }
+
+  /// Bumps a day's planned hours optimistically (a real refreshWorkload()
+  /// would show the same number eventually, but only after a round trip we
+  /// don't want to wait on) so the capacity badge and a possible
+  /// celebration both react immediately instead of on the next unrelated
+  /// refresh.
+  private bumpWorkloadLocally(dayKey: string, addedHours: number) {
+    const idx = this.workloadDays.findIndex((d) => d.key === dayKey);
+    if (idx === -1) return;
+    const updated = { ...this.workloadDays[idx], planned: Math.round((this.workloadDays[idx].planned + addedHours) * 10) / 10 };
+    this.workloadDays = [...this.workloadDays.slice(0, idx), updated, ...this.workloadDays.slice(idx + 1)];
+    if (updated.capacity > 0 && updated.planned >= updated.capacity) this.celebrationKey++;
+  }
+
+  /// The shared tail of every "plan this task" action: update local state
+  /// to already reflect the outcome, hide the task from the swipeable
+  /// queue until the user leaves and returns to Triage (see
+  /// justPlannedIds), and fire the actual write in the background — all of
+  /// which makes the screen close the instant you tap, not once Asana
+  /// confirms.
+  private commitPlanLocally(task: Task, dueAtIso: string, toastMsg: string, dayKey: string) {
+    this.applyOptimisticDueAt(task.id, dueAtIso);
+    if (!this.justPlannedIds.includes(task.id)) this.justPlannedIds = [...this.justPlannedIds, task.id];
+    this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+    this.screen = 'triage';
+    this.showToast(toastMsg);
+    this.bumpWorkloadLocally(dayKey, task.hours);
+    this.enqueueDueAtFireAndForget(task.id, dueAtIso);
   }
 
   /// Drag-to-move on the day calendar (see DayCalendar.svelte) — moves a
   /// *different* task than the one currently being planned, without
-  /// disturbing the current planning flow (no screen change, no toast
-  /// success spam beyond a quiet confirmation). A conflict just reverts the
-  /// drag with a toast rather than routing to the full slotConflict screen,
-  /// since that screen's "plan anyway" flow is built around the task
-  /// actually being planned, not an incidental drag elsewhere on the day.
-  /// Refreshing `tasks` re-sorts the whole queue, which can shift the
-  /// currently-focused task to a different index — re-point focusIndex at
-  /// the same task (by id) afterward so the planning flow the user's
-  /// actually in the middle of doesn't silently jump to a different task.
-  private async refreshTasksKeepingFocus() {
-    const focusId = this.focusTaskRaw?.id ?? null;
-    await this.refreshTasks();
-    if (focusId) this.selectFocus(focusId);
-  }
-  async moveOtherTask(taskId: string, date: string, hhmm: string): Promise<boolean> {
+  /// disturbing the current planning flow (no screen change). A conflict
+  /// just reverts the drag with a toast rather than routing to the full
+  /// slotConflict screen, since that screen's "plan anyway" flow is built
+  /// around the task actually being planned, not an incidental drag
+  /// elsewhere on the day.
+  moveOtherTask(taskId: string, date: string, hhmm: string): boolean {
     const dueAtIso = this.toIsoDateTime(date, hhmm);
-    const ok = await this.commitDueAt(taskId, dueAtIso);
-    if (ok) {
-      this.showToast(`Moved to ${hhmm} · synced to Asana`);
-      await this.refreshTasksKeepingFocus();
-    } else {
+    if (this.findConflicts(dueAtIso, taskId).length) {
       this.showToast('That time is already taken');
+      return false;
     }
-    return ok;
+    this.applyOptimisticDueAt(taskId, dueAtIso);
+    this.showToast(`Moved to ${hhmm} · syncing to Asana`);
+    this.enqueueDueAtFireAndForget(taskId, dueAtIso);
+    return true;
   }
-  async clearOtherTaskDueDate(taskId: string): Promise<void> {
-    const ok = await this.commitDueAt(taskId, null);
-    if (ok) {
-      this.showToast('Due time cleared · synced to Asana');
-      await this.refreshTasksKeepingFocus();
-    }
+  /// Clearing a due date entirely takes a task out of deriveQueue's queue
+  /// server-side (no due date at all), so — unlike a normal re-plan — the
+  /// optimistic update here moves it out of `tasks` into
+  /// `tasksWithoutDueDate` rather than just updating it in place.
+  clearOtherTaskDueDate(taskId: string): void {
+    const t = this.tasks.find((x) => x.id === taskId);
+    if (!t) return;
+    this.tasks = this.tasks.filter((x) => x.id !== taskId);
+    this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, { ...t, dueAt: null, dueOn: null, dueHour: null, doubled: false }];
+    this.showToast('Due time cleared · syncing to Asana');
+    this.enqueueDueAtFireAndForget(taskId, null);
   }
 
-  async tryPlanTodaySlot(slot: string) {
+  tryPlanTodaySlot(slot: string) {
     const task = this.focusTaskRaw;
     const date = this.dateFor('today');
     if (!task || !date) return;
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
-    const ok = await this.commitDueAt(task.id, dueAtIso);
-    if (!ok) {
+    const conflicts = this.findConflicts(dueAtIso, task.id);
+    if (conflicts.length) {
+      this.conflictItems = conflicts;
       this.pendingSlotPlan = { kind: 'today', slot };
       this.screen = 'slotConflict';
       return;
     }
-    await this.afterCommit(`Planned "${task.name}" today at ${slot} · synced to Asana`);
+    this.commitPlanLocally(task, dueAtIso, `Planned "${task.name}" today at ${slot} · syncing to Asana`, 'today');
   }
 
   toggleCustomTimeToday() {
@@ -826,19 +962,20 @@ class PlannerStore {
     }
   }
 
-  async tryPlanLaterSlot(slot: string) {
+  tryPlanLaterSlot(slot: string) {
     const task = this.focusTaskRaw;
     const dayKey = this.laterDayKey;
     const date = dayKey ? this.dateFor(dayKey) : null;
     if (!task || !dayKey || !date) return;
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
-    const ok = await this.commitDueAt(task.id, dueAtIso);
-    if (!ok) {
+    const conflicts = this.findConflicts(dueAtIso, task.id);
+    if (conflicts.length) {
+      this.conflictItems = conflicts;
       this.pendingSlotPlan = { kind: 'later', dayKey, slot };
       this.screen = 'slotConflict';
       return;
     }
-    await this.afterCommit(`Planned "${task.name}" for ${this.chosenDayLabel} at ${slot} · due date synced to Asana`, dayKey);
+    this.commitPlanLocally(task, dueAtIso, `Planned "${task.name}" for ${this.chosenDayLabel} at ${slot} · syncing to Asana`, dayKey);
   }
 
   async resolveConflictAnyway() {
@@ -850,11 +987,8 @@ class PlannerStore {
       const date = this.dateFor(dayKey);
       if (!date) return;
       const dueAtIso = this.toIsoDateTime(date, this.slotStart(p.slot));
-      const ok = await this.commitDueAt(task.id, dueAtIso, true);
-      if (ok) {
-        const label = p.kind === 'today' ? 'today' : this.chosenDayLabel;
-        await this.afterCommit(`Planned "${task.name}" for ${label} at ${p.slot} · synced to Asana (double-booked)`, dayKey);
-      }
+      const label = p.kind === 'today' ? 'today' : this.chosenDayLabel;
+      this.commitPlanLocally(task, dueAtIso, `Planned "${task.name}" for ${label} at ${p.slot} · syncing to Asana (double-booked)`, dayKey);
     } else if (p.kind === 'break') {
       await this.commitBreak(p.slot, true);
     }
@@ -870,24 +1004,17 @@ class PlannerStore {
     else if (p.kind === 'break') this.screen = 'breakTime';
   }
 
-  /// `dayKey` is whichever WorkloadDay bucket the just-committed task landed
-  /// in — 'today' for the common case, but tryPlanLaterSlot/resolveConflict
-  /// pass the actual target so planning into tomorrow (etc.) can trigger the
-  /// celebration too, not just today.
-  private async afterCommit(toastMsg: string, dayKey: string = 'today') {
-    this.showToast(toastMsg);
-    await Promise.all([this.refreshTasks(), this.refreshWorkload()]);
-    this.focusIndex = 0;
-    this.screen = 'triage';
-    const day = this.workloadDays.find((d) => d.key === dayKey);
-    if (day && day.capacity > 0 && day.planned >= day.capacity) this.celebrationKey++;
-  }
-
-  async removeDueDate() {
+  /// Same reasoning as clearOtherTaskDueDate — no due date at all takes a
+  /// task out of the server's queue entirely, so it moves to
+  /// tasksWithoutDueDate locally rather than staying in `tasks`.
+  removeDueDate() {
     const task = this.focusTaskRaw;
     if (!task) return;
-    const ok = await this.commitDueAt(task.id, null);
-    if (ok) await this.afterCommit(`Removed due date on "${task.name}" · synced to Asana`);
+    this.tasks = this.tasks.filter((t) => t.id !== task.id);
+    this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, { ...task, dueAt: null, dueOn: null, dueHour: null, doubled: false }];
+    this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+    this.showToast(`Removed due date on "${task.name}" · syncing to Asana`);
+    this.enqueueDueAtFireAndForget(task.id, null);
   }
 
   async selectLaterDay(key: string) {
@@ -926,10 +1053,10 @@ class PlannerStore {
     this.hoursDraft = t.hours;
   }
   decHour() {
-    this.hoursDraft = Math.max(0.5, this.hoursDraft - 0.5);
+    this.hoursDraft = stepHours(this.hoursDraft, -1);
   }
   incHour() {
-    this.hoursDraft = Math.min(40, this.hoursDraft + 0.5);
+    this.hoursDraft = stepHours(this.hoursDraft, 1);
   }
   onHoursDraftInput(v: string) {
     const n = parseFloat(v);
@@ -958,10 +1085,10 @@ class PlannerStore {
     this.restHoursDraft = hours;
   }
   decRestHour() {
-    this.restHoursDraft = Math.max(0.5, this.restHoursDraft - 0.5);
+    this.restHoursDraft = stepHours(this.restHoursDraft, -1);
   }
   incRestHour() {
-    this.restHoursDraft = Math.min(40, this.restHoursDraft + 0.5);
+    this.restHoursDraft = stepHours(this.restHoursDraft, 1);
   }
   onRestHoursInput(v: string) {
     const n = parseFloat(v);
@@ -1021,10 +1148,10 @@ class PlannerStore {
     this.screen = 'breakTime';
   }
   decDuration() {
-    this.breakDuration = Math.max(0.5, this.breakDuration - 0.5);
+    this.breakDuration = stepHours(this.breakDuration, -1, 8);
   }
   incDuration() {
-    this.breakDuration = Math.min(8, this.breakDuration + 0.5);
+    this.breakDuration = stepHours(this.breakDuration, 1, 8);
   }
   onBreakDurationInput(v: string) {
     const n = parseFloat(v);
@@ -1060,12 +1187,16 @@ class PlannerStore {
     }
 
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
-    const ok = await this.commitDueAt(created.gid, dueAtIso, force);
-    if (!ok) {
-      this.pendingSlotPlan = { kind: 'break', slot };
-      this.screen = 'slotConflict';
-      return;
+    if (!force) {
+      const conflicts = this.findConflicts(dueAtIso, created.gid);
+      if (conflicts.length) {
+        this.conflictItems = conflicts;
+        this.pendingSlotPlan = { kind: 'break', slot };
+        this.screen = 'slotConflict';
+        return;
+      }
     }
+    this.enqueueDueAtFireAndForget(created.gid, dueAtIso);
 
     try {
       await api.patch(`/api/tasks/${encodeURIComponent(created.gid)}`, { hours: dur, name });
@@ -1086,7 +1217,7 @@ class PlannerStore {
     this.showToast(`"${name}" scheduled today at ${slot} (${fmtHours(dur)}) · synced to Asana`);
     await this.refreshTasks();
     await this.refreshWorkload();
-    this.focusIndex = Math.max(0, this.tasks.findIndex((t) => t.id === parent.id));
+    this.focusIndex = Math.max(0, this.queueTasks.findIndex((t) => t.id === parent.id));
     this.screen = 'planLater';
   }
 

@@ -78,7 +78,7 @@
   }
   .footer {
     background: var(--color-bg-inverse);
-    padding: 14px 20px;
+    padding: 14px 20px 24px;
     flex-shrink: 0;
   }
 </style>

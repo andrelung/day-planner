@@ -87,16 +87,16 @@ const patchSchema = z
     // The task's current clean (bracket-stripped) title, as already held by
     // the frontend — needed to rebuild "<name> [<hours>]" without a round trip.
     name: z.string().min(1).optional(),
-    force: z.boolean().optional(),
   })
   .refine((v) => v.hours === undefined || v.name !== undefined, { message: 'name is required when setting hours' });
 
-/// The conflict check stays synchronous (it's what decides whether to show
-/// the "double-booked" screen, so the caller genuinely needs the answer
-/// before it can proceed) — but the actual Asana write no longer is. It's
-/// queued instead: this endpoint returns as soon as the write is durably
-/// recorded, without waiting on the real network round-trip to Asana, and
-/// a background worker performs it (with retries) — see pendingActionQueue.ts.
+/// The double-book check used to happen here (a live re-fetch of every
+/// incomplete task, just to compare one timestamp) and was the dominant
+/// cost of planning a task. It's now done client-side against already-
+/// loaded data before this endpoint is even called — see
+/// findConflicts/commitPlanLocally in store.svelte.ts — so this endpoint
+/// has nothing left to do but durably queue the write and return; a
+/// background worker performs it (with retries) — see pendingActionQueue.ts.
 tasksRouter.patch('/:gid', async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -104,22 +104,10 @@ tasksRouter.patch('/:gid', async (req, res) => {
     return;
   }
   const { gid } = req.params;
-  const { dueAt, hours, name, force } = parsed.data;
+  const { dueAt, hours, name } = parsed.data;
   const settings = await getOrCreateSettings(req.userId!);
 
   if (dueAt !== undefined) {
-    if (dueAt && !force) {
-      const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-      const others = await listIncompleteAssignedTasks(accessToken);
-      const conflicts = others.filter((t) => t.gid !== gid && t.dueAt === dueAt);
-      if (conflicts.length) {
-        res.status(409).json({
-          error: 'slot_conflict',
-          conflicts: conflicts.map((c) => ({ name: c.name, hours: c.hours })),
-        });
-        return;
-      }
-    }
     await enqueueAction(req.userId!, dueAt ? "Set a task's due time" : "Clear a task's due time", {
       kind: 'setTaskDueAt',
       taskGid: gid,

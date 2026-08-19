@@ -6,8 +6,12 @@
 
   const dayFullKey = $derived(planner.pendingPlan ? (planner.pendingPlan.type === 'today' ? 'today' : planner.pendingPlan.key) : null);
   const dayFullDay = $derived(dayFullKey ? planner.workloadDays.find((d) => d.key === dayFullKey) : null);
-  const dayFullLabel = $derived(dayFullDay?.label ?? '');
-  const dayFullDetail = $derived(dayFullDay ? `${dayFullDay.planned}/${dayFullDay.capacity}h already planned` : '');
+  const dayFullLabel = $derived(dayFullDay?.label ?? 'This day');
+  const dayFullDetail = $derived(
+    dayFullDay
+      ? `You already allocated ${dayFullDay.planned}h of tasks. Your target is ${dayFullDay.capacity}h. What do you want to do?`
+      : '',
+  );
 </script>
 
 <div class="screen">
@@ -21,6 +25,10 @@
     <div class="actions">
       <Button variant="primary" size="md" fullWidth onclick={() => planner.onPlanAnyway()}>Plan for this day anyway</Button>
       <Button variant="ghost" size="md" fullWidth onclick={() => planner.onReviewOtherTasks()}>Review other tasks on this day</Button>
+    </div>
+    <div class="dismiss-actions">
+      <button class="dismiss-link" onclick={() => planner.dontAskDayFullToday()}>Don't ask again for this day</button>
+      <button class="dismiss-link" onclick={() => planner.dontAskDayFullEver()}>Don't ask again for any day</button>
     </div>
   </div>
 </div>
@@ -61,5 +69,23 @@
     flex-direction: column;
     gap: 10px;
     margin-top: 26px;
+  }
+  .dismiss-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 22px;
+    align-items: center;
+  }
+  .dismiss-link {
+    background: none;
+    border: none;
+    padding: 4px;
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-muted);
+    text-decoration: underline;
+    cursor: pointer;
   }
 </style>

@@ -66,6 +66,15 @@
     >
       <div class="row__label row__label--danger">Reset today's plan</div>
     </button>
+    <label class="row">
+      <div class="row__label">Don't ask again for any day</div>
+      <input
+        type="checkbox"
+        class="toggle"
+        checked={planner.skipDayFullWarning}
+        onchange={(e) => planner.onSkipDayFullWarningChange((e.target as HTMLInputElement).checked)}
+      />
+    </label>
     <div class="more-to-come">More to come</div>
   </div>
 </div>
@@ -176,6 +185,12 @@
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+  .toggle {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--color-brand-primary);
+    flex-shrink: 0;
   }
   .more-to-come {
     font-family: var(--font-family-base);

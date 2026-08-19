@@ -101,7 +101,7 @@
     color: var(--color-text-primary);
   }
   .footer {
-    padding: 14px 20px;
+    padding: 14px 20px 24px;
     display: flex;
     justify-content: flex-start;
     flex-shrink: 0;
