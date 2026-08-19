@@ -287,7 +287,7 @@
   }
   .reveal {
     position: absolute;
-    inset: 10px 20px 16px;
+    inset: 0;
     border-radius: var(--radius-md);
     display: flex;
     align-items: center;

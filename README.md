@@ -2,10 +2,13 @@
 
 A mobile-web app that helps people at a creative agency pre-plan their upcoming days: triage overdue/unplanned Asana tasks one at a time, decide when to realistically do them, see how full each day already is, and reconcile unlinked Outlook calendar events with Asana tasks. It sits alongside Asana and Outlook — it doesn't replace either, and all planning writes back to Asana as the source of truth.
 
+The original Claude Design handoff — product briefing, screen-by-screen spec, and the interactive prototype it was built from — lives in [`design_handoff_day_planner/`](./design_handoff_day_planner). This app implements that spec, plus real sign-in (Login / Connect-secondary-provider screens and a "Primary" account tag in Integrations) that the linked prototype snapshot predates but the briefing's OAuth requirements call for.
+
 ## Layout
 
 - **`app/`** — the frontend: Svelte 5 + TypeScript + Vite, no backend framework knowledge required to read.
 - **`server/`** — the backend: Express + TypeScript + Prisma/Postgres. Handles Asana and Microsoft (Outlook/Graph) OAuth, encrypted token storage, and proxies the Asana/Graph APIs so the browser never sees a raw access token.
+- **`design_handoff_day_planner/`** — the original design bundle (spec + prototype) this was built from.
 - **`Dockerfile`** / **`docker-compose.yml`** — builds both into one image (the server serves the built frontend's static files) plus a Postgres container.
 
 ## Running locally without Docker

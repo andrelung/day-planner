@@ -1,0 +1,1171 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/grips-io-design-system-47b4904b-17b0-408e-9e8b-0ac976ad8c5c/tokens/colors.css">
+  <link rel="stylesheet" href="_ds/grips-io-design-system-47b4904b-17b0-408e-9e8b-0ac976ad8c5c/tokens/typography.css">
+  <link rel="stylesheet" href="_ds/grips-io-design-system-47b4904b-17b0-408e-9e8b-0ac976ad8c5c/tokens/spacing.css">
+  <link rel="stylesheet" href="_ds/grips-io-design-system-47b4904b-17b0-408e-9e8b-0ac976ad8c5c/tokens/effects.css">
+  <link rel="stylesheet" href="_ds/grips-io-design-system-47b4904b-17b0-408e-9e8b-0ac976ad8c5c/styles.css">
+  <script src="_ds/grips-io-design-system-47b4904b-17b0-408e-9e8b-0ac976ad8c5c/_ds_bundle.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: var(--color-bg-page); }
+    a { color: var(--color-link); }
+    a:hover { color: var(--color-link-hover); }
+  </style>
+</helmet>
+
+<div style="height: 100vh; height: 100dvh; display: flex; align-items: center; justify-content: center; background: var(--color-bg-page); box-sizing: border-box; font-family: var(--font-family-base); overflow: hidden;">
+  <div style="width: 100%; max-width: 480px; height: 100%; margin: 0 auto; background: var(--color-bg-surface); overflow: hidden; position: relative; display: flex; flex-direction: column;">
+
+    <!-- ============ TRIAGE ============ -->
+    <sc-if value="{{isTriage}}" hint-placeholder-val="{{true}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-page); overflow: hidden;">
+
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 4px; flex-shrink: 0;">
+          <div onClick="{{onOpenSettings}}" title="Settings" style="width: 40px; height: 40px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary); flex-shrink: 0;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="17" x2="20" y2="17"></line></svg>
+          </div>
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 16px; color: var(--color-text-primary);">Plan your day</div>
+          <div onClick="{{onOpenOverview}}" title="Overview" style="width: 40px; height: 40px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary); flex-shrink: 0;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1.5"></rect><rect x="13" y="3" width="8" height="8" rx="1.5"></rect><rect x="3" y="13" width="8" height="8" rx="1.5"></rect><rect x="13" y="13" width="8" height="8" rx="1.5"></rect></svg>
+          </div>
+        </div>
+
+        <div style="padding: 16px 20px 8px; flex: 1; overflow-y: auto; min-height: 0;">
+          <sc-if value="{{hasRestTasks}}" hint-placeholder-val="{{true}}">
+            <div style="font-family: var(--font-family-base); font-size: 11px; font-weight: var(--font-weight-bold); text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-muted); margin-bottom: 8px;">Up next</div>
+            <sc-for list="{{restTasks}}" as="t" hint-placeholder-count="3">
+              <div style="padding: 12px 4px; border-bottom: var(--border-width) solid var(--color-border);">
+                <div onClick="{{t.onSelect}}" style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                  <div style="width: 8px; height: 8px; border-radius: 999px; background: {{ t.dotColor }}; flex-shrink: 0;"></div>
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 13px; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ t.name }}</div>
+                    <div style="font-family: var(--font-family-base); font-size: 11px; color: var(--color-text-muted);">{{ t.project }}</div>
+                  </div>
+                  <sc-if value="{{t.isEditingNot}}" hint-placeholder-val="{{true}}">
+                    <div onClick="{{t.onEditHours}}" style="display: flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--color-text-muted);">
+                      <div style="font-family: var(--font-family-base); font-size: 11px; font-weight: var(--font-weight-bold); color: var(--color-text-muted);">{{ t.hourLabel }}</div>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
+                    </div>
+                  </sc-if>
+                </div>
+                <sc-if value="{{t.isEditing}}" hint-placeholder-val="{{false}}">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px; background: var(--color-bg-page); border-radius: var(--radius-md);">
+                    <div onClick="{{t.onDec}}" style="width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue); flex-shrink: 0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg></div>
+                    <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" type="number" value="{{t.restHoursDraftText}}" onChange="{{t.onRestHoursInput}}" style="width: 64px;" hint-size="64px,44px"></x-import>
+                    <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">h</div>
+                    <div onClick="{{t.onInc}}" style="width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue); flex-shrink: 0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></div>
+                    <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="primary" size="sm" onClick="{{t.onSave}}" hint-size="auto,32px">Save</x-import>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </sc-if>
+        </div>
+
+        <sc-if value="{{hasFocusTask}}" hint-placeholder-val="{{true}}">
+          <div style="padding: 8px 20px 0; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
+            <div style="font-family: var(--font-family-base); font-size: 13px; font-weight: var(--font-weight-bold); letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-text-muted);">{{ queueLabel }}</div>
+            <div style="display: flex; gap: 2px; opacity: {{navBtnOpacity}}; pointer-events: {{navBtnPointer}};">
+              <div onClick="{{onGoPrev}}" title="Previous task" style="width: 32px; height: 32px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg></div>
+              <div onClick="{{onGoNext}}" title="Next task" style="width: 32px; height: 32px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg></div>
+            </div>
+          </div>
+
+          <div style="padding: 10px 20px 16px; position: relative; flex-shrink: 0;">
+            <div style="position: absolute; inset: 0; border-radius: var(--radius-md); background: var(--color-brand-primary); display: flex; align-items: center; padding: 0 24px; opacity: {{ planLaterRevealOpacity }};">
+              <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 18px; color: var(--color-text-inverse);">Plan later</div>
+            </div>
+            <div style="position: absolute; inset: 0; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: flex-end; padding: 0 24px; opacity: {{ planTodayRevealOpacity }};">
+              <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 18px; color: var(--grips-dark-blue);">Plan today</div>
+            </div>
+            <div onPointerDown="{{onCardPointerDown}}" onPointerMove="{{onCardPointerMove}}" onPointerUp="{{onCardPointerUp}}" onPointerCancel="{{onCardPointerUp}}" style="position: relative; touch-action: pan-y; transform: {{ cardTransform }}; transition: {{ cardTransition }};">
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Card" hint-size="100%,auto">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                  <x-import component-from-global-scope="GripsIODesignSystem_47b490.Badge" tone="{{focusTask.badgeTone}}" hint-size="auto,24px">{{ focusTask.badgeLabel }}</x-import>
+                </div>
+                <div onClick="{{focusTask.onOpenAsana}}" title="Open in Asana" style="width: 32px; height: 32px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-muted); flex-shrink: 0;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></div>
+              </div>
+
+              <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 18px; line-height: 1.2; color: var(--color-text-primary); margin-top: 10px;">{{ focusTask.name }}</div>
+              <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-muted); margin-top: 2px;">{{ focusTask.project }}</div>
+
+              <sc-if value="{{editingHours}}" hint-placeholder-val="{{false}}">
+                <div style="display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 10px 12px; background: var(--color-bg-page); border-radius: var(--radius-md);">
+                  <div onClick="{{onDecHour}}" style="width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue); flex-shrink: 0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg></div>
+                  <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" type="number" value="{{hoursDraftText}}" onChange="{{onHoursDraftInput}}" style="width: 64px;" hint-size="64px,44px"></x-import>
+                  <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">h</div>
+                  <div onClick="{{onIncHour}}" style="width: 28px; height: 28px; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue); flex-shrink: 0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></div>
+                  <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="primary" size="sm" onClick="{{onConfirmHours}}" hint-size="auto,32px">Save</x-import>
+                </div>
+              </sc-if>
+              <sc-if value="{{notEditingHours}}" hint-placeholder-val="{{true}}">
+                <div onClick="{{onEditHours}}" style="display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; cursor: pointer; color: var(--color-text-muted);">
+                  <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-muted);">Estimate</div>
+                  <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">{{ focusTask.hourLabel }}</div>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
+                </div>
+              </sc-if>
+
+              <div style="display: flex; gap: 8px; margin-top: 16px;">
+                <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" onClick="{{onOpenPlanLater}}" style="flex: 1; justify-content: center;" hint-size="100%,44px">Plan later</x-import>
+                <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="primary" size="md" onClick="{{onOpenPlanToday}}" style="flex: 1; justify-content: center;" hint-size="100%,44px">Plan today</x-import>
+              </div>
+              <div style="display: flex; gap: 8px; margin-top: 6px;">
+                <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="ghost" size="sm" onClick="{{onStartBreak}}" style="flex: 1; justify-content: center;" hint-size="100%,36px">Split into a part</x-import>
+                <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="ghost" size="sm" onClick="{{onRemoveDueDate}}" style="flex: 1; justify-content: center;" hint-size="100%,36px">Remove due date</x-import>
+              </div>
+            </x-import>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{noFocusTask}}" hint-placeholder-val="{{false}}">
+          <div style="padding: 20px 20px 24px; text-align: center; flex-shrink: 0;">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-feedback-correct)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="8.5 12.5 11 15 16 9"></polyline></svg>
+            <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 18px; color: var(--color-text-primary); margin-top: 10px;">All caught up</div>
+            <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-muted); margin-top: 4px;">Nothing left to plan right now.</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{hasFocusTask}}" hint-placeholder-val="{{true}}">
+          <div onClick="{{onOpenOverview}}" style="position: absolute; right: 20px; bottom: 20px; width: 56px; height: 56px; border-radius: 999px; background: {{ todayBadgeBg }}; color: var(--color-text-inverse); display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow-overlay-sm); cursor: pointer; font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 13px; text-align: center; line-height: 1.1;">{{ todayBadgeLabel }}</div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <!-- ============ SETTINGS ============ -->
+    <sc-if value="{{isSettings}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-page); overflow: hidden;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 8px; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-primary);">Settings</div>
+          <div onClick="{{onCloseSettings}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary); flex-shrink: 0;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 12px 20px; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 20px;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" type="time" label="Preferred starting time" value="{{prefStartTime}}" onChange="{{onPrefStartChange}}" hint-size="100%,66px"></x-import>
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" type="time" label="Preferred end of workday" value="{{prefEndTime}}" onChange="{{onPrefEndChange}}" hint-size="100%,66px"></x-import>
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" type="number" label="Buffer between tasks (minutes)" value="{{bufferMinutesText}}" onChange="{{onBufferChange}}" hint-size="100%,66px"></x-import>
+          <div onClick="{{onOpenIntegrations}}" style="display: flex; align-items: center; justify-content: space-between; padding: 14px 4px; border-top: var(--border-width) solid var(--color-border); cursor: pointer;">
+            <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">Asana &amp; Outlook</div>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          </div>
+          <div style="font-family: var(--font-family-base); font-size: 13px; font-style: italic; color: var(--color-text-muted); padding-top: 8px; border-top: var(--border-width) solid var(--color-border);">More to come</div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ INTEGRATIONS ============ -->
+    <sc-if value="{{isIntegrations}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-page); overflow: hidden;">
+        <div style="padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseIntegrations}}" title="Back" style="width: 36px; height: 36px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+          </div>
+        </div>
+        <div style="padding: 12px 20px; flex: 1; overflow-y: auto;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 24px; line-height: 1.25; color: var(--color-text-primary); margin-bottom: 12px;">Connect Asana &amp; Outlook</div>
+          <div style="font-family: var(--font-family-base); font-size: 15px; color: var(--color-text-muted); margin-bottom: 24px;">Manage tasks, meet deadlines, and access real-time updates to boost productivity.</div>
+
+          <div style="display: flex; align-items: center; gap: 14px; background: var(--color-bg-page); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-md); padding: 14px; margin-bottom: 12px;">
+            <div style="width: 44px; height: 44px; border-radius: var(--radius-md); background: var(--color-border); display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 16px; color: var(--color-text-primary);">A</div>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">Asana Account</div>
+              <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-muted);">Connect your Asana account to sync tasks</div>
+            </div>
+            <sc-if value="{{asanaConnected}}" hint-placeholder-val="{{false}}">
+              <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 13px; color: var(--color-text-muted); flex-shrink: 0;">Connected</div>
+            </sc-if>
+            <sc-if value="{{asanaNotConnected}}" hint-placeholder-val="{{true}}">
+              <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="sm" onClick="{{onConnectAsana}}" style="flex-shrink: 0;" hint-size="auto,32px">Connect</x-import>
+            </sc-if>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 14px; background: var(--color-bg-page); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-md); padding: 14px;">
+            <div style="width: 44px; height: 44px; border-radius: var(--radius-md); background: var(--color-border); display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 16px; color: var(--color-text-primary);">O</div>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">Outlook Account</div>
+              <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-muted);">Connect your Outlook calendar to sync free slots</div>
+            </div>
+            <sc-if value="{{outlookConnected}}" hint-placeholder-val="{{true}}">
+              <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 13px; color: var(--color-text-muted); flex-shrink: 0;">Connected</div>
+            </sc-if>
+            <sc-if value="{{outlookNotConnected}}" hint-placeholder-val="{{false}}">
+              <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="sm" onClick="{{onConnectOutlook}}" style="flex-shrink: 0;" hint-size="auto,32px">Connect</x-import>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ OVERVIEW ============ -->
+    <sc-if value="{{isOverview}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-page); overflow: hidden;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 8px; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-primary);">Overview</div>
+          <div onClick="{{onCloseOverview}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary); flex-shrink: 0;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+
+        <div style="padding: 8px 20px; flex: 1; overflow-y: auto;">
+          <div style="font-family: var(--font-family-base); font-size: 13px; font-weight: var(--font-weight-bold); text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-muted); margin: 10px 0 8px;">Workload by day</div>
+          <sc-for list="{{overviewDays}}" as="d" hint-placeholder-count="5">
+            <div style="padding: 10px 0;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">{{ d.label }}</div>
+                <div style="font-family: var(--font-family-base); font-size: 13px; font-weight: var(--font-weight-bold); color: {{ d.textColor }};">{{ d.hoursLabel }}</div>
+              </div>
+              <div style="height: 8px; border-radius: 999px; background: var(--color-border); overflow: hidden;">
+                <div style="height: 100%; width: {{ d.barWidth }}; background: {{ d.barColor }}; border-radius: 999px;"></div>
+              </div>
+            </div>
+          </sc-for>
+
+          <div style="font-family: var(--font-family-base); font-size: 13px; font-weight: var(--font-weight-bold); text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-muted); margin: 22px 0 8px;">From your calendar</div>
+          <sc-for list="{{overviewEvents}}" as="e" hint-placeholder-count="2">
+            <div style="padding: 10px 0; border-bottom: var(--border-width) solid var(--color-border);">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                <div style="min-width: 0;">
+                  <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ e.title }}</div>
+                  <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-muted);">{{ e.statusLabel }}</div>
+                </div>
+                <sc-if value="{{e.showActions}}" hint-placeholder-val="{{true}}">
+                  <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                    <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="ghost" size="sm" onClick="{{e.onOpenLink}}" hint-size="auto,32px">Link to task</x-import>
+                    <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="sm" onClick="{{e.onOpenAdd}}" hint-size="auto,32px">Add as task</x-import>
+                  </div>
+                </sc-if>
+              </div>
+              <sc-if value="{{e.panelOpen}}" hint-placeholder-val="{{false}}">
+                <div style="margin-top: 10px; background: var(--color-bg-page); border-radius: var(--radius-md); padding: 10px;">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                    <div style="font-family: var(--font-family-base); font-size: 11px; font-weight: var(--font-weight-bold); text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-muted);">{{ e.panelTitle }}</div>
+                    <div onClick="{{e.onClosePanel}}" style="font-family: var(--font-family-base); font-size: 11px; font-weight: var(--font-weight-bold); color: var(--color-text-muted); cursor: pointer;">Cancel</div>
+                  </div>
+                  <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" placeholder="Search projects or tasks\u2026" value="{{e.searchQuery}}" onChange="{{e.onSearchChange}}" hint-size="100%,40px"></x-import>
+                  <div style="max-height: 160px; overflow-y: auto; margin-top: 8px;">
+                    <sc-for list="{{e.searchResults}}" as="r" hint-placeholder-count="3">
+                      <div onClick="{{r.onSelect}}" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 6px; cursor: pointer; border-radius: var(--radius-sm);">
+                        <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ r.label }}</div>
+                        <div style="font-family: var(--font-family-base); font-size: 11px; color: var(--color-text-muted); flex-shrink: 0;">{{ r.typeLabel }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ PLAN TODAY ============ -->
+    <sc-if value="{{isPlanToday}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--grips-highlight-yellow); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid rgba(22,32,60,0.35); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 4px 24px 0; text-align: center; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--grips-dark-blue);">Free slots today</div>
+          <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--grips-dark-blue); opacity: 0.7; margin-top: 6px;">{{ planTargetLabel }}</div>
+        </div>
+
+        <div style="padding: 20px 20px 0; flex: 1; overflow-y: auto; min-height: 0;">
+          <sc-for list="{{planTodaySlots}}" as="s" hint-placeholder-count="3">
+            <div onClick="{{s.onClick}}" style="background: var(--color-bg-surface); border-radius: var(--radius-md); padding: 16px; text-align: center; margin-bottom: 10px; cursor: pointer; font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">{{ s.label }}</div>
+          </sc-for>
+
+          <sc-if value="{{notShowCustomTimeToday}}" hint-placeholder-val="{{false}}">
+            <div onClick="{{onToggleCustomTimeToday}}" style="background: var(--color-bg-surface); border-radius: var(--radius-md); padding: 16px; text-align: center; margin-bottom: 10px; cursor: pointer; font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">Pick a time</div>
+          </sc-if>
+          <sc-if value="{{showCustomTimeToday}}" hint-placeholder-val="{{true}}">
+            <div style="background: var(--color-bg-surface); border-radius: var(--radius-md); padding: 16px; margin-bottom: 10px;">
+              <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" type="time" value="{{customTimeToday}}" onChange="{{onCustomTimeTodayChange}}" hint-size="100%,44px"></x-import>
+              <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="primary" size="sm" onClick="{{onConfirmCustomTimeToday}}" style="width: 100%; justify-content: center; margin-top: 10px;" hint-size="100%,32px">Confirm time</x-import>
+            </div>
+          </sc-if>
+        </div>
+
+        <div style="padding: 14px 20px; display: flex; justify-content: flex-start; flex-shrink: 0;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onCloseFlow}}" hint-size="auto,40px">back</x-import>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ PLAN LATER ============ -->
+    <sc-if value="{{isPlanLater}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-inverse); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid rgba(255,255,255,0.4); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-inverse);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 4px 24px 0; text-align: center; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-inverse);">When later?</div>
+          <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-inverse); opacity: 0.85; margin-top: 6px;">{{ planTargetLabel }}</div>
+        </div>
+
+        <div style="padding: 20px 20px 0; flex: 1; overflow-y: auto; min-height: 0;">
+          <sc-for list="{{laterDays}}" as="d" hint-placeholder-count="4">
+            <div onClick="{{d.onClick}}" style="background: var(--color-bg-surface); border-radius: var(--radius-md); padding: 16px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; cursor: pointer;">
+              <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">{{ d.label }}</div>
+              <x-import component-from-global-scope="GripsIODesignSystem_47b490.Badge" tone="{{d.tone}}" hint-size="auto,24px">{{ d.badgeLabel }}</x-import>
+            </div>
+          </sc-for>
+          <div onClick="{{onOpenPickDate}}" style="background: var(--color-bg-surface); border-radius: var(--radius-md); padding: 16px; text-align: center; margin-bottom: 10px; cursor: pointer; font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">Pick a date</div>
+        </div>
+
+        <div style="background: var(--color-bg-inverse); padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onCloseFlow}}" hint-size="auto,40px">back</x-import>
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onRemoveDueDate}}" hint-size="auto,40px">Remove due date</x-import>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ PICK DATE ============ -->
+    <sc-if value="{{isPickDate}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-inverse); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid rgba(255,255,255,0.4); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-inverse);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 4px 24px 0; text-align: center; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-inverse);">Pick a date</div>
+        </div>
+        <div style="padding: 28px 24px 0; flex: 1; min-height: 0;">
+          <div style="background: var(--color-bg-surface); border-radius: var(--radius-md); padding: 16px;">
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" type="date" value="{{customDateValue}}" onChange="{{onCustomDateChange}}" hint-size="100%,44px"></x-import>
+          </div>
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="primary" size="md" disabled="{{pickDateDisabled}}" onClick="{{onContinuePickDate}}" style="width: 100%; justify-content: center; margin-top: 14px;" hint-size="100%,44px">Continue</x-import>
+        </div>
+        <div style="padding: 14px 20px; display: flex; justify-content: flex-start; flex-shrink: 0;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onBackToPlanLater}}" hint-size="auto,40px">back</x-import>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ FREE SLOTS LATER ============ -->
+    <sc-if value="{{isFreeSlotsLater}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-inverse); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid rgba(255,255,255,0.4); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-inverse);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 4px 24px 0; text-align: center; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-inverse);">Free slots</div>
+          <div style="font-family: var(--font-family-base); font-size: 13px; color: var(--color-text-inverse); opacity: 0.85; margin-top: 6px;">{{ chosenDayLabel }}</div>
+        </div>
+        <div style="padding: 20px 20px 0; flex: 1; overflow-y: auto; min-height: 0;">
+          <sc-for list="{{laterSlots}}" as="s" hint-placeholder-count="3">
+            <div onClick="{{s.onClick}}" style="background: var(--color-bg-surface); border-radius: var(--radius-md); padding: 16px; text-align: center; margin-bottom: 10px; cursor: pointer; font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">{{ s.label }}</div>
+          </sc-for>
+        </div>
+        <div style="padding: 14px 20px; display: flex; justify-content: flex-start; flex-shrink: 0;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onBackToPlanLater}}" hint-size="auto,40px">back</x-import>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ DAY FULL ============ -->
+    <sc-if value="{{isDayFull}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-page); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 20px 28px 0; flex: 1;">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-feedback-wrong)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-primary); margin-top: 14px;">{{ dayFullLabel }} already looks full</div>
+          <div style="font-family: var(--font-family-base); font-size: 15px; color: var(--color-text-muted); margin-top: 8px;">{{ dayFullDetail }}</div>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 26px;">
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="primary" size="md" onClick="{{onPlanAnyway}}" style="width: 100%; justify-content: center;" hint-size="100%,44px">Plan for this day anyway</x-import>
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="ghost" size="md" onClick="{{onReviewOtherTasks}}" style="width: 100%; justify-content: center;" hint-size="100%,44px">Review other tasks on this day</x-import>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ SLOT CONFLICT ============ -->
+    <sc-if value="{{isSlotConflict}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-page); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 20px 28px 0; flex: 1;">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-feedback-wrong)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-primary); margin-top: 14px;">{{ conflictSlotLabel }} is already booked</div>
+          <div style="font-family: var(--font-family-base); font-size: 15px; color: var(--color-text-muted); margin-top: 8px;">This time slot conflicts with:</div>
+          <div style="margin-top: 14px;">
+            <sc-for list="{{conflictItems}}" as="c" hint-placeholder-count="1">
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: var(--border-width) solid var(--color-border);">
+                <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 13px; color: var(--color-text-primary);">{{ c.name }}</div>
+                <div style="font-family: var(--font-family-base); font-size: 11px; color: var(--color-text-muted);">{{ c.hourLabel }}</div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 22px;">
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="primary" size="md" onClick="{{onResolveConflictChooseAnother}}" style="width: 100%; justify-content: center;" hint-size="100%,44px">Choose another time</x-import>
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="ghost" size="md" onClick="{{onResolveConflictAnyway}}" style="width: 100%; justify-content: center;" hint-size="100%,44px">Double-book anyway</x-import>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ BREAK: NAME ============ -->
+    <sc-if value="{{isBreakName}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-surface); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 4px 24px 0; text-align: center; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-primary);">Do a part today</div>
+        </div>
+        <div style="padding: 32px 28px 0; flex: 1; min-height: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary); text-align: center; margin-bottom: 18px;">Name the part</div>
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" placeholder="e.g. Draft outline" value="{{breakNameDraft}}" onChange="{{onBreakNameChange}}" hint-size="100%,44px"></x-import>
+          <div style="display: flex; justify-content: center; margin-top: 22px;">
+            <div onClick="{{onContinueBreakName}}" title="Continue" style="width: 48px; height: 48px; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue); opacity: {{breakNameContinueOpacity}};">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+            </div>
+          </div>
+        </div>
+        <div style="background: var(--color-bg-inverse); padding: 14px 20px; flex-shrink: 0;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onCloseFlow}}" hint-size="auto,40px">back</x-import>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ BREAK: TIME ============ -->
+    <sc-if value="{{isBreakTime}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-surface); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 4px 24px 0; text-align: center; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-primary);">Do a part today</div>
+        </div>
+        <div style="padding: 24px 20px 0; flex: 1; overflow-y: auto; min-height: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary); text-align: center; margin-bottom: 16px;">When are you planning to do it?</div>
+          <sc-for list="{{breakTimeSlots}}" as="s" hint-placeholder-count="3">
+            <div onClick="{{s.onClick}}" style="border: var(--border-width) solid var(--color-brand-primary); border-radius: var(--radius-md); padding: 16px; text-align: center; margin-bottom: 10px; cursor: pointer; font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary);">{{ s.label }}</div>
+          </sc-for>
+        </div>
+        <div style="background: var(--color-bg-inverse); padding: 14px 20px; flex-shrink: 0;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onBackToBreakName}}" hint-size="auto,40px">back</x-import>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ BREAK: DURATION ============ -->
+    <sc-if value="{{isBreakDuration}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-surface); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 4px 24px 0; text-align: center; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-primary);">Do a part today</div>
+        </div>
+        <div style="padding: 32px 28px 0; flex: 1; min-height: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary); text-align: center; margin-bottom: 20px;">How long do you need?</div>
+          <div style="display: flex; align-items: center; justify-content: center; gap: 16px;">
+            <div onClick="{{onDecDuration}}" title="Decrease" style="width: 36px; height: 36px; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue); flex-shrink: 0;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg></div>
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Input" type="number" value="{{breakDurationText}}" onChange="{{onBreakDurationInput}}" style="width: 72px; text-align: center;" hint-size="72px,44px"></x-import>
+            <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 18px; color: var(--color-text-primary);">h</div>
+            <div onClick="{{onIncDuration}}" title="Increase" style="width: 36px; height: 36px; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue); flex-shrink: 0;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></div>
+          </div>
+          <div style="display: flex; justify-content: center; margin-top: 26px;">
+            <div onClick="{{onContinueBreakDuration}}" title="Continue" style="width: 48px; height: 48px; border-radius: var(--radius-md); background: var(--grips-highlight-yellow); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--grips-dark-blue);">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+            </div>
+          </div>
+        </div>
+        <div style="background: var(--color-bg-inverse); padding: 14px 20px; flex-shrink: 0;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onBackToBreakTime}}" hint-size="auto,40px">back</x-import>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ BREAK: CONFIRM ============ -->
+    <sc-if value="{{isBreakConfirm}}" hint-placeholder-val="{{false}}">
+      <div style="height: 100%; display: flex; flex-direction: column; background: var(--color-bg-surface); overflow: hidden;">
+        <div style="display: flex; justify-content: flex-end; padding: 18px 20px 0; flex-shrink: 0;">
+          <div onClick="{{onCloseFlow}}" title="Close" style="width: 36px; height: 36px; border-radius: var(--radius-md); border: 1px solid var(--color-border-strong); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--color-text-primary);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </div>
+        </div>
+        <div style="padding: 4px 24px 0; text-align: center; flex-shrink: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-extrabold); font-size: 22px; color: var(--color-text-primary);">Do a part today</div>
+        </div>
+        <div style="padding: 30px 28px 0; flex: 1; text-align: center; min-height: 0;">
+          <div style="font-family: var(--font-family-base); font-weight: var(--font-weight-bold); font-size: 15px; color: var(--color-text-primary); margin-bottom: 22px;">confirm?</div>
+          <div style="font-family: var(--font-family-base); font-size: 18px; font-weight: var(--font-weight-bold); color: var(--color-text-primary);">{{ breakConfirmName }}</div>
+          <div style="font-family: var(--font-family-base); font-size: 15px; color: var(--color-text-muted); margin-top: 8px;">{{ breakConfirmTime }}</div>
+          <div style="font-family: var(--font-family-base); font-size: 15px; color: var(--color-text-muted); margin-top: 2px;">{{ breakConfirmDurationLabel }}</div>
+          <div style="display: flex; gap: 10px; margin-top: 30px;">
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onEditBreak}}" style="flex: 1; justify-content: center;" hint-size="100%,44px">edit</x-import>
+            <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="primary" size="md" onClick="{{onCreateBreak}}" style="flex: 1; justify-content: center;" hint-size="100%,44px">create</x-import>
+          </div>
+        </div>
+        <div style="background: var(--color-bg-inverse); padding: 14px 20px; flex-shrink: 0;">
+          <x-import component-from-global-scope="GripsIODesignSystem_47b490.Button" variant="secondary" size="md" dc-props="{{footerBtnDcProps}}" onClick="{{onBackToBreakDuration}}" hint-size="auto,40px">back</x-import>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ============ TOAST ============ -->
+    <sc-if value="{{hasToast}}" hint-placeholder-val="{{false}}">
+      <div style="position: absolute; left: 16px; right: 16px; top: 16px; background: var(--grips-dark-blue); color: var(--color-text-inverse); border-radius: var(--radius-md); padding: 12px 16px; font-family: var(--font-family-base); font-size: 13px; font-weight: var(--font-weight-bold); text-align: center; box-shadow: var(--shadow-overlay); z-index: 50;">{{ toastMsg }}</div>
+    </sc-if>
+
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const TODAY_SLOTS = ['13:00\u201313:30', '16:00\u201316:30', '16:30\u201317:00'];
+const LATER_SLOTS = {
+  tomorrow: ['09:00\u201309:30', '11:00\u201312:00', '15:00\u201315:30'],
+  wednesday: ['10:00\u201310:30', '13:30\u201314:00', '16:00\u201317:00'],
+  thursday: ['09:30\u201310:00', '12:00\u201313:00', '14:00\u201315:00'],
+  nextweek: ['Mon 09:00\u201310:00', 'Wed 13:00\u201314:00', 'Fri 10:00\u201311:00'],
+  custom: ['09:00\u201309:30', '13:00\u201314:00', '16:00\u201316:30']
+};
+const LATER_META = {
+  tomorrow: { label: 'Tomorrow' },
+  wednesday: { label: 'Wednesday' },
+  thursday: { label: 'Thursday' },
+  nextweek: { label: 'Next week' }
+};
+
+function fmtHours(h) {
+  const r = Math.round(h * 10) / 10;
+  return (r % 1 === 0 ? r.toFixed(0) : r.toFixed(1)) + 'h';
+}
+
+class Component extends DCLogic {
+  state = {
+    screen: 'triage',
+    tasks: [
+      { id: 1, name: 'Create mockup for client testing', project: 'Brand refresh \u2014 Nordics', hours: 4, dueHour: '09:00' },
+      { id: 2, name: 'Write script \u2013 fire safety training', project: 'Fire Safety WBT', hours: 6, dueHour: '08:30' },
+      { id: 3, name: 'Record voiceover \u2013 onboarding course', project: 'Onboarding WBT', hours: 3, dueHour: null },
+      { id: 4, name: 'Storyboard \u2013 compliance refresher', project: 'Compliance Refresher', hours: 5, dueHour: null },
+      { id: 5, name: 'Review contractor invoice', project: 'Operations', hours: 1, dueHour: null },
+      { id: 6, name: 'Client feedback: Q3 pitch deck', project: 'New Business', hours: 2, dueHour: null },
+      { id: 7, name: 'Edit explainer video \u2013 data privacy', project: 'Data Privacy WBT', hours: 8, dueHour: '10:00' },
+      { id: 8, name: 'Subtitle localization \u2013 DE to FR', project: 'Compliance Refresher', hours: 2, dueHour: null },
+      { id: 9, name: 'Build interaction \u2013 drag & drop quiz', project: 'Onboarding WBT', hours: 4, dueHour: null },
+      { id: 10, name: 'Upload course to LMS', project: 'Fire Safety WBT', hours: 1, dueHour: '07:30' },
+      { id: 11, name: 'Prep workshop slides \u2013 leadership coaching', project: 'Leadership Coaching', hours: 3, dueHour: null },
+      { id: 12, name: 'Animate character intro', project: 'Data Privacy WBT', hours: 6, dueHour: null },
+      { id: 13, name: 'QA pass \u2013 browser compatibility', project: 'Fire Safety WBT', hours: 2, dueHour: '11:00' },
+      { id: 14, name: 'Draft voiceover script \u2013 product tour', project: 'Product Tour Video', hours: 3, dueHour: null },
+      { id: 15, name: 'Client kickoff prep', project: 'New Business', hours: 1, dueHour: null },
+      { id: 16, name: 'Retouch product photography', project: 'Marketing Assets', hours: 2, dueHour: null },
+      { id: 17, name: 'Review translation \u2013 ES', project: 'Compliance Refresher', hours: 1.5, dueHour: null },
+      { id: 18, name: 'Build quiz bank \u2013 40 questions', project: 'Onboarding WBT', hours: 5, dueHour: null },
+      { id: 19, name: 'Coordinate voice actor booking', project: 'Product Tour Video', hours: 0.5, dueHour: '09:15' },
+      { id: 20, name: 'Cut trailer \u2013 30 sec teaser', project: 'Product Tour Video', hours: 2, dueHour: null },
+      { id: 21, name: 'Update brand guidelines doc', project: 'Brand refresh \u2014 Nordics', hours: 3, dueHour: null },
+      { id: 22, name: 'Sound design pass', project: 'Data Privacy WBT', hours: 4, dueHour: null },
+      { id: 23, name: 'Client feedback round 2', project: 'Brand refresh \u2014 Nordics', hours: 2, dueHour: '13:00' },
+      { id: 24, name: 'Prep coaching session materials', project: 'Leadership Coaching', hours: 2, dueHour: null },
+      { id: 25, name: 'Motion graphics \u2013 title cards', project: 'Fire Safety WBT', hours: 3, dueHour: null },
+      { id: 26, name: 'Proofread script \u2013 compliance refresher', project: 'Compliance Refresher', hours: 1, dueHour: null },
+      { id: 27, name: 'Set up analytics tracking', project: 'Onboarding WBT', hours: 2, dueHour: null },
+      { id: 28, name: 'Vendor invoice reconciliation', project: 'Operations', hours: 1, dueHour: null },
+      { id: 29, name: 'Draft proposal \u2013 new client pitch', project: 'New Business', hours: 4, dueHour: '08:00' },
+      { id: 30, name: 'Archive completed project files', project: 'Operations', hours: 1, dueHour: null }
+    ],
+    focusIndex: 0,
+    dragX: 0,
+    dragging: false,
+    editingHours: false,
+    hoursDraft: 0,
+    editingRestId: null,
+    restHoursDraft: 0,
+    today: { planned: 10, capacity: 8 },
+    laterLoads: {
+      tomorrow: { planned: 6, capacity: 8 },
+      wednesday: { planned: 3, capacity: 8 },
+      thursday: { planned: 0, capacity: 8 },
+      nextweek: { planned: 22, capacity: 40 }
+    },
+    laterDayKey: null,
+    customDateValue: '',
+    customDayLabel: '',
+    customTimeToday: '',
+    showCustomTimeToday: false,
+    breakNameDraft: '',
+    breakTimeSlot: null,
+    breakDuration: 1,
+    prefStartTime: '09:00',
+    prefEndTime: '18:00',
+    bufferMinutes: 10,
+    asanaConnected: false,
+    outlookConnected: true,
+    activePanelEventId: null,
+    activePanelMode: null,
+    searchQuery: '',
+    pendingPlan: null,
+    pendingSlotPlan: null,
+    conflictItems: [],
+    plannedByDay: {
+      today: [
+        { name: 'Recurring meetings', hours: 4, slot: '' },
+        { name: 'In-progress: Landing page redesign', hours: 6, slot: '' }
+      ],
+      tomorrow: [
+        { name: 'Recurring meetings', hours: 2, slot: '' },
+        { name: 'In-progress: Client onboarding deck', hours: 4, slot: '' }
+      ],
+      wednesday: [
+        { name: 'Recurring meetings', hours: 3, slot: '' }
+      ],
+      thursday: [],
+      nextweek: [
+        { name: 'Sprint carryover', hours: 22, slot: '' }
+      ]
+    },
+    events: [
+      { id: 'e1', title: 'Kickoff call \u2014 Nordics client', timeLabel: 'Today \u00b7 14:00', linked: false, linkedName: null },
+      { id: 'e2', title: 'Vendor review \u2014 VO studio', timeLabel: 'Tomorrow \u00b7 10:30', linked: false, linkedName: null }
+    ],
+    toastMsg: null
+  };
+
+  showToast(msg) {
+    clearTimeout(this._toastTimer);
+    this.setState({ toastMsg: msg });
+    this._toastTimer = setTimeout(() => this.setState({ toastMsg: null }), 2600);
+  }
+
+  onCardPointerDown(e) {
+    if (e.target.closest('button')) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    this._dragStartX = e.clientX;
+    this._dragging = true;
+    this.setState({ dragging: true });
+  }
+  onCardPointerMove(e) {
+    if (!this._dragging) return;
+    const dx = Math.max(-160, Math.min(160, e.clientX - this._dragStartX));
+    this.setState({ dragX: dx });
+  }
+  onCardPointerUp() {
+    if (!this._dragging) return;
+    this._dragging = false;
+    const dx = this.state.dragX;
+    const threshold = 90;
+    this.setState({ dragX: 0, dragging: false });
+    if (dx > threshold) this.openPlanToday();
+    else if (dx < -threshold) this.openPlanLater();
+  }
+
+  goPrev() { if (this.state.tasks.length <= 1) return; this.setState(s => ({ focusIndex: (s.focusIndex - 1 + s.tasks.length) % s.tasks.length })); }
+  goNext() { if (this.state.tasks.length <= 1) return; this.setState(s => ({ focusIndex: (s.focusIndex + 1) % s.tasks.length })); }
+  selectFocus(id) { this.setState(s => ({ focusIndex: Math.max(0, s.tasks.findIndex(t => t.id === id)) })); }
+
+  openSettings() { this.setState({ screen: 'settings' }); }
+  closeSettings() { this.setState({ screen: 'triage' }); }
+  onPrefStartChange(v) { this.setState({ prefStartTime: v }); }
+  onPrefEndChange(v) { this.setState({ prefEndTime: v }); }
+  onBufferChange(v) { const n = parseInt(v, 10); this.setState({ bufferMinutes: v === '' ? 0 : (isNaN(n) ? 0 : n) }); }
+
+  openIntegrations() { this.setState({ screen: 'integrations' }); }
+  closeIntegrations() { this.setState({ screen: 'settings' }); }
+  connectAsana() { this.setState({ asanaConnected: true }); this.showToast('Asana connected'); }
+  connectOutlook() { this.setState({ outlookConnected: true }); this.showToast('Outlook connected'); }
+
+  isDayFull(key) {
+    if (key === 'today') { const t = this.state.today; return t.planned / t.capacity >= 1; }
+    const l = this.state.laterLoads[key];
+    return l ? l.planned / l.capacity >= 1 : false;
+  }
+
+  openPlanToday() {
+    if (this.isDayFull('today')) { this.setState({ screen: 'dayFull', pendingPlan: { type: 'today' } }); return; }
+    this.setState({ screen: 'planToday', showCustomTimeToday: false });
+  }
+  openPlanLater() { this.setState({ screen: 'planLater' }); }
+  openPickDate() { this.setState({ screen: 'pickDate' }); }
+  onPlanAnyway() {
+    const p = this.state.pendingPlan;
+    if (!p) { this.setState({ screen: 'triage' }); return; }
+    if (p.type === 'today') this.setState({ screen: 'planToday', showCustomTimeToday: false });
+    else this.setState({ screen: 'freeSlotsLater', laterDayKey: p.key });
+  }
+  onReviewOtherTasks() { this.setState({ screen: 'triage', focusIndex: 0 }); }
+  closeFlow() { this.setState({ screen: 'triage', showCustomTimeToday: false }); }
+  backToPlanLater() { this.setState({ screen: 'planLater' }); }
+  openOverview() { this.setState({ screen: 'overview' }); }
+  closeOverview() { this.setState({ screen: 'triage' }); }
+
+  resolveFocusTask(extra) {
+    this.setState(s => {
+      const task = s.tasks[s.focusIndex];
+      const newTasks = s.tasks.filter(t => t.id !== task.id);
+      const newFocus = Math.min(s.focusIndex, Math.max(0, newTasks.length - 1));
+      return Object.assign({ tasks: newTasks, focusIndex: newFocus, screen: 'triage' }, extra ? extra(task, s) : {});
+    });
+  }
+
+  commitPlanToday(slot) {
+    const task = this.state.tasks[this.state.focusIndex];
+    this.resolveFocusTask((t, s) => ({
+      today: { ...s.today, planned: s.today.planned + t.hours },
+      plannedByDay: { ...s.plannedByDay, today: [...s.plannedByDay.today, { name: t.name, hours: t.hours, slot }] }
+    }));
+    this.showToast(`Planned "${task.name}" today at ${slot} \u00b7 synced to Asana`);
+  }
+
+  toggleCustomTimeToday() { this.setState(s => ({ showCustomTimeToday: !s.showCustomTimeToday })); }
+  onCustomTimeTodayChange(v) { this.setState({ customTimeToday: v }); }
+  confirmCustomTimeToday() {
+    if (!this.state.customTimeToday) return;
+    this.tryPlanTodaySlot(this.state.customTimeToday);
+  }
+
+  findConflict(dayKey, slot) {
+    const items = this.state.plannedByDay[dayKey] || [];
+    return items.filter(i => i.slot && i.slot === slot);
+  }
+  tryPlanTodaySlot(slot) {
+    const conflicts = this.findConflict('today', slot);
+    if (conflicts.length) { this.setState({ screen: 'slotConflict', pendingSlotPlan: { kind: 'today', slot }, conflictItems: conflicts }); return; }
+    this.commitPlanToday(slot);
+  }
+  tryPlanLaterSlot(slot) {
+    const dayKey = this.state.laterDayKey;
+    const conflicts = this.findConflict(dayKey, slot);
+    if (conflicts.length) { this.setState({ screen: 'slotConflict', pendingSlotPlan: { kind: 'later', dayKey, slot }, conflictItems: conflicts }); return; }
+    const label = dayKey === 'custom' ? this.state.customDayLabel : (LATER_META[dayKey] ? LATER_META[dayKey].label : '');
+    this.commitPlanLater(dayKey, label, slot);
+  }
+  tryBreakTime(slot) {
+    const conflicts = this.findConflict('today', slot);
+    if (conflicts.length) { this.setState({ screen: 'slotConflict', pendingSlotPlan: { kind: 'break', slot }, conflictItems: conflicts }); return; }
+    this.selectBreakTime(slot);
+  }
+  resolveConflictAnyway() {
+    const p = this.state.pendingSlotPlan;
+    if (!p) return;
+    if (p.kind === 'today') this.commitPlanToday(p.slot);
+    else if (p.kind === 'later') {
+      const label = p.dayKey === 'custom' ? this.state.customDayLabel : (LATER_META[p.dayKey] ? LATER_META[p.dayKey].label : '');
+      this.commitPlanLater(p.dayKey, label, p.slot);
+    } else if (p.kind === 'break') this.selectBreakTime(p.slot);
+  }
+  resolveConflictChooseAnother() {
+    const p = this.state.pendingSlotPlan;
+    if (!p) { this.setState({ screen: 'triage' }); return; }
+    if (p.kind === 'today') this.setState({ screen: 'planToday' });
+    else if (p.kind === 'later') this.setState({ screen: 'freeSlotsLater' });
+    else if (p.kind === 'break') this.setState({ screen: 'breakTime' });
+  }
+
+  commitPlanLater(dayKey, dayLabel, slot) {
+    const task = this.state.tasks[this.state.focusIndex];
+    this.resolveFocusTask((t, s) => {
+      if (LATER_META[dayKey]) {
+        return {
+          laterLoads: { ...s.laterLoads, [dayKey]: { ...s.laterLoads[dayKey], planned: s.laterLoads[dayKey].planned + t.hours } },
+          plannedByDay: { ...s.plannedByDay, [dayKey]: [...(s.plannedByDay[dayKey] || []), { name: t.name, hours: t.hours, slot }] }
+        };
+      }
+      return {};
+    });
+    this.showToast(`Planned "${task.name}" for ${dayLabel} at ${slot} \u00b7 due date synced to Asana`);
+  }
+
+  removeDueDate() {
+    const task = this.state.tasks[this.state.focusIndex];
+    this.resolveFocusTask();
+    this.showToast(`Removed due date on "${task.name}" \u00b7 synced to Asana`);
+  }
+
+  selectLaterDay(key) {
+    if (this.isDayFull(key)) { this.setState({ screen: 'dayFull', pendingPlan: { type: 'later', key } }); return; }
+    this.setState({ screen: 'freeSlotsLater', laterDayKey: key });
+  }
+  onCustomDateChange(v) { this.setState({ customDateValue: v }); }
+  continuePickDate() {
+    const v = this.state.customDateValue;
+    if (!v) return;
+    const label = new Date(v + 'T00:00').toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' });
+    this.setState({ screen: 'freeSlotsLater', laterDayKey: 'custom', customDayLabel: label });
+  }
+
+  onEditHours() { this.setState(s => ({ editingHours: true, hoursDraft: s.tasks[s.focusIndex].hours })); }
+  decHour() { this.setState(s => ({ hoursDraft: Math.max(0.5, s.hoursDraft - 0.5) })); }
+  incHour() { this.setState(s => ({ hoursDraft: Math.min(40, s.hoursDraft + 0.5) })); }
+  onHoursDraftInput(v) { const n = parseFloat(v); this.setState({ hoursDraft: v === '' ? 0 : (isNaN(n) ? 0 : n) }); }
+  confirmHours() {
+    this.setState(s => {
+      const task = s.tasks[s.focusIndex];
+      const tasks = s.tasks.map(t => t.id === task.id ? { ...t, hours: s.hoursDraft } : t);
+      return { tasks, editingHours: false };
+    });
+    this.showToast(`Updated estimate \u00b7 synced to Asana`);
+  }
+
+  onEditRestHours(id, hours) { this.setState({ editingRestId: id, restHoursDraft: hours }); }
+  decRestHour() { this.setState(s => ({ restHoursDraft: Math.max(0.5, s.restHoursDraft - 0.5) })); }
+  incRestHour() { this.setState(s => ({ restHoursDraft: Math.min(40, s.restHoursDraft + 0.5) })); }
+  onRestHoursInput(v) { const n = parseFloat(v); this.setState({ restHoursDraft: v === '' ? 0 : (isNaN(n) ? 0 : n) }); }
+  confirmRestHours(id) {
+    this.setState(s => ({
+      tasks: s.tasks.map(t => t.id === id ? { ...t, hours: s.restHoursDraft } : t),
+      editingRestId: null
+    }));
+    this.showToast('Updated estimate \u00b7 synced to Asana');
+  }
+
+  startBreak() { this.setState({ screen: 'breakName', breakNameDraft: '', breakTimeSlot: null, breakDuration: 1 }); }
+  onBreakNameChange(v) { this.setState({ breakNameDraft: v }); }
+  continueBreakName() {
+    if (!this.state.breakNameDraft.trim()) return;
+    this.setState({ screen: 'breakTime' });
+  }
+  backToBreakName() { this.setState({ screen: 'breakName' }); }
+  selectBreakTime(slot) { this.setState({ breakTimeSlot: slot, screen: 'breakDuration' }); }
+  backToBreakTime() { this.setState({ screen: 'breakTime' }); }
+  decDuration() { this.setState(s => ({ breakDuration: Math.max(0.5, s.breakDuration - 0.5) })); }
+  incDuration() { this.setState(s => ({ breakDuration: Math.min(8, s.breakDuration + 0.5) })); }
+  onBreakDurationInput(v) { const n = parseFloat(v); this.setState({ breakDuration: v === '' ? 0 : (isNaN(n) ? 0 : n) }); }
+  continueBreakDuration() { this.setState({ screen: 'breakConfirm' }); }
+  backToBreakDuration() { this.setState({ screen: 'breakDuration' }); }
+  editBreak() { this.setState({ screen: 'breakName' }); }
+  createBreak() {
+    const s = this.state;
+    const parent = s.tasks[s.focusIndex];
+    const dur = s.breakDuration;
+    const name = s.breakNameDraft;
+    const slot = s.breakTimeSlot;
+    this.setState(st => {
+      const remaining = Math.max(0, parent.hours - dur);
+      let tasks = st.tasks.map(t => t.id === parent.id ? { ...t, hours: remaining } : t);
+      if (remaining <= 0) tasks = tasks.filter(t => t.id !== parent.id);
+      const stillHasRest = remaining > 0;
+      const focusIndex = stillHasRest ? tasks.findIndex(t => t.id === parent.id) : Math.min(st.focusIndex, Math.max(0, tasks.length - 1));
+      return {
+        tasks, focusIndex: Math.max(0, focusIndex),
+        today: { ...st.today, planned: st.today.planned + dur },
+        screen: stillHasRest ? 'planLater' : 'triage',
+        plannedByDay: { ...st.plannedByDay, today: [...st.plannedByDay.today, { name, hours: dur, slot }] }
+      };
+    });
+    this.showToast(`"${name}" scheduled today at ${slot} (${fmtHours(dur)}) \u00b7 synced to Asana`);
+  }
+
+  openAddPanel(eventId) { this.setState({ activePanelEventId: eventId, activePanelMode: 'add', searchQuery: '' }); }
+  openLinkPanel(eventId) { this.setState({ activePanelEventId: eventId, activePanelMode: 'link', searchQuery: '' }); }
+  closeSearchPanel() { this.setState({ activePanelEventId: null, activePanelMode: null, searchQuery: '' }); }
+  onSearchChange(v) { this.setState({ searchQuery: v }); }
+
+  addEventAsTaskWithProject(eventId, projectName) {
+    const ev = this.state.events.find(e => e.id === eventId);
+    this.setState(s => ({
+      tasks: [...s.tasks, { id: Date.now(), name: ev.title, project: projectName, hours: 1, dueHour: null }],
+      events: s.events.map(e => e.id === eventId ? { ...e, linked: true, linkedName: ev.title } : e),
+      activePanelEventId: null, activePanelMode: null, searchQuery: ''
+    }));
+    this.showToast(`Added "${ev.title}" to ${projectName} \u00b7 synced to Asana`);
+  }
+  addEventAsSubtask(eventId, parentTaskId) {
+    const ev = this.state.events.find(e => e.id === eventId);
+    const parent = this.state.tasks.find(t => t.id === parentTaskId);
+    this.setState(s => ({
+      tasks: [...s.tasks, { id: Date.now(), name: ev.title, project: `Subtask of \u201c${parent.name}\u201d`, hours: 1, dueHour: null }],
+      events: s.events.map(e => e.id === eventId ? { ...e, linked: true, linkedName: ev.title } : e),
+      activePanelEventId: null, activePanelMode: null, searchQuery: ''
+    }));
+    this.showToast(`Added "${ev.title}" as a subtask of "${parent.name}" \u00b7 synced to Asana`);
+  }
+  linkEventToTask(eventId, taskId) {
+    const task = this.state.tasks.find(t => t.id === taskId);
+    const ev = this.state.events.find(e => e.id === eventId);
+    this.setState(s => ({
+      events: s.events.map(e => e.id === eventId ? { ...e, linked: true, linkedName: task.name } : e),
+      activePanelEventId: null, activePanelMode: null, searchQuery: ''
+    }));
+    this.showToast(`Linked "${ev.title}" to "${task.name}" \u00b7 synced to Asana`);
+  }
+
+  openAsana(name) { this.showToast(`Opening "${name}" in Asana\u2026`); }
+
+  renderVals() {
+    const s = this.state;
+    const tasks = s.tasks;
+    const hasFocusTask = tasks.length > 0;
+    const focusRaw = hasFocusTask ? tasks[s.focusIndex] : null;
+
+    const focusTask = focusRaw ? {
+      name: focusRaw.name,
+      project: focusRaw.project,
+      hourLabel: fmtHours(focusRaw.hours),
+      badgeTone: focusRaw.dueHour ? 'wrong' : 'neutral',
+      badgeLabel: focusRaw.dueHour ? `Overdue \u00b7 ${focusRaw.dueHour}` : 'Unplanned',
+      onOpenAsana: () => this.openAsana(focusRaw.name)
+    } : null;
+
+    const restTasks = hasFocusTask ? tasks.filter(t => t.id !== focusRaw.id).map(t => {
+      const isEditing = s.editingRestId === t.id;
+      return {
+        id: t.id,
+        name: t.name,
+        project: t.project,
+        hourLabel: fmtHours(t.hours),
+        dotColor: t.dueHour ? 'var(--color-feedback-wrong)' : 'var(--color-border-strong)',
+        onSelect: () => this.selectFocus(t.id),
+        isEditing,
+        isEditingNot: !isEditing,
+        restHoursDraftLabel: fmtHours(s.restHoursDraft),
+        restHoursDraftText: String(s.restHoursDraft),
+        onEditHours: (e) => { e.stopPropagation(); this.onEditRestHours(t.id, t.hours); },
+        onDec: (e) => { e.stopPropagation(); this.decRestHour(); },
+        onInc: (e) => { e.stopPropagation(); this.incRestHour(); },
+        onRestHoursInput: (v) => this.onRestHoursInput(v),
+        onSave: (e) => { e.stopPropagation(); this.confirmRestHours(t.id); }
+      };
+    }) : [];
+
+    const todayRatio = s.today.planned / s.today.capacity;
+    const todayBadgeBg = todayRatio >= 1 ? 'var(--color-feedback-wrong)' : 'var(--color-feedback-correct)';
+
+    const laterDays = Object.keys(LATER_META).map(key => {
+      const load = s.laterLoads[key];
+      const ratio = load.planned / load.capacity;
+      return {
+        key,
+        label: LATER_META[key].label,
+        badgeLabel: `${load.planned}/${load.capacity}h`,
+        tone: ratio >= 1 ? 'wrong' : 'correct',
+        onClick: () => this.selectLaterDay(key)
+      };
+    });
+
+    const chosenDayLabel = s.laterDayKey === 'custom' ? s.customDayLabel : (LATER_META[s.laterDayKey] ? LATER_META[s.laterDayKey].label : '');
+    const laterSlots = (LATER_SLOTS[s.laterDayKey] || []).map(label => ({
+      label,
+      onClick: () => this.tryPlanLaterSlot(label)
+    }));
+
+    const planTodaySlots = TODAY_SLOTS.map(label => ({ label, onClick: () => this.tryPlanTodaySlot(label) }));
+    const breakTimeSlots = TODAY_SLOTS.map(label => ({ label, onClick: () => this.tryBreakTime(label) }));
+
+    const conflictItems = (s.conflictItems || []).map(i => ({ name: i.name, hourLabel: fmtHours(i.hours) }));
+    const conflictSlotLabel = s.pendingSlotPlan ? s.pendingSlotPlan.slot : '';
+
+    const overviewDaysBase = [{ label: 'Today', planned: s.today.planned, capacity: s.today.capacity }]
+      .concat(Object.keys(LATER_META).map(key => ({ label: LATER_META[key].label, planned: s.laterLoads[key].planned, capacity: s.laterLoads[key].capacity })));
+    const overviewDays = overviewDaysBase.map(d => {
+      const ratio = d.planned / d.capacity;
+      const over = ratio >= 1;
+      return {
+        label: d.label,
+        hoursLabel: `${d.planned}/${d.capacity}h`,
+        barWidth: Math.min(100, ratio * 100) + '%',
+        barColor: over ? 'var(--color-feedback-wrong)' : 'var(--color-feedback-correct)',
+        textColor: over ? 'var(--color-feedback-wrong)' : 'var(--color-text-muted)'
+      };
+    });
+
+    const query = s.searchQuery.trim().toLowerCase();
+    const uniqueProjects = [...new Set(tasks.map(t => t.project))];
+    const overviewEvents = s.events.map(e => {
+      const panelOpen = s.activePanelEventId === e.id;
+      const mode = panelOpen ? s.activePanelMode : null;
+      let searchResults = [];
+      if (mode === 'add') {
+        searchResults = uniqueProjects.filter(p => !query || p.toLowerCase().includes(query)).map(p => ({ label: p, typeLabel: 'Project', onSelect: () => this.addEventAsTaskWithProject(e.id, p) }))
+          .concat(tasks.filter(t => !query || t.name.toLowerCase().includes(query)).map(t => ({ label: t.name, typeLabel: 'Subtask of', onSelect: () => this.addEventAsSubtask(e.id, t.id) })));
+      } else if (mode === 'link') {
+        searchResults = tasks.filter(t => !query || t.name.toLowerCase().includes(query)).map(t => ({ label: t.name, typeLabel: 'Task', onSelect: () => this.linkEventToTask(e.id, t.id) }));
+      }
+      return {
+        id: e.id,
+        title: e.title,
+        timeLabel: e.timeLabel,
+        statusLabel: e.linked ? `${e.timeLabel} \u00b7 linked to "${e.linkedName}"` : e.timeLabel,
+        showActions: !e.linked,
+        panelOpen,
+        panelTitle: mode === 'add' ? 'Add to project or subtask' : 'Link to a task',
+        onOpenAdd: () => this.openAddPanel(e.id),
+        onOpenLink: () => this.openLinkPanel(e.id),
+        onClosePanel: () => this.closeSearchPanel(),
+        searchQuery: s.searchQuery,
+        onSearchChange: (v) => this.onSearchChange(v),
+        searchResults
+      };
+    });
+
+    const pendingPlan = s.pendingPlan;
+    const dayFullKey = pendingPlan ? (pendingPlan.type === 'today' ? 'today' : pendingPlan.key) : null;
+    const dayFullLoad = dayFullKey === 'today' ? s.today : (dayFullKey ? s.laterLoads[dayFullKey] : null);
+    const dayFullLabel = dayFullKey === 'today' ? 'Today' : (dayFullKey && LATER_META[dayFullKey] ? LATER_META[dayFullKey].label : '');
+    const dayFullDetail = dayFullLoad ? `${dayFullLoad.planned}/${dayFullLoad.capacity}h already planned` : '';
+
+    const now = new Date();
+
+    return {
+      isTriage: s.screen === 'triage',
+      isSettings: s.screen === 'settings',
+      isOverview: s.screen === 'overview',
+      isPlanToday: s.screen === 'planToday',
+      isPlanLater: s.screen === 'planLater',
+      isPickDate: s.screen === 'pickDate',
+      isFreeSlotsLater: s.screen === 'freeSlotsLater',
+      isBreakName: s.screen === 'breakName',
+      isBreakTime: s.screen === 'breakTime',
+      isBreakDuration: s.screen === 'breakDuration',
+      isBreakConfirm: s.screen === 'breakConfirm',
+      isIntegrations: s.screen === 'integrations',
+      isDayFull: s.screen === 'dayFull',
+      isSlotConflict: s.screen === 'slotConflict',
+      conflictSlotLabel,
+      conflictItems,
+      onResolveConflictAnyway: () => this.resolveConflictAnyway(),
+      onResolveConflictChooseAnother: () => this.resolveConflictChooseAnother(),
+
+      bufferMinutesText: String(s.bufferMinutes),
+      onBufferChange: (v) => this.onBufferChange(v),
+      onOpenIntegrations: () => this.openIntegrations(),
+      onCloseIntegrations: () => this.closeIntegrations(),
+      asanaConnected: s.asanaConnected,
+      asanaNotConnected: !s.asanaConnected,
+      outlookConnected: s.outlookConnected,
+      outlookNotConnected: !s.outlookConnected,
+      onConnectAsana: () => this.connectAsana(),
+      onConnectOutlook: () => this.connectOutlook(),
+
+      dayFullLabel,
+      dayFullDetail,
+      onPlanAnyway: () => this.onPlanAnyway(),
+      onReviewOtherTasks: () => this.onReviewOtherTasks(),
+
+      footerBtnDcProps: { style: { border: '1px solid rgba(255,255,255,0.4)' } },
+
+      onOpenSettings: () => this.openSettings(),
+      onCloseSettings: () => this.closeSettings(),
+      prefStartTime: s.prefStartTime,
+      prefEndTime: s.prefEndTime,
+      onPrefStartChange: (v) => this.onPrefStartChange(v),
+      onPrefEndChange: (v) => this.onPrefEndChange(v),
+
+      hasFocusTask,
+      noFocusTask: !hasFocusTask,
+      hasRestTasks: restTasks.length > 0,
+      focusTask,
+      restTasks,
+      queueLabel: hasFocusTask ? `Task ${s.focusIndex + 1} of ${tasks.length} to plan` : '',
+      navBtnOpacity: tasks.length <= 1 ? 0.4 : 1,
+      navBtnPointer: tasks.length <= 1 ? 'none' : 'auto',
+      onGoPrev: () => this.goPrev(),
+      onGoNext: () => this.goNext(),
+
+      onCardPointerDown: (e) => this.onCardPointerDown(e),
+      onCardPointerMove: (e) => this.onCardPointerMove(e),
+      onCardPointerUp: (e) => this.onCardPointerUp(e),
+      cardTransform: `translateX(${s.dragX}px) rotate(${s.dragX / 20}deg)`,
+      cardTransition: s.dragging ? 'none' : 'transform 220ms cubic-bezier(0.4,0,0.2,1)',
+      planTodayRevealOpacity: Math.max(0, Math.min(1, s.dragX / 90)),
+      planLaterRevealOpacity: Math.max(0, Math.min(1, -s.dragX / 90)),
+
+      editingHours: s.editingHours,
+      notEditingHours: !s.editingHours,
+      hoursDraftLabel: fmtHours(s.hoursDraft),
+      hoursDraftText: String(s.hoursDraft),
+      onEditHours: () => this.onEditHours(),
+      onDecHour: () => this.decHour(),
+      onIncHour: () => this.incHour(),
+      onHoursDraftInput: (v) => this.onHoursDraftInput(v),
+      onConfirmHours: () => this.confirmHours(),
+
+      onOpenPlanToday: () => this.openPlanToday(),
+      onOpenPlanLater: () => this.openPlanLater(),
+      onStartBreak: () => this.startBreak(),
+      onOpenOverview: () => this.openOverview(),
+      onCloseOverview: () => this.closeOverview(),
+      onCloseFlow: () => this.closeFlow(),
+      onBackToPlanLater: () => this.backToPlanLater(),
+
+      todayBadgeBg,
+      todayBadgeLabel: `${s.today.planned}/${s.today.capacity}h`,
+      todayDateLabel: now.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' }),
+
+      overviewDays,
+      overviewEvents,
+
+      planTargetLabel: focusRaw ? `${focusRaw.name} \u00b7 needs ${fmtHours(focusRaw.hours)}` : '',
+      planTodaySlots,
+      showCustomTimeToday: s.showCustomTimeToday,
+      notShowCustomTimeToday: !s.showCustomTimeToday,
+      onToggleCustomTimeToday: () => this.toggleCustomTimeToday(),
+      customTimeToday: s.customTimeToday,
+      onCustomTimeTodayChange: (v) => this.onCustomTimeTodayChange(v),
+      onConfirmCustomTimeToday: () => this.confirmCustomTimeToday(),
+
+      laterDays,
+      onOpenPickDate: () => this.openPickDate(),
+      onRemoveDueDate: () => this.removeDueDate(),
+
+      customDateValue: s.customDateValue,
+      onCustomDateChange: (v) => this.onCustomDateChange(v),
+      onContinuePickDate: () => this.continuePickDate(),
+      pickDateDisabled: !s.customDateValue,
+
+      chosenDayLabel,
+      laterSlots,
+
+      breakNameDraft: s.breakNameDraft,
+      onBreakNameChange: (v) => this.onBreakNameChange(v),
+      onContinueBreakName: () => this.continueBreakName(),
+      breakNameContinueOpacity: s.breakNameDraft.trim() ? 1 : 0.4,
+      breakTimeSlots,
+      onBackToBreakName: () => this.backToBreakName(),
+      onBackToBreakTime: () => this.backToBreakTime(),
+      breakDurationLabel: fmtHours(s.breakDuration),
+      breakDurationText: String(s.breakDuration),
+      onDecDuration: () => this.decDuration(),
+      onIncDuration: () => this.incDuration(),
+      onBreakDurationInput: (v) => this.onBreakDurationInput(v),
+      onContinueBreakDuration: () => this.continueBreakDuration(),
+      onBackToBreakDuration: () => this.backToBreakDuration(),
+      onEditBreak: () => this.editBreak(),
+      onCreateBreak: () => this.createBreak(),
+      breakConfirmName: s.breakNameDraft,
+      breakConfirmTime: s.breakTimeSlot,
+      breakConfirmDurationLabel: fmtHours(s.breakDuration),
+
+      hasToast: !!s.toastMsg,
+      toastMsg: s.toastMsg
+    };
+  }
+}
+</script>
+</body>
+</html>
