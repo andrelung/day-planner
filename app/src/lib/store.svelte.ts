@@ -266,21 +266,25 @@ class PlannerStore {
     void this.patchSettings({ bufferMinutes: this.bufferMinutes });
   }
 
-  connectAsana() {
-    window.location.href = '/auth/asana/start';
+  // --- login / provider-connect links ---
+  // These are real hrefs (not window.location.href set from a click
+  // handler) so the login buttons render as genuine <a> tags: on iOS,
+  // Asana's app registers Universal Links for app.asana.com and can
+  // intercept the OAuth redirect, showing its own "couldn't load content"
+  // error instead of the login page. A real anchor lets the user long-press
+  // it and choose "Open in New Tab" to route around that, which isn't
+  // possible on a JS-driven navigation from a plain <button>.
+  get asanaLoginUrl() {
+    return '/auth/asana/start';
   }
-  connectOutlook() {
-    window.location.href = '/auth/outlook/start';
+  get outlookLoginUrl() {
+    return '/auth/outlook/start';
+  }
+  get secondaryProviderLoginUrl() {
+    const other: Provider = this.primaryProvider === 'ASANA' ? 'outlook' : 'asana';
+    return `/auth/${other}/start`;
   }
 
-  // --- login ---
-  chooseLoginProvider(provider: Provider) {
-    window.location.href = `/auth/${provider}/start`;
-  }
-  connectSecondaryProvider() {
-    const other: Provider = this.primaryProvider === 'ASANA' ? 'outlook' : 'asana';
-    window.location.href = `/auth/${other}/start`;
-  }
   async skipSecondaryProvider() {
     await this.enterTriage();
   }

@@ -28,7 +28,7 @@
           {/if}
         </div>
       {:else}
-        <Button variant="secondary" size="sm" onclick={() => planner.connectAsana()}>Connect</Button>
+        <Button variant="secondary" size="sm" href={planner.asanaLoginUrl}>Connect</Button>
       {/if}
     </div>
 
@@ -46,7 +46,7 @@
           {/if}
         </div>
       {:else}
-        <Button variant="secondary" size="sm" onclick={() => planner.connectOutlook()}>Connect</Button>
+        <Button variant="secondary" size="sm" href={planner.outlookLoginUrl}>Connect</Button>
       {/if}
     </div>
   </div>

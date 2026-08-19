@@ -11,17 +11,17 @@
       becomes your primary login, and you'll connect the other one next.
     </div>
 
-    <button class="provider-row" onclick={() => planner.chooseLoginProvider('asana')}>
+    <a class="provider-row" href={planner.asanaLoginUrl}>
       <div class="avatar">A</div>
       <div class="provider-name">Continue with Asana</div>
       <Icon name="chevron-right" size={16} color="var(--color-text-muted)" />
-    </button>
+    </a>
 
-    <button class="provider-row" style="margin-top:12px;" onclick={() => planner.chooseLoginProvider('outlook')}>
+    <a class="provider-row" style="margin-top:12px;" href={planner.outlookLoginUrl}>
       <div class="avatar">O</div>
       <div class="provider-name">Continue with Outlook</div>
       <Icon name="chevron-right" size={16} color="var(--color-text-muted)" />
-    </button>
+    </a>
   </div>
 </div>
 
@@ -63,6 +63,8 @@
     margin-top: 28px;
     cursor: pointer;
     text-align: left;
+    text-decoration: none;
+    box-sizing: border-box;
   }
   .avatar {
     width: 44px;

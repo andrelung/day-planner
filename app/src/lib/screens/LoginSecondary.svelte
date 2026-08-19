@@ -15,7 +15,7 @@
     <div class="provider-row">
       <div class="avatar">{initial}</div>
       <div class="provider-name">{label} Account</div>
-      <Button variant="secondary" size="sm" onclick={() => planner.connectSecondaryProvider()}>Connect</Button>
+      <Button variant="secondary" size="sm" href={planner.secondaryProviderLoginUrl}>Connect</Button>
     </div>
 
     <button class="skip" onclick={() => planner.skipSecondaryProvider()}>Skip for now</button>

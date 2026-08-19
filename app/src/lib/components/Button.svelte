@@ -8,9 +8,14 @@
     fullWidth?: boolean;
     invertedBorder?: boolean;
     onclick?: (e: MouseEvent) => void;
+    /// Renders as a real <a href> instead of a <button> — needed for
+    /// external-navigation actions (OAuth login/connect links) so the user
+    /// can long-press for "Open in New Tab", which iOS only offers on real
+    /// links, not JS-driven navigation from a button.
+    href?: string;
     children: Snippet;
   }
-  let { variant = 'primary', size = 'md', disabled = false, fullWidth = false, invertedBorder = false, onclick, children }: Props = $props();
+  let { variant = 'primary', size = 'md', disabled = false, fullWidth = false, invertedBorder = false, onclick, href, children }: Props = $props();
 
   const dims = $derived(
     {
@@ -21,16 +26,28 @@
   );
 </script>
 
-<button
-  class="ds-button ds-button--{variant}"
-  class:full-width={fullWidth}
-  class:inverted-border={invertedBorder}
-  style="height:{dims.height}; padding:{dims.padding}; font-size:{dims.fontSize};"
-  {disabled}
-  onclick={disabled ? undefined : onclick}
->
-  {@render children()}
-</button>
+{#if href}
+  <a
+    {href}
+    class="ds-button ds-button--{variant}"
+    class:full-width={fullWidth}
+    class:inverted-border={invertedBorder}
+    style="height:{dims.height}; padding:{dims.padding}; font-size:{dims.fontSize};"
+  >
+    {@render children()}
+  </a>
+{:else}
+  <button
+    class="ds-button ds-button--{variant}"
+    class:full-width={fullWidth}
+    class:inverted-border={invertedBorder}
+    style="height:{dims.height}; padding:{dims.padding}; font-size:{dims.fontSize};"
+    {disabled}
+    onclick={disabled ? undefined : onclick}
+  >
+    {@render children()}
+  </button>
+{/if}
 
 <style>
   .ds-button {
@@ -46,6 +63,8 @@
       background var(--duration-fast) var(--ease-standard),
       filter var(--duration-fast) var(--ease-standard);
     border: none;
+    text-decoration: none;
+    box-sizing: border-box;
   }
   .ds-button.full-width {
     width: 100%;

@@ -64,6 +64,12 @@ ngrok's free tier gives you a new random subdomain every time you restart the tu
 
 `vite.config.ts` sets `allowedHosts: true` so Vite accepts requests carrying an ngrok (or LAN-IP) `Host` header instead of 403ing them — that's dev-only (`vite build`/production is unaffected) and fine for a local dev server with no real data behind it directly.
 
+### If "Continue with Asana" opens the Asana app instead of signing in (iOS)
+
+If the Asana app is installed on the iPhone, tapping the sign-in link can hand off to the native app instead of showing Asana's login page in the browser, and the app shows a generic "couldn't load content" toast (it doesn't know what to do with an OAuth authorize URL). This is iOS [Universal Links](https://developer.apple.com/ios/universal-links/) — Asana's app registers `app.asana.com` as one of its own links, so iOS intercepts the navigation before it ever reaches Safari — and it's a [known, currently-unresolved issue on Asana's own side](https://forum.asana.com/t/oauth-authorization-problems-for-native-app-or-mobile-web/496427), not something this app's code can force iOS not to do.
+
+The login/connect buttons are real `<a href>` links (not JavaScript-triggered navigation) specifically so you have a manual escape hatch: **long-press "Continue with Asana"** and choose **Open in New Tab** (or **Open in Safari**, wording varies by iOS version) from the menu that appears, instead of tapping it normally. That routes around the app handoff. The quickest way to avoid it entirely while testing is to just not have the Asana app installed on the test device.
+
 ## Install as an app (iOS / Android)
 
 Day Planner ships a web app manifest and icons (`app/public/manifest.webmanifest`, `apple-touch-icon.png`, `pwa-192.png`/`pwa-512.png`), so once you have it open in a mobile browser — over `http://localhost:3000` in the simulator, a LAN IP, or an ngrok URL (see above) — you can add it to the home screen and it opens full-screen, without Safari/Chrome's address bar.
