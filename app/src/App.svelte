@@ -9,6 +9,7 @@
   import Triage from './lib/screens/Triage.svelte';
   import Settings from './lib/screens/Settings.svelte';
   import Integrations from './lib/screens/Integrations.svelte';
+  import PendingActions from './lib/screens/PendingActions.svelte';
   import Overview from './lib/screens/Overview.svelte';
   import PlanToday from './lib/screens/PlanToday.svelte';
   import PlanLater from './lib/screens/PlanLater.svelte';
@@ -74,6 +75,8 @@
       <Settings />
     {:else if planner.screen === 'integrations'}
       <Integrations />
+    {:else if planner.screen === 'pendingActions'}
+      <PendingActions />
     {:else if planner.screen === 'overview'}
       <Overview />
     {:else if planner.screen === 'planToday'}

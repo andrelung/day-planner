@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { planner } from '../store.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Input from '../components/Input.svelte';
@@ -8,6 +9,12 @@
   // works, it just won't offer the full list.
   const timezones: string[] =
     typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [planner.timezone, 'UTC'];
+
+  // So the "Pending & Failed Actions" row's badge count is current the
+  // moment Settings opens, not just after the user has already drilled in.
+  onMount(() => {
+    void planner.refreshPendingActions();
+  });
 </script>
 
 <div class="screen">
@@ -39,6 +46,17 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
         ><polyline points="9 18 15 12 9 6"></polyline></svg
       >
+    </button>
+    <button class="row" onclick={() => planner.openPendingActions()}>
+      <div class="row__label">Pending &amp; Failed Actions</div>
+      <div class="row__right">
+        {#if planner.pendingActions.length > 0}
+          <span class="row__badge">{planner.pendingActions.length}</span>
+        {/if}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+          ><polyline points="9 18 15 12 9 6"></polyline></svg
+        >
+      </div>
     </button>
     <button
       class="row"
@@ -139,6 +157,25 @@
   }
   .row__label--danger {
     color: var(--color-feedback-wrong);
+  }
+  .row__right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .row__badge {
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--color-feedback-wrong);
+    color: var(--color-text-inverse);
+    font-family: var(--font-family-base);
+    font-size: 12px;
+    font-weight: var(--font-weight-bold);
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   .more-to-come {
     font-family: var(--font-family-base);

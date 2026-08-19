@@ -5,6 +5,7 @@ export type Screen =
   | 'triage'
   | 'settings'
   | 'integrations'
+  | 'pendingActions'
   | 'overview'
   | 'planToday'
   | 'planLater'
@@ -78,4 +79,16 @@ export type PendingSlotPlan =
 export interface ConflictItem {
   name: string;
   hours: number;
+}
+
+/// A queued Asana write — set due time, set estimate, etc. — being applied
+/// by the background worker instead of blocking the action that queued it.
+/// See Settings' "Pending & Failed Actions".
+export interface PendingActionDto {
+  id: string;
+  label: string;
+  status: 'pending' | 'failed';
+  attempts: number;
+  lastError: string | null;
+  createdAt: string;
 }

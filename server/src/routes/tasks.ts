@@ -4,7 +4,8 @@ import { requireAuth } from '../lib/auth.js';
 import { getValidAccessToken } from '../lib/tokens.js';
 import { deriveQueue } from '../lib/taskQueue.js';
 import { getOrCreateSettings } from '../lib/settings.js';
-import { createSubtask, createTaskInProject, listIncompleteAssignedTasks, setTaskDueAt, setTaskHours } from '../providers/asana.js';
+import { enqueueAction } from '../lib/pendingActionQueue.js';
+import { createSubtask, createTaskInProject, listIncompleteAssignedTasks } from '../providers/asana.js';
 import type { RemoteTask } from '../providers/types.js';
 
 export const tasksRouter = Router();
@@ -90,6 +91,12 @@ const patchSchema = z
   })
   .refine((v) => v.hours === undefined || v.name !== undefined, { message: 'name is required when setting hours' });
 
+/// The conflict check stays synchronous (it's what decides whether to show
+/// the "double-booked" screen, so the caller genuinely needs the answer
+/// before it can proceed) — but the actual Asana write no longer is. It's
+/// queued instead: this endpoint returns as soon as the write is durably
+/// recorded, without waiting on the real network round-trip to Asana, and
+/// a background worker performs it (with retries) — see pendingActionQueue.ts.
 tasksRouter.patch('/:gid', async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -98,11 +105,11 @@ tasksRouter.patch('/:gid', async (req, res) => {
   }
   const { gid } = req.params;
   const { dueAt, hours, name, force } = parsed.data;
-  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
   const settings = await getOrCreateSettings(req.userId!);
 
   if (dueAt !== undefined) {
     if (dueAt && !force) {
+      const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
       const others = await listIncompleteAssignedTasks(accessToken);
       const conflicts = others.filter((t) => t.gid !== gid && t.dueAt === dueAt);
       if (conflicts.length) {
@@ -113,11 +120,22 @@ tasksRouter.patch('/:gid', async (req, res) => {
         return;
       }
     }
-    await setTaskDueAt(accessToken, gid, dueAt, settings.timezone);
+    await enqueueAction(req.userId!, dueAt ? "Set a task's due time" : "Clear a task's due time", {
+      kind: 'setTaskDueAt',
+      taskGid: gid,
+      dueAtIso: dueAt ?? null,
+      timezone: settings.timezone,
+    });
   }
 
   if (hours !== undefined) {
-    await setTaskHours(accessToken, gid, name!, hours, settings.timezone);
+    await enqueueAction(req.userId!, `Update "${name}"'s estimate`, {
+      kind: 'setTaskHours',
+      taskGid: gid,
+      name: name!,
+      hours,
+      timezone: settings.timezone,
+    });
   }
 
   res.status(204).end();
@@ -130,19 +148,22 @@ const resetDaySchema = z.object({ taskGids: z.array(z.string().min(1)).min(1) })
 /// today's plan". The frontend already knows exactly which of its loaded
 /// tasks are due today (same data queueLabel's x/y count is built from), so
 /// it sends those gids directly rather than the server re-deriving "today's
-/// tasks" via another full Asana fetch. Each task's un-scheduling is logged
-/// to the change log same as any other due-date removal (see setTaskDueAt).
+/// tasks" via another full Asana fetch. Each clear is queued individually
+/// (see pendingActionQueue.ts) rather than awaited, so resetting a large
+/// day doesn't block on N sequential/parallel Asana writes.
 tasksRouter.post('/reset-day', async (req, res) => {
   const parsed = resetDaySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
   const settings = await getOrCreateSettings(req.userId!);
-  const results = await Promise.allSettled(parsed.data.taskGids.map((gid) => setTaskDueAt(accessToken, gid, null, settings.timezone)));
-  const cleared = results.filter((r) => r.status === 'fulfilled').length;
-  res.json({ cleared, failed: results.length - cleared });
+  await Promise.all(
+    parsed.data.taskGids.map((gid) =>
+      enqueueAction(req.userId!, "Clear a task's due time", { kind: 'setTaskDueAt', taskGid: gid, dueAtIso: null, timezone: settings.timezone }),
+    ),
+  );
+  res.json({ queued: parsed.data.taskGids.length });
 });
 
 const createSchema = z.union([

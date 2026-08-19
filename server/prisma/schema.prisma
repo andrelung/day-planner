@@ -17,6 +17,12 @@ enum Provider {
   OUTLOOK
 }
 
+enum PendingActionStatus {
+  PENDING
+  FAILED
+  DONE
+}
+
 model User {
   id              String   @id @default(uuid())
   primaryProvider Provider
@@ -25,6 +31,7 @@ model User {
   accounts  OAuthAccount[]
   settings  Settings?
   eventLinks CalendarEventLink[]
+  pendingActions PendingAction[]
 }
 
 /// One row per connected provider account (Asana and/or Outlook) for a user.
@@ -67,6 +74,32 @@ model Settings {
   /// and change-log timestamps in the user's own local time instead of UTC.
   timezone       String   @default("UTC")
   updatedAt      DateTime @updatedAt
+}
+
+/// A queued Asana write (set due date/time, set hours estimate, ...) that's
+/// applied by a background worker instead of blocking the request that
+/// triggered it — see lib/pendingActionQueue.ts. `payload` carries whatever
+/// the worker needs to actually perform (and retry) the write; `label` is
+/// a plain-English summary for the Settings lookup UI, since `payload` is
+/// an implementation detail the user shouldn't have to parse.
+model PendingAction {
+  id            String              @id @default(uuid())
+  userId        String
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind          String
+  payload       Json
+  label         String
+  status        PendingActionStatus @default(PENDING)
+  attempts      Int                 @default(0)
+  lastError     String?
+  /// Not eligible to be picked up by the worker again until this time —
+  /// used for retry backoff. Defaults to "now" so a freshly-enqueued action
+  /// is immediately eligible.
+  nextAttemptAt DateTime            @default(now())
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([status, nextAttemptAt])
 }
 
 /// Persists the "linked to task" / "added as task" state for an Outlook

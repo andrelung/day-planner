@@ -10,8 +10,10 @@ import { settingsRouter } from './routes/settings.js';
 import { tasksRouter } from './routes/tasks.js';
 import { calendarRouter } from './routes/calendar.js';
 import { workloadRouter } from './routes/workload.js';
+import { pendingActionsRouter } from './routes/pendingActions.js';
 import { ProviderNotConfiguredError } from './providers/asana.js';
 import { ProviderNotConnectedError } from './lib/tokens.js';
+import { startPendingActionWorker } from './lib/pendingActionQueue.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +31,7 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/tasks', tasksRouter);
 app.use('/api/calendar', calendarRouter);
 app.use('/api/workload', workloadRouter);
+app.use('/api/pending-actions', pendingActionsRouter);
 
 // Serve the built Svelte app and fall back to index.html for any
 // non-API route (single-page app, no server-side routing needed).
@@ -50,6 +53,8 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   console.error(err);
   res.status(500).json({ error: 'Internal server error' });
 });
+
+startPendingActionWorker();
 
 app.listen(env.PORT, () => {
   console.log(`day-planner server listening on :${env.PORT}`);

@@ -1,6 +1,7 @@
 import type {
   CalendarEvent,
   ConflictItem,
+  PendingActionDto,
   PendingPlan,
   PendingSlotPlan,
   Project,
@@ -461,6 +462,41 @@ class PlannerStore {
     this.screen = 'settings';
   }
 
+  // --- pending actions lookup ---
+  pendingActions: PendingActionDto[] = $state([]);
+
+  async openPendingActions() {
+    this.screen = 'pendingActions';
+    await this.refreshPendingActions();
+  }
+  closePendingActions() {
+    this.screen = 'settings';
+  }
+  async refreshPendingActions() {
+    try {
+      const res = await api.get<{ actions: PendingActionDto[] }>('/api/pending-actions');
+      this.pendingActions = res.actions;
+    } catch (err) {
+      this.reportError(err, 'Could not load pending actions');
+    }
+  }
+  async retryPendingAction(id: string) {
+    try {
+      await api.post(`/api/pending-actions/${encodeURIComponent(id)}/retry`, {});
+      await this.refreshPendingActions();
+    } catch (err) {
+      this.reportError(err, 'Could not retry this action');
+    }
+  }
+  async dismissPendingAction(id: string) {
+    try {
+      await api.delete(`/api/pending-actions/${encodeURIComponent(id)}`);
+      this.pendingActions = this.pendingActions.filter((a) => a.id !== id);
+    } catch (err) {
+      this.reportError(err, 'Could not dismiss this action');
+    }
+  }
+
   private async patchSettings(patch: Partial<{ prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string }>) {
     try {
       await api.put('/api/settings', patch);
@@ -489,7 +525,10 @@ class PlannerStore {
   /// "Reset today's plan" in Settings — un-schedules every task due today
   /// that has a specific due *time* (tasks due today with only a date and
   /// no time have nothing to reset). Confirmed by the caller before this
-  /// runs, since it's a bulk, hard-to-undo-by-hand action.
+  /// runs, since it's a bulk, hard-to-undo-by-hand action. The clears are
+  /// queued (not awaited) — see pendingActionQueue.ts — so this doesn't
+  /// block on N Asana writes; check Settings' pending-actions lookup (or
+  /// just refresh) to see them actually land.
   async resetToday() {
     const gids = this.tasksDueToday.filter((t) => t.dueAt).map((t) => t.id);
     if (gids.length === 0) {
@@ -497,9 +536,9 @@ class PlannerStore {
       return;
     }
     try {
-      const res = await api.post<{ cleared: number; failed: number }>('/api/tasks/reset-day', { taskGids: gids });
+      const res = await api.post<{ queued: number }>('/api/tasks/reset-day', { taskGids: gids });
       await Promise.all([this.refreshTasks(), this.refreshWorkload()]);
-      this.showToast(res.failed > 0 ? `Cleared ${res.cleared}, ${res.failed} failed` : `Cleared ${res.cleared} task${res.cleared === 1 ? '' : 's'}`);
+      this.showToast(`Queued ${res.queued} task${res.queued === 1 ? '' : 's'} to reset`);
     } catch (err) {
       this.reportError(err, 'Could not reset today');
     }
