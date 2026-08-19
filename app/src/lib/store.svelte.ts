@@ -69,8 +69,13 @@ class PlannerStore {
   /// closeOverview — not on every commit, so a whole planning session
   /// doesn't creep back in piecemeal.
   private justPlannedIds: string[] = $state([]);
+  /// "Tasks without Due Date" in Overview opens this same swipeable Triage
+  /// loop, just fed from tasksWithoutDueDate instead — "I don't know what
+  /// to do, let's scroll through my backlog." See reviewBacklog().
+  reviewingBacklog = $state(false);
   get queueTasks(): Task[] {
-    return this.justPlannedIds.length === 0 ? this.tasks : this.tasks.filter((t) => !this.justPlannedIds.includes(t.id));
+    const source = this.reviewingBacklog ? this.tasksWithoutDueDate : this.tasks;
+    return this.justPlannedIds.length === 0 ? source : source.filter((t) => !this.justPlannedIds.includes(t.id));
   }
 
   dragX = $state(0);
@@ -176,6 +181,10 @@ class PlannerStore {
   }
   get queueLabel() {
     if (!this.hasFocusTask) return '';
+    if (this.reviewingBacklog) {
+      const n = this.queueTasks.length;
+      return `Backlog - ${n} task${n === 1 ? '' : 's'} without a due date`;
+    }
     const active = this.activeDayDateStr;
     const namedDay = this.workloadDays.find((d) => d.date === active);
     const dateLabel = namedDay ? namedDay.label : new Date(`${active}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
@@ -515,6 +524,7 @@ class PlannerStore {
   }
   closeSettings() {
     this.justPlannedIds = [];
+    this.reviewingBacklog = false;
     this.screen = 'triage';
   }
   openIntegrations() {
@@ -785,6 +795,17 @@ class PlannerStore {
   }
   closeOverview() {
     this.justPlannedIds = [];
+    this.reviewingBacklog = false;
+    this.screen = 'triage';
+  }
+  /// "Tasks without Due Date" in Overview — opens the exact same Triage
+  /// screen/flow, just working through tasksWithoutDueDate instead of the
+  /// normal queue (see queueTasks). Leaving to Settings/Overview and back
+  /// returns to the normal queue, same as justPlannedIds' "re-open the day".
+  reviewBacklog() {
+    if (this.tasksWithoutDueDate.length === 0) return;
+    this.reviewingBacklog = true;
+    this.focusIndex = 0;
     this.screen = 'triage';
   }
 
@@ -845,18 +866,29 @@ class PlannerStore {
   /// Updates a task's due fields in local state to match what the write
   /// below will (eventually) make true server-side — the same slicing the
   /// server itself uses (see asana.ts's toRemoteTask), so this stays
-  /// consistent with what a real refresh would show.
+  /// consistent with what a real refresh would show. Also handles a task
+  /// coming from the "Tasks without Due Date" backlog review
+  /// (reviewingBacklog) — it isn't in `tasks` at all yet, so planning it
+  /// moves it from tasksWithoutDueDate into tasks, matching what a real
+  /// refresh would do once it actually has a due date.
   private applyOptimisticDueAt(taskId: string, dueAtIso: string | null) {
     const idx = this.tasks.findIndex((t) => t.id === taskId);
-    if (idx === -1) return;
-    const updated: Task = {
-      ...this.tasks[idx],
-      dueAt: dueAtIso,
-      dueOn: dueAtIso ? dueAtIso.slice(0, 10) : null,
-      dueHour: dueAtIso ? dueAtIso.slice(11, 16) : null,
-      doubled: false,
-    };
-    this.tasks = [...this.tasks.slice(0, idx), updated, ...this.tasks.slice(idx + 1)];
+    if (idx !== -1) {
+      const updated: Task = {
+        ...this.tasks[idx],
+        dueAt: dueAtIso,
+        dueOn: dueAtIso ? dueAtIso.slice(0, 10) : null,
+        dueHour: dueAtIso ? dueAtIso.slice(11, 16) : null,
+        doubled: false,
+      };
+      this.tasks = [...this.tasks.slice(0, idx), updated, ...this.tasks.slice(idx + 1)];
+      return;
+    }
+    if (!dueAtIso) return;
+    const backlogTask = this.tasksWithoutDueDate.find((t) => t.id === taskId);
+    if (!backlogTask) return;
+    this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
+    this.tasks = [...this.tasks, { ...backlogTask, dueAt: dueAtIso, dueOn: dueAtIso.slice(0, 10), dueHour: dueAtIso.slice(11, 16), doubled: false }];
   }
 
   /// Fires the actual Asana write without making the caller wait on it —
@@ -1009,7 +1041,7 @@ class PlannerStore {
   /// tasksWithoutDueDate locally rather than staying in `tasks`.
   removeDueDate() {
     const task = this.focusTaskRaw;
-    if (!task) return;
+    if (!task || !task.dueOn) return; // already has no due date (e.g. reviewing the backlog) — nothing to remove
     this.tasks = this.tasks.filter((t) => t.id !== task.id);
     this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, { ...task, dueAt: null, dueOn: null, dueHour: null, doubled: false }];
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { flip } from 'svelte/animate';
   import { planner } from '../store.svelte';
   import { fmtHours } from '../format';
   import Icon from '../components/Icon.svelte';
@@ -60,7 +61,7 @@
     {#if restTasks.length > 0}
       <div class="section-label">Up next</div>
       {#each restTasks as t (t.id)}
-        <div class="up-next-row">
+        <div class="up-next-row" animate:flip={{ duration: 220 }}>
           <div
             class="up-next-row__main"
             role="button"

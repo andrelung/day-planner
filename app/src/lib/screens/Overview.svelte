@@ -35,8 +35,6 @@
 
   const query = $derived(planner.searchQuery.trim().toLowerCase());
 
-  let showNoDueDate = $state(false);
-
   // Autocomplete: an empty query browses a short default list (most
   // recently-touched first, since project/task order is otherwise
   // arbitrary) rather than the entire — possibly huge — project/task list;
@@ -95,22 +93,12 @@
     {/each}
 
     {#if planner.tasksWithoutDueDate.length > 0}
-      <button class="day-row" onclick={() => (showNoDueDate = !showNoDueDate)}>
+      <button class="day-row" onclick={() => planner.reviewBacklog()}>
         <div class="day-row__top">
           <div class="day-row__label">Tasks without Due Date</div>
           <div class="day-row__hours" style="color:var(--color-text-muted);">{planner.tasksWithoutDueDate.length}</div>
         </div>
       </button>
-      {#if showNoDueDate}
-        <div class="no-due-date-list">
-          {#each planner.tasksWithoutDueDate as t (t.id)}
-            <button class="search-result" onclick={() => planner.openAsana(t)}>
-              <div class="search-result__label">{t.name}</div>
-              <div class="search-result__type">{t.project}</div>
-            </button>
-          {/each}
-        </div>
-      {/if}
     {/if}
 
     <div class="section-label" style="margin-top:22px;">From your calendar</div>
@@ -270,11 +258,6 @@
   .day-row__fill {
     height: 100%;
     border-radius: 999px;
-  }
-  .no-due-date-list {
-    margin: -4px 0 10px;
-    padding-left: 4px;
-    border-left: 2px solid var(--color-border);
   }
   .event-row {
     padding: 10px 0;
