@@ -118,7 +118,8 @@ Real sign-in requires two OAuth apps you register yourself — these are credent
 
 1. Go to https://app.asana.com/0/developer-console → **+ New App**.
 2. Redirect URL: `{PUBLIC_APP_URL}/auth/asana/callback` (e.g. `http://localhost:3000/auth/asana/callback`, or your real domain in production).
-3. Copy the **Client ID** and **Client secret** into `.env` as `ASANA_CLIENT_ID` / `ASANA_CLIENT_SECRET`.
+3. Under the app's **OAuth** settings, enable these scopes — newer Asana apps must explicitly request scopes instead of getting blanket "default" access, and sign-in fails with a `forbidden_scopes` error if the app isn't granted a scope the server requests: `openid`, `email`, `profile`, `tasks:read`, `tasks:write`, `projects:read`, `users:read`, `workspaces:read`. (The exact same list is requested from `server/src/providers/asana.ts` — if you ever add a feature that needs another Asana resource, add the scope in both places.)
+4. Copy the **Client ID** and **Client secret** into `.env` as `ASANA_CLIENT_ID` / `ASANA_CLIENT_SECRET`.
 
 No custom field setup needed for the time estimate — see "Hours estimate" below.
 

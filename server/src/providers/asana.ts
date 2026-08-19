@@ -23,6 +23,18 @@ function redirectUri(): string {
   return `${env.PUBLIC_APP_URL}/auth/asana/callback`;
 }
 
+// Asana's newer apps must request specific OAuth scopes instead of the old
+// unscoped "default" (full-access) mode — omitting `scope` gets rejected
+// with "forbidden_scopes: ... not allowed to request ... `default` identity
+// scopes". `openid email profile` are the OpenID Connect scopes that put
+// gid/name/email in the token response's `data` object (see
+// exchangeAsanaCode below); the rest are the exact resource:action scopes
+// this app actually uses. These must also be enabled for the app in the
+// Asana developer console (My Apps → your app → OAuth → scopes) — granting
+// them in the console but not requesting them here (or vice versa) still
+// fails, both sides need to agree.
+const SCOPES = 'openid email profile tasks:read tasks:write projects:read users:read workspaces:read';
+
 export function getAsanaAuthorizeUrl(state: string): string {
   const { clientId } = requireCredentials();
   const url = new URL(AUTHORIZE_URL);
@@ -30,7 +42,10 @@ export function getAsanaAuthorizeUrl(state: string): string {
   url.searchParams.set('redirect_uri', redirectUri());
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('state', state);
-  return url.toString();
+  // Appended by hand (not url.searchParams.set) because URLSearchParams
+  // encodes spaces as "+", but Asana's docs specifically show scopes
+  // space-separated as %20 — encodeURIComponent gives %20 directly.
+  return `${url.toString()}&scope=${encodeURIComponent(SCOPES)}`;
 }
 
 interface AsanaTokenResponse {
