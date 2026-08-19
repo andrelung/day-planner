@@ -26,4 +26,9 @@ export const env = {
   MS_CLIENT_ID: process.env.MS_CLIENT_ID || null,
   MS_CLIENT_SECRET: process.env.MS_CLIENT_SECRET || null,
   MS_TENANT_ID: process.env.MS_TENANT_ID || 'common',
+  // Where the change-log workbook lives. Unset by default (changeLog.ts
+  // falls back to the repo root) — Docker overrides this to a mounted
+  // volume path, since the container's own filesystem isn't visible on
+  // the host. See changeLog.ts and docker-compose.yml.
+  CHANGE_LOG_PATH: process.env.CHANGE_LOG_PATH || null,
 };

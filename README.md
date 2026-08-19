@@ -100,6 +100,15 @@ Both are also wired into `npm run check` territory — run that too (`npm run ch
 
 There's no end-to-end/integration test suite (one would need a mocked or sandbox Asana/Microsoft Graph account) — see "Manually testing the full app" below for that.
 
+## Change log (audit trail)
+
+Every real write to Asana (due date set/rescheduled/removed, estimate change, task/subtask creation) appends a row to `change-log.xlsx` in the project root. Columns: timestamp, action, task link (clickable), task name before/after, due date before/after — before/after cells are left blank when that particular field didn't change.
+
+- **Local dev** (`npm run dev`/`npm start` in `server/`): the file is written straight to the project root, no setup needed.
+- **Docker Compose**: the container mounts the project root at `/host-root` and `CHANGE_LOG_PATH` points there (see `docker-compose.yml`), so the file still lands in the project root on the host.
+
+It's gitignored — open it in Excel/Numbers/Google Sheets locally. If it's open in Excel while the app writes to it, that write is logged to the server console and dropped (the real Asana action still succeeds either way).
+
 ## Manually testing the full app
 
 Since real sign-in needs live Asana + Microsoft accounts, the meaningful end-to-end test is manual. Rough order:

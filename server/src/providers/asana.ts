@@ -1,5 +1,6 @@
 import { env } from '../lib/env.js';
 import { cleanTitle, parseDurationFromTitle, titleWithDuration } from '../lib/titleDuration.js';
+import { recordChange } from '../lib/changeLog.js';
 import type { OAuthTokenSet, RemoteTask } from './types.js';
 
 const AUTHORIZE_URL = 'https://app.asana.com/-/oauth_authorize';
@@ -193,9 +194,16 @@ export async function listIncompleteAssignedTasks(accessToken: string): Promise<
 }
 
 export async function setTaskDueAt(accessToken: string, taskGid: string, dueAtIso: string | null): Promise<void> {
+  const before = await asanaFetch(accessToken, `/tasks/${taskGid}?opt_fields=due_at,permalink_url`);
   await asanaFetch(accessToken, `/tasks/${taskGid}`, {
     method: 'PUT',
     body: JSON.stringify({ data: dueAtIso ? { due_at: dueAtIso } : { due_at: null, due_on: null } }),
+  });
+  recordChange({
+    action: dueAtIso === null ? 'Remove due date' : before.due_at === null ? 'Set due date' : 'Reschedule',
+    taskLink: before.permalink_url,
+    dueBefore: before.due_at,
+    dueAfter: dueAtIso,
   });
 }
 
@@ -205,22 +213,34 @@ export async function setTaskDueAt(accessToken: string, taskGid: string, dueAtIs
 /// same Asana workspace. `cleanName` is the title with any existing bracket
 /// already stripped (what the frontend displays and holds as `task.name`).
 export async function setTaskHours(accessToken: string, taskGid: string, cleanName: string, hours: number): Promise<void> {
+  const before = await asanaFetch(accessToken, `/tasks/${taskGid}?opt_fields=name,permalink_url`);
+  const newName = titleWithDuration(cleanName, hours);
   await asanaFetch(accessToken, `/tasks/${taskGid}`, {
     method: 'PUT',
-    body: JSON.stringify({ data: { name: titleWithDuration(cleanName, hours) } }),
+    body: JSON.stringify({ data: { name: newName } }),
+  });
+  recordChange({
+    action: 'Update estimate',
+    taskLink: before.permalink_url,
+    nameBefore: before.name,
+    nameAfter: newName,
   });
 }
 
 export async function createTaskInProject(accessToken: string, projectGid: string, name: string): Promise<AsanaTaskDto> {
-  return asanaFetch(accessToken, '/tasks', {
+  const created = await asanaFetch(accessToken, '/tasks?opt_fields=name,permalink_url', {
     method: 'POST',
     body: JSON.stringify({ data: { name, projects: [projectGid] } }),
   });
+  recordChange({ action: 'Create task', taskLink: created.permalink_url, nameAfter: created.name });
+  return created;
 }
 
 export async function createSubtask(accessToken: string, parentTaskGid: string, name: string): Promise<AsanaTaskDto> {
-  return asanaFetch(accessToken, `/tasks/${parentTaskGid}/subtasks`, {
+  const created = await asanaFetch(accessToken, `/tasks/${parentTaskGid}/subtasks?opt_fields=name,permalink_url`, {
     method: 'POST',
     body: JSON.stringify({ data: { name } }),
   });
+  recordChange({ action: 'Create subtask', taskLink: created.permalink_url, nameAfter: created.name });
+  return created;
 }
