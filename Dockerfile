@@ -43,4 +43,9 @@ COPY server/prisma ./prisma
 COPY --from=frontend-build /src/app/dist ./public
 
 EXPOSE 3000
-CMD ["sh", "-c", "npx prisma migrate deploy && node --env-file-if-exists=.env dist/index.js"]
+# No --env-file-if-exists here (unlike the local `npm start`/`npm run dev`
+# scripts) — docker-compose's `environment:` block already injects every
+# var directly into the container's process.env, so there's no .env file to
+# load at /app/.env; Node prints a harmless-but-confusing "not found" notice
+# if the flag is passed anyway.
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
