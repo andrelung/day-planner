@@ -102,7 +102,12 @@ class PlannerStore {
     const t = this.todayWorkload;
     return t ? t.planned / t.capacity : 0;
   }
+  /// Grey while the workload behind this badge is being (re)fetched, or
+  /// before it's ever loaded at all — showing green by default in that gap
+  /// would misleadingly read as "you're under capacity" when the truth is
+  /// just "unknown yet".
   get todayBadgeBg() {
+    if (this.workloadLoading || !this.todayWorkload) return 'var(--color-text-muted)';
     return this.todayRatio >= 1 ? 'var(--color-feedback-wrong)' : 'var(--color-feedback-correct)';
   }
   get todayBadgeLabel() {
@@ -389,12 +394,20 @@ class PlannerStore {
     }
   }
 
+  /// Drives the Triage capacity badge's loading state (see todayBadgeBg) —
+  /// true for the duration of any workload refresh, whether that's the
+  /// initial boot load or a resync after committing a plan.
+  workloadLoading = $state(false);
+
   async refreshWorkload() {
+    this.workloadLoading = true;
     try {
       const res = await api.get<{ days: WorkloadDay[] }>('/api/workload');
       this.workloadDays = res.days;
     } catch (err) {
       this.reportError(err, 'Could not load workload');
+    } finally {
+      this.workloadLoading = false;
     }
   }
 

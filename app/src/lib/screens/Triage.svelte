@@ -181,7 +181,11 @@
 
   {#if hasFocusTask}
     <button class="capacity-badge" style="background:{planner.todayBadgeBg};" onclick={() => planner.openOverview()}>
-      {planner.todayBadgeLabel}
+      {#if planner.workloadLoading}
+        <div class="capacity-badge__spinner"></div>
+      {:else}
+        {planner.todayBadgeLabel}
+      {/if}
     </button>
   {/if}
 </div>
@@ -476,5 +480,19 @@
     text-align: center;
     line-height: 1.1;
     border: none;
+    transition: background-color var(--duration-base) var(--ease-standard);
+  }
+  .capacity-badge__spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: var(--color-text-inverse);
+    border-radius: 50%;
+    animation: capacity-badge-spin 0.7s linear infinite;
+  }
+  @keyframes capacity-badge-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>

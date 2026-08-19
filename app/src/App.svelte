@@ -28,17 +28,37 @@
     // iOS suspends (and sometimes kills) a standalone home-screen web app's
     // WKWebView when it's backgrounded — e.g. tapping "Open in Asana" and
     // switching back — which can leave it stuck on a blank, un-repainted
-    // screen. Re-running boot() forces a fresh render and re-syncs data;
-    // gated by a short delay so a quick app-switcher flick doesn't reboot
-    // the app and reset whatever screen the user was on.
+    // screen; gated by a short delay so a quick app-switcher flick doesn't
+    // reboot the app and reset whatever screen the user was on.
+    //
+    // Two things happen on resume, addressing two different causes:
+    // 1. A forced synchronous repaint (toggle a style, force layout, revert)
+    //    — WebKit needs *something* to trigger repainting the stuck frame,
+    //    and this doesn't depend on any network round-trip completing.
+    // 2. A plain refetch of tasks/workload to resync data that may have
+    //    changed while away (e.g. in Asana). This deliberately calls
+    //    refreshTasks()/refreshWorkload() — the same plain GET every other
+    //    in-app refresh uses — rather than boot()'s SSE-streamed path:
+    //    re-establishing a long-lived EventSource connection right as iOS's
+    //    background network suspension is still lifting is markedly less
+    //    reliable than one plain fetch, which made the *data* half of this
+    //    fix flaky again once boot() started streaming.
     let hiddenAt: number | null = null;
+    function forceRepaint() {
+      const el = document.documentElement;
+      el.style.transform = 'translateZ(0)';
+      void el.offsetHeight; // force a synchronous layout flush before reverting
+      el.style.transform = '';
+    }
     function onVisibilityChange() {
       if (document.hidden) {
         hiddenAt = Date.now();
         return;
       }
       if (hiddenAt !== null && Date.now() - hiddenAt > 3000 && planner.screen !== 'loading') {
-        void planner.boot();
+        forceRepaint();
+        void planner.refreshTasks();
+        void planner.refreshWorkload();
       }
       hiddenAt = null;
     }
