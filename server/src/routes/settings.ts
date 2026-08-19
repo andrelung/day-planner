@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth } from '../lib/auth.js';
+import { getOrCreateSettings } from '../lib/settings.js';
 
 export const settingsRouter = Router();
 settingsRouter.use(requireAuth);
@@ -25,11 +26,7 @@ const patchSchema = z.object({
 });
 
 settingsRouter.get('/', async (req, res) => {
-  const settings = await prisma.settings.upsert({
-    where: { userId: req.userId! },
-    create: { userId: req.userId! },
-    update: {},
-  });
+  const settings = await getOrCreateSettings(req.userId!);
   res.json(settings);
 });
 

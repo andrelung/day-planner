@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { requireAuth } from '../lib/auth.js';
 import { getValidAccessToken } from '../lib/tokens.js';
 import { computeFreeSlots } from '../lib/freeSlots.js';
+import { getOrCreateSettings } from '../lib/settings.js';
 import { listEvents } from '../providers/outlook.js';
 import { createSubtask, createTaskInProject, listIncompleteAssignedTasks } from '../providers/asana.js';
 
@@ -62,11 +63,7 @@ calendarRouter.get('/free-slots', async (req, res) => {
   const day = new Date(`${dateStr}T00:00:00`);
   const dayEnd = new Date(day.getTime() + 86_400_000);
 
-  const settings = await prisma.settings.upsert({
-    where: { userId: req.userId! },
-    create: { userId: req.userId! },
-    update: {},
-  });
+  const settings = await getOrCreateSettings(req.userId!);
 
   const busy: { start: Date; end: Date }[] = [];
 
@@ -129,7 +126,7 @@ calendarRouter.post('/events/:eventId/add-task', async (req, res) => {
     return;
   }
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-  const settings = await prisma.settings.upsert({ where: { userId: req.userId! }, create: { userId: req.userId! }, update: {} });
+  const settings = await getOrCreateSettings(req.userId!);
   const { title, target } = parsed.data;
   const created =
     'projectGid' in target

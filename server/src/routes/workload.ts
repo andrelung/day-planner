@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma.js';
 import { requireAuth } from '../lib/auth.js';
 import { getValidAccessToken } from '../lib/tokens.js';
 import { buildWorkloadDays, dailyCapacityHours } from '../lib/workload.js';
+import { getOrCreateSettings } from '../lib/settings.js';
 import { listIncompleteAssignedTasks } from '../providers/asana.js';
 import { listEvents } from '../providers/outlook.js';
 
@@ -12,11 +13,7 @@ workloadRouter.use(requireAuth);
 workloadRouter.get('/', async (req, res) => {
   const now = new Date();
   const days = buildWorkloadDays(now);
-  const settings = await prisma.settings.upsert({
-    where: { userId: req.userId! },
-    create: { userId: req.userId! },
-    update: {},
-  });
+  const settings = await getOrCreateSettings(req.userId!);
   const capacityPerDay = dailyCapacityHours(settings.prefStartTime, settings.prefEndTime);
 
   const [asanaAccount, outlookAccount] = await Promise.all([

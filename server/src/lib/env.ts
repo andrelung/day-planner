@@ -31,4 +31,10 @@ export const env = {
   // volume path, since the container's own filesystem isn't visible on
   // the host. See changeLog.ts and docker-compose.yml.
   CHANGE_LOG_PATH: process.env.CHANGE_LOG_PATH || null,
+  // Sets this process's system timezone (Node/ICU respect TZ natively —
+  // fixes "Today"/"Tomorrow" day-bucketing to use this zone's day boundary
+  // instead of the container's default UTC) and seeds the default for a
+  // brand-new user's Settings → Timezone, before they've picked one
+  // themselves. See lib/settings.ts.
+  TZ: process.env.TZ || null,
 };

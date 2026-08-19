@@ -11,29 +11,37 @@ The original Claude Design handoff — product briefing, screen-by-screen spec, 
 - **`design_handoff_day_planner/`** — the original design bundle (spec + prototype) this was built from.
 - **`Dockerfile`** / **`docker-compose.yml`** — builds both into one image (the server serves the built frontend's static files) plus a Postgres container.
 
-## Running locally without Docker
+## Configuration
 
-```
-# once
-createdb dayplanner   # or point DATABASE_URL at any Postgres you have
-cp server/.env.example server/.env
-# fill in TOKEN_ENCRYPTION_KEY and SESSION_JWT_SECRET (openssl rand -base64 32 for each)
-
-cd server && npm install && npx prisma migrate deploy && npm run dev   # :3000
-cd app && npm install && npm run dev                                   # :5173, proxies /api and /auth to :3000
-```
-
-Open http://localhost:5173. Without Asana/Microsoft OAuth credentials set (see below), you'll see the Login screen but signing in will fail with a clear "not configured" message — that's expected until you register the OAuth apps.
-
-## Running with Docker Compose
+There's a single `.env` at the project root — copy it from `.env.example`:
 
 ```
 cp .env.example .env
 # fill in POSTGRES_PASSWORD, TOKEN_ENCRYPTION_KEY, SESSION_JWT_SECRET (openssl rand -base64 32 for the latter two)
+```
+
+Docker Compose auto-loads it from this exact path. Running the server directly on the host (`npm run dev`/`npm test`/`npm run prisma:*` in `server/`) also loads it, via `--env-file-if-exists=../.env` in `server/package.json` — so there's nowhere else to duplicate secrets, and the two ways of running the app always agree on config. See the comments in `.env.example` for what each variable does (including `DATABASE_URL`, which only matters for the host-process path — Docker Compose builds its own from the `POSTGRES_*` vars).
+
+## Running with Docker Compose
+
+```
 docker compose up --build
 ```
 
 Open http://localhost:3000.
+
+## Running locally without Docker
+
+The server still needs a Postgres to talk to — the simplest way is to start just the `db` container from Docker Compose and run the server itself directly on the host:
+
+```
+docker compose up -d db   # Postgres only, published to 127.0.0.1:55433 (see .env.example's DATABASE_URL)
+
+cd server && npm install && npm run prisma:migrate && npm run dev   # :3000
+cd app && npm install && npm run dev                                 # :5173, proxies /api and /auth to :3000
+```
+
+Open http://localhost:5173. Without Asana/Microsoft OAuth credentials set (see below), you'll see the Login screen but signing in will fail with a clear "not configured" message — that's expected until you register the OAuth apps.
 
 ## Testing on an iPhone (or any phone)
 
@@ -57,7 +65,7 @@ This is enough for layout/interaction work, but **real Asana/Microsoft sign-in w
    ```
 4. ngrok prints a `https://<random>.ngrok-free.app` URL. Open that on the iPhone.
 5. To also test real sign-in through the tunnel, point the backend at that URL and register it as the OAuth redirect URI:
-   - Set `PUBLIC_APP_URL=https://<random>.ngrok-free.app` in `server/.env` and restart `npm run dev` in `server/`.
+   - Set `PUBLIC_APP_URL=https://<random>.ngrok-free.app` in `.env` and restart `npm run dev` in `server/`.
    - Add `https://<random>.ngrok-free.app/auth/asana/callback` and `https://<random>.ngrok-free.app/auth/outlook/callback` as redirect URIs in the Asana app and Azure app registration respectively (see "Registering the OAuth apps" below) — in addition to your `localhost` ones, not instead of.
 
 ngrok's free tier gives you a new random subdomain every time you restart the tunnel, which means re-adding the redirect URIs each time. If you're doing this often, either use a paid ngrok static domain, or [claim ngrok's one free static domain](https://dashboard.ngrok.com/domains) and tunnel with `ngrok http --url=your-name.ngrok-free.app 5173` instead — then the redirect URIs only need registering once.
@@ -110,7 +118,7 @@ There's no end-to-end/integration test suite (one would need a mocked or sandbox
 
 Every real write to Asana (due date set/rescheduled/removed, estimate change, task/subtask creation) appends a row to `change-log.xlsx` in the project root. Columns: timestamp, action, task link (clickable), task name before/after, due date before/after — before/after cells are left blank when that particular field didn't change.
 
-Timestamps and due dates are rendered in the timezone set in Settings (defaults to UTC) rather than raw UTC — set it under Settings → Timezone.
+Timestamps and due dates are rendered in the timezone set in Settings → Timezone rather than raw UTC. A brand-new user defaults to whatever `TZ` is set to in `.env` (falling back to UTC if unset) until they pick their own.
 
 - **Local dev** (`npm run dev`/`npm start` in `server/`): the file is written straight to the project root, no setup needed.
 - **Docker Compose**: the container mounts the project root at `/host-root` and `CHANGE_LOG_PATH` points there (see `docker-compose.yml`), so the file still lands in the project root on the host.
@@ -158,6 +166,6 @@ Restart the app after editing `.env`. The server intentionally still starts up w
 
 ## Known simplifications
 
-- **Timezone**: the app assumes the browser's local time and the server's local time agree — there's no per-user timezone preference yet. Fine for a single-office team in one timezone; worth adding a `Settings.timezone` field before rolling out across regions.
+- **Timezone**: the change log (see above) renders in the per-user `Settings.timezone` the user picks in the app, and the server process's own clock (which drives "Today"/"Tomorrow" day-bucketing) is set via the `TZ` env var. Both assume everyone using a given deployment is in the same timezone — fine for a single-office team, worth reconsidering before rolling out across regions.
 - **Capacity**: a day's capacity is derived from the employee's preferred start/end time (Settings), not from historical throughput — the original briefing calls the latter out as the more realistic long-term source.
 - **Hours estimate**: since Asana has no native duration field, the estimate is read from and written to a `[4]`-style bracket at the end of the task title (e.g. "Draft outline [4]"), the same convention used by the team's `asana-to-mongo-replicator` — so titles stay readable by both tools. Supports a decimal comma (`[1,5]`), a trailing `/`-divided value (`[1/6]` → 6), and the `∑` summary-total prefix on read; only ever writes the plain `[N]` form. The task name shown in the UI has the bracket stripped.
