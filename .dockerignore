@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+app/dist
+server/dist
+server/src/generated
+.git
+.env
+**/.env
+chats
+project
+*.md

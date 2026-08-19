@@ -1,0 +1,95 @@
+<script lang="ts">
+  import { planner } from '../store.svelte';
+  import Button from '../components/Button.svelte';
+
+  const label = $derived(planner.secondaryProviderLabel);
+  const initial = $derived(planner.secondaryProviderInitial);
+  const detail = $derived(planner.secondaryProviderDetail);
+</script>
+
+<div class="screen">
+  <div class="content">
+    <div class="heading">Connect {label}</div>
+    <div class="subtitle">{detail}</div>
+
+    <div class="provider-row">
+      <div class="avatar">{initial}</div>
+      <div class="provider-name">{label} Account</div>
+      <Button variant="secondary" size="sm" onclick={() => planner.connectSecondaryProvider()}>Connect</Button>
+    </div>
+
+    <button class="skip" onclick={() => planner.skipSecondaryProvider()}>Skip for now</button>
+  </div>
+</div>
+
+<style>
+  .screen {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-bg-page);
+    overflow: hidden;
+  }
+  .content {
+    padding: 48px 28px 0;
+    flex: 1;
+    overflow-y: auto;
+  }
+  .heading {
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-extrabold);
+    font-size: 26px;
+    line-height: 1.25;
+    color: var(--color-text-primary);
+  }
+  .subtitle {
+    font-family: var(--font-family-base);
+    font-size: 15px;
+    color: var(--color-text-muted);
+    margin-top: 10px;
+  }
+  .provider-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    margin-top: 28px;
+  }
+  .avatar {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-md);
+    background: var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-extrabold);
+    font-size: 16px;
+    color: var(--color-text-primary);
+  }
+  .provider-name {
+    flex: 1;
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 15px;
+    color: var(--color-text-primary);
+  }
+  .skip {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    text-align: center;
+    margin-top: 20px;
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+</style>

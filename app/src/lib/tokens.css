@@ -1,0 +1,106 @@
+/* Grips IO design tokens — consolidated from the design bundle's
+   tokens/colors.css, typography.css, spacing.css, effects.css */
+
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700;800&display=swap');
+
+:root {
+  /* --- base palette --- */
+  --grips-dark-blue: #16203c;
+  --grips-light-blue: #f7fcff;
+  --grips-highlight-yellow: #ffd80a;
+  --true-black: #000000;
+  --true-white: #ffffff;
+
+  --logo-segment-1: #73798a;
+  --logo-segment-2: #abaeb9;
+  --logo-segment-3: #d6d7dc;
+
+  --feedback-correct: #a0c601;
+  --feedback-wrong: #e2005f;
+
+  --button-state-hover: #edc602;
+  --button-state-active-bg: #1d2230;
+  --button-state-active-highlight: #ffe871;
+
+  --link-turquoise: #008eb9;
+
+  /* --- semantic aliases --- */
+  --color-bg-page: var(--grips-light-blue);
+  --color-bg-surface: var(--true-white);
+  --color-bg-inverse: var(--grips-dark-blue);
+
+  --color-text-primary: var(--grips-dark-blue);
+  --color-text-muted: var(--logo-segment-1);
+  --color-text-inverse: var(--true-white);
+
+  --color-brand-primary: var(--grips-dark-blue);
+  --color-brand-accent: var(--grips-highlight-yellow);
+
+  --color-link: var(--link-turquoise);
+  --color-link-hover: var(--grips-dark-blue);
+
+  --color-border: var(--logo-segment-3);
+  --color-border-strong: var(--logo-segment-2);
+
+  --color-feedback-correct: var(--feedback-correct);
+  --color-feedback-wrong: var(--feedback-wrong);
+
+  --color-button-bg: var(--grips-dark-blue);
+  --color-button-text: var(--true-white);
+  --color-button-hover-bg: var(--button-state-hover);
+  --color-button-active-bg: var(--button-state-active-bg);
+  --color-button-active-highlight: var(--button-state-active-highlight);
+
+  /* --- type --- */
+  --font-family-base: 'Open Sans', -apple-system, sans-serif;
+  --font-weight-normal: 400;
+  --font-weight-bold: 700;
+  --font-weight-extrabold: 800;
+
+  /* --- spacing --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* --- effects --- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+  --border-width: 1px;
+  --shadow-overlay: 0 8px 24px rgba(22, 32, 60, 0.16);
+  --shadow-overlay-sm: 0 4px 12px rgba(22, 32, 60, 0.12);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-bg-page);
+  font-family: var(--font-family-base);
+}
+
+a {
+  color: var(--color-link);
+}
+a:hover {
+  color: var(--color-link-hover);
+}
+
+button,
+input {
+  font-family: var(--font-family-base);
+}
