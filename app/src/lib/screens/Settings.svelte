@@ -2,6 +2,12 @@
   import { planner } from '../store.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Input from '../components/Input.svelte';
+
+  // Intl.supportedValuesOf isn't in every older browser (Safari added it in
+  // 15.4) — fall back to just the current value plus UTC so the picker still
+  // works, it just won't offer the full list.
+  const timezones: string[] =
+    typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [planner.timezone, 'UTC'];
 </script>
 
 <div class="screen">
@@ -18,6 +24,14 @@
       value={String(planner.bufferMinutes)}
       onchange={(v) => planner.onBufferChange(v)}
     />
+    <label class="ds-select">
+      <span class="ds-select__label">Timezone</span>
+      <select value={planner.timezone} onchange={(e) => planner.onTimezoneChange((e.target as HTMLSelectElement).value)}>
+        {#each timezones as tz (tz)}
+          <option value={tz}>{tz}</option>
+        {/each}
+      </select>
+    </label>
     <button class="row" onclick={() => planner.openIntegrations()}>
       <div class="row__label">Asana &amp; Outlook</div>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -56,6 +70,33 @@
     display: flex;
     flex-direction: column;
     gap: 20px;
+  }
+  .ds-select {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-family: var(--font-family-base);
+    width: 100%;
+  }
+  .ds-select__label {
+    font-size: 14px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-primary);
+  }
+  .ds-select select {
+    height: 44px;
+    padding: 0 14px;
+    font-family: var(--font-family-base);
+    font-size: 16px;
+    color: var(--color-text-primary);
+    background: var(--true-white);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+    outline: none;
+    width: 100%;
+  }
+  .ds-select select:focus {
+    border-color: var(--color-brand-primary);
   }
   .row {
     display: flex;

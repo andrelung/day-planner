@@ -129,9 +129,12 @@ calendarRouter.post('/events/:eventId/add-task', async (req, res) => {
     return;
   }
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const settings = await prisma.settings.upsert({ where: { userId: req.userId! }, create: { userId: req.userId! }, update: {} });
   const { title, target } = parsed.data;
   const created =
-    'projectGid' in target ? await createTaskInProject(accessToken, target.projectGid, title) : await createSubtask(accessToken, target.parentGid, title);
+    'projectGid' in target
+      ? await createTaskInProject(accessToken, target.projectGid, title, settings.timezone)
+      : await createSubtask(accessToken, target.parentGid, title, settings.timezone);
 
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },

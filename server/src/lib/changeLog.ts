@@ -22,13 +22,36 @@ export interface ChangeEntry {
   nameAfter?: string | null;
   dueBefore?: string | null;
   dueAfter?: string | null;
+  /// IANA timezone (e.g. "Europe/Berlin") the acting user has set in
+  /// Settings — both this row's timestamp and the due date columns are
+  /// rendered in this zone instead of raw UTC.
+  timezone: string;
 }
 
-/// Asana due_at is UTC ISO ("2026-08-20T09:00:00.000Z"); format it plainly
-/// for a human reading the log rather than dumping raw ISO + milliseconds.
-function formatDue(iso: string | null | undefined): string {
+/// Renders a UTC ISO instant in the given IANA zone as "YYYY-MM-DD HH:MM
+/// <Zone>" — spelling out the zone name rather than a bare offset so it
+/// reads unambiguously (and doesn't require the reader to account for DST).
+function formatInZone(date: Date, timezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(date);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+    return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} ${timezone}`;
+  } catch {
+    return date.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+}
+
+function formatDue(iso: string | null | undefined, timezone: string): string {
   if (!iso) return '';
-  return iso.replace('T', ' ').slice(0, 16) + ' UTC';
+  return formatInZone(new Date(iso), timezone);
 }
 
 /// A field pair is only shown if it actually changed — an unrelated field
@@ -71,9 +94,9 @@ async function appendRow(entry: ChangeEntry): Promise<void> {
   }
 
   const [nameBefore, nameAfter] = beforeAfterPair(entry.nameBefore, entry.nameAfter);
-  const [dueBefore, dueAfter] = beforeAfterPair(formatDue(entry.dueBefore), formatDue(entry.dueAfter));
+  const [dueBefore, dueAfter] = beforeAfterPair(formatDue(entry.dueBefore, entry.timezone), formatDue(entry.dueAfter, entry.timezone));
 
-  const row = sheet.addRow([new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC', entry.action, entry.taskLink, nameBefore, nameAfter, dueBefore, dueAfter]);
+  const row = sheet.addRow([formatInZone(new Date(), entry.timezone), entry.action, entry.taskLink, nameBefore, nameAfter, dueBefore, dueAfter]);
   const linkCell = row.getCell(3);
   linkCell.value = { text: entry.taskLink, hyperlink: entry.taskLink };
   linkCell.font = { color: { argb: 'FF0563C1' }, underline: true };

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireAuth } from '../lib/auth.js';
 import { getValidAccessToken } from '../lib/tokens.js';
 import { deriveQueue } from '../lib/taskQueue.js';
+import { prisma } from '../lib/prisma.js';
 import { createSubtask, createTaskInProject, listIncompleteAssignedTasks, setTaskDueAt, setTaskHours } from '../providers/asana.js';
 
 export const tasksRouter = Router();
@@ -52,6 +53,7 @@ tasksRouter.patch('/:gid', async (req, res) => {
   const { gid } = req.params;
   const { dueAt, hours, name, force } = parsed.data;
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const settings = await prisma.settings.upsert({ where: { userId: req.userId! }, create: { userId: req.userId! }, update: {} });
 
   if (dueAt !== undefined) {
     if (dueAt && !force) {
@@ -65,11 +67,11 @@ tasksRouter.patch('/:gid', async (req, res) => {
         return;
       }
     }
-    await setTaskDueAt(accessToken, gid, dueAt);
+    await setTaskDueAt(accessToken, gid, dueAt, settings.timezone);
   }
 
   if (hours !== undefined) {
-    await setTaskHours(accessToken, gid, name!, hours);
+    await setTaskHours(accessToken, gid, name!, hours, settings.timezone);
   }
 
   res.status(204).end();
@@ -87,9 +89,10 @@ tasksRouter.post('/', async (req, res) => {
     return;
   }
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const settings = await prisma.settings.upsert({ where: { userId: req.userId! }, create: { userId: req.userId! }, update: {} });
   const created =
     'projectGid' in parsed.data
-      ? await createTaskInProject(accessToken, parsed.data.projectGid, parsed.data.name)
-      : await createSubtask(accessToken, parsed.data.parentGid, parsed.data.name);
+      ? await createTaskInProject(accessToken, parsed.data.projectGid, parsed.data.name, settings.timezone)
+      : await createSubtask(accessToken, parsed.data.parentGid, parsed.data.name, settings.timezone);
   res.status(201).json({ gid: created.gid, name: created.name });
 });

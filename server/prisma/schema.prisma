@@ -63,6 +63,9 @@ model Settings {
   prefStartTime  String   @default("09:00")
   prefEndTime    String   @default("18:00")
   bufferMinutes  Int      @default(10)
+  /// IANA timezone name (e.g. "Europe/Berlin"), used to display due dates
+  /// and change-log timestamps in the user's own local time instead of UTC.
+  timezone       String   @default("UTC")
   updatedAt      DateTime @updatedAt
 }
 

@@ -20,7 +20,7 @@ interface MeResponse {
   outlookConnected: boolean;
   asanaAccountLabel: string | null;
   outlookAccountLabel: string | null;
-  settings: { prefStartTime: string; prefEndTime: string; bufferMinutes: number };
+  settings: { prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string };
 }
 
 class PlannerStore {
@@ -64,6 +64,7 @@ class PlannerStore {
   prefStartTime = $state('09:00');
   prefEndTime = $state('18:00');
   bufferMinutes = $state(10);
+  timezone = $state('UTC');
 
   activePanelEventId: string | null = $state(null);
   activePanelMode: 'add' | 'link' | null = $state(null);
@@ -153,6 +154,7 @@ class PlannerStore {
     this.prefStartTime = me.settings.prefStartTime;
     this.prefEndTime = me.settings.prefEndTime;
     this.bufferMinutes = me.settings.bufferMinutes;
+    this.timezone = me.settings.timezone;
 
     if (onboarding && (!me.asanaConnected || !me.outlookConnected)) {
       this.screen = 'loginSecondary';
@@ -253,7 +255,7 @@ class PlannerStore {
     this.screen = 'settings';
   }
 
-  private async patchSettings(patch: Partial<{ prefStartTime: string; prefEndTime: string; bufferMinutes: number }>) {
+  private async patchSettings(patch: Partial<{ prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string }>) {
     try {
       await api.put('/api/settings', patch);
     } catch (err) {
@@ -272,6 +274,10 @@ class PlannerStore {
     const n = parseInt(v, 10);
     this.bufferMinutes = v === '' ? 0 : isNaN(n) ? 0 : n;
     void this.patchSettings({ bufferMinutes: this.bufferMinutes });
+  }
+  onTimezoneChange(v: string) {
+    this.timezone = v;
+    void this.patchSettings({ timezone: v });
   }
 
   // --- login / provider-connect links ---
