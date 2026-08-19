@@ -125,6 +125,28 @@ async function asanaFetch(accessToken: string, path: string, init?: RequestInit)
   return json.data;
 }
 
+/// Follows Asana's cursor-based pagination (`next_page.offset`) to collect
+/// every result across a list endpoint. Needed for `/tasks` in particular —
+/// a real workspace's incomplete-assigned-to-me count can easily exceed a
+/// single page (Asana caps a page at 100 and errors with "result is too
+/// large" rather than silently truncating).
+async function asanaFetchAllPages(accessToken: string, path: string): Promise<any[]> {
+  const all: any[] = [];
+  // Asana hands back a ready-to-use `next_page.uri` for the following page —
+  // simpler and less error-prone than reconstructing offset/limit by hand.
+  let url: string | null = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}limit=100`;
+  while (url) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) {
+      throw new Error(`Asana API ${url} failed: ${res.status} ${await res.text()}`);
+    }
+    const json = (await res.json()) as any;
+    all.push(...json.data);
+    url = json.next_page?.uri ?? null;
+  }
+  return all;
+}
+
 interface AsanaTaskDto {
   gid: string;
   name: string;
@@ -164,7 +186,7 @@ export async function listIncompleteAssignedTasks(accessToken: string): Promise<
   const all: (RemoteTask & { projectGid: string | null })[] = [];
   for (const ws of workspaces) {
     const path = `/tasks?assignee=me&workspace=${ws.gid}&completed_since=now&opt_fields=${TASK_OPT_FIELDS}`;
-    const tasks = (await asanaFetch(accessToken, path)) as AsanaTaskDto[];
+    const tasks = (await asanaFetchAllPages(accessToken, path)) as AsanaTaskDto[];
     all.push(...tasks.map(toRemoteTask));
   }
   return all;
