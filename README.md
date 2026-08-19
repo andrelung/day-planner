@@ -70,6 +70,10 @@ If the Asana app is installed on the iPhone, tapping the sign-in link can hand o
 
 The login/connect buttons are real `<a href>` links (not JavaScript-triggered navigation) specifically so you have a manual escape hatch: **long-press "Continue with Asana"** and choose **Open in New Tab** (or **Open in Safari**, wording varies by iOS version) from the menu that appears, instead of tapping it normally. That routes around the app handoff. The quickest way to avoid it entirely while testing is to just not have the Asana app installed on the test device.
 
+### Blank screen after returning from "Open in Asana" (iOS)
+
+When installed as a home-screen app, iOS can suspend or outright kill a standalone PWA's WKWebView while it's backgrounded (e.g. while you're over in the Asana app), and fail to repaint it on return, leaving a blank screen. `App.svelte` re-runs `planner.boot()` when the page becomes visible again after being hidden for a few seconds, which forces a fresh render and re-syncs task/workload data. This is a workaround for a WebKit/OS-level quirk, not a bug in this app's own state handling.
+
 ## Install as an app (iOS / Android)
 
 Day Planner ships a web app manifest and icons (`app/public/manifest.webmanifest`, `apple-touch-icon.png`, `pwa-192.png`/`pwa-512.png`), so once you have it open in a mobile browser — over `http://localhost:3000` in the simulator, a LAN IP, or an ngrok URL (see above) — you can add it to the home screen and it opens full-screen, without Safari/Chrome's address bar.

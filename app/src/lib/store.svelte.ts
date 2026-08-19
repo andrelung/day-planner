@@ -98,7 +98,9 @@ class PlannerStore {
     return t ? `${t.planned}/${t.capacity}h` : '';
   }
   get queueLabel() {
-    return this.hasFocusTask ? `Task ${this.focusIndex + 1} of ${this.tasks.length} to plan` : '';
+    if (!this.hasFocusTask) return '';
+    const dateLabel = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+    return `${dateLabel} - ${this.focusIndex + 1}/${this.tasks.length} Tasks planned`;
   }
   get chosenDayLabel() {
     if (this.laterDayKey === 'custom') return this.customDayLabel;

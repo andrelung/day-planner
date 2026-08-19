@@ -275,6 +275,10 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
   .queue-nav {
     display: flex;

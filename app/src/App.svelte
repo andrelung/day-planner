@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { planner } from './lib/store.svelte';
   import Toast from './lib/components/Toast.svelte';
+  import Icon from './lib/components/Icon.svelte';
   import Login from './lib/screens/Login.svelte';
   import LoginSecondary from './lib/screens/LoginSecondary.svelte';
   import Triage from './lib/screens/Triage.svelte';
@@ -21,6 +22,26 @@
 
   onMount(() => {
     void planner.boot();
+
+    // iOS suspends (and sometimes kills) a standalone home-screen web app's
+    // WKWebView when it's backgrounded — e.g. tapping "Open in Asana" and
+    // switching back — which can leave it stuck on a blank, un-repainted
+    // screen. Re-running boot() forces a fresh render and re-syncs data;
+    // gated by a short delay so a quick app-switcher flick doesn't reboot
+    // the app and reset whatever screen the user was on.
+    let hiddenAt: number | null = null;
+    function onVisibilityChange() {
+      if (document.hidden) {
+        hiddenAt = Date.now();
+        return;
+      }
+      if (hiddenAt !== null && Date.now() - hiddenAt > 3000 && planner.screen !== 'loading') {
+        void planner.boot();
+      }
+      hiddenAt = null;
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   });
 </script>
 
@@ -29,7 +50,14 @@
     {#if planner.screen === 'loading'}
       <div class="loading">
         {#if planner.bootError}
+          <Icon name="warning-triangle" size={28} color="var(--color-feedback-wrong)" />
           <p>Couldn't reach the server: {planner.bootError}</p>
+        {:else}
+          <div class="loading__mark">
+            <Icon name="grid" size={26} color="var(--color-brand-primary)" />
+            <div class="loading__ring"></div>
+          </div>
+          <p>Loading your day…</p>
         {/if}
       </div>
     {:else if planner.screen === 'login'}
@@ -95,12 +123,36 @@
   .loading {
     flex: 1;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 16px;
     padding: 24px;
     font-family: var(--font-family-base);
     font-size: 13px;
+    font-weight: var(--font-weight-bold);
     color: var(--color-text-muted);
     text-align: center;
+  }
+  .loading__mark {
+    position: relative;
+    width: 56px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .loading__ring {
+    position: absolute;
+    inset: 0;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-brand-accent);
+    border-radius: 50%;
+    animation: loading-spin 0.9s linear infinite;
+  }
+  @keyframes loading-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>
