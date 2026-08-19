@@ -36,16 +36,18 @@ calendarRouter.get('/events', async (req, res) => {
   const linkByExternalId = new Map(links.map((l) => [l.externalEventId, l]));
 
   res.json({
-    events: events.map((e) => {
-      const link = linkByExternalId.get(e.id);
-      return {
-        id: e.id,
-        title: e.subject,
-        timeLabel: timeLabel(e.start, now),
-        linked: !!link,
-        linkedName: link?.linkedTaskName ?? null,
-      };
-    }),
+    events: events
+      .filter((e) => !linkByExternalId.get(e.id)?.ignored)
+      .map((e) => {
+        const link = linkByExternalId.get(e.id);
+        return {
+          id: e.id,
+          title: e.subject,
+          timeLabel: timeLabel(e.start, now),
+          linked: !!link?.linkedAsanaTaskGid,
+          linkedName: link?.linkedTaskName ?? null,
+        };
+      }),
   });
 });
 
@@ -128,7 +130,19 @@ calendarRouter.post('/events/:eventId/link', async (req, res) => {
       linkedAsanaTaskGid: parsed.data.taskGid,
       linkedTaskName: parsed.data.taskName,
     },
-    update: { linkedAsanaTaskGid: parsed.data.taskGid, linkedTaskName: parsed.data.taskName },
+    update: { linkedAsanaTaskGid: parsed.data.taskGid, linkedTaskName: parsed.data.taskName, ignored: false },
+  });
+  res.status(204).end();
+});
+
+/// Dismisses an event from the Overview list without linking it to
+/// anything — persisted (unlike a purely client-side hide) so it stays
+/// dismissed across reloads, same as a real link would.
+calendarRouter.post('/events/:eventId/ignore', async (req, res) => {
+  await prisma.calendarEventLink.upsert({
+    where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },
+    create: { userId: req.userId!, externalEventId: req.params.eventId, ignored: true },
+    update: { ignored: true, linkedAsanaTaskGid: null, linkedTaskName: null },
   });
   res.status(204).end();
 });
@@ -155,7 +169,7 @@ calendarRouter.post('/events/:eventId/add-task', async (req, res) => {
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },
     create: { userId: req.userId!, externalEventId: req.params.eventId, linkedAsanaTaskGid: created.gid, linkedTaskName: created.name },
-    update: { linkedAsanaTaskGid: created.gid, linkedTaskName: created.name },
+    update: { linkedAsanaTaskGid: created.gid, linkedTaskName: created.name, ignored: false },
   });
   res.status(201).json({ gid: created.gid, name: created.name });
 });

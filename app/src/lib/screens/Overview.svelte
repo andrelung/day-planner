@@ -1,7 +1,6 @@
 <script lang="ts">
   import { planner } from '../store.svelte';
   import IconButton from '../components/IconButton.svelte';
-  import Button from '../components/Button.svelte';
   import Input from '../components/Input.svelte';
 
   interface DayRow {
@@ -38,6 +37,19 @@
 
   let showNoDueDate = $state(false);
 
+  // Autocomplete: an empty query browses a short default list (most
+  // recently-touched first, since project/task order is otherwise
+  // arbitrary) rather than the entire — possibly huge — project/task list;
+  // typing narrows it, and the matched substring is highlighted below.
+  const RESULT_LIMIT = 8;
+
+  function matchSplit(label: string): { pre: string; match: string; post: string } | null {
+    if (!query) return null;
+    const idx = label.toLowerCase().indexOf(query);
+    if (idx === -1) return null;
+    return { pre: label.slice(0, idx), match: label.slice(idx, idx + query.length), post: label.slice(idx + query.length) };
+  }
+
   function resultsFor(eventId: string, mode: 'add' | 'link' | null): SearchResult[] {
     if (mode === 'add') {
       return [
@@ -51,10 +63,11 @@
         ...planner.tasks
           .filter((t) => !query || t.name.toLowerCase().includes(query))
           .map((t) => ({ label: t.name, typeLabel: 'Subtask of', onSelect: () => planner.addEventAsSubtask(eventId, t.id) })),
-      ];
+      ].slice(0, RESULT_LIMIT);
     } else if (mode === 'link') {
       return planner.tasks
         .filter((t) => !query || t.name.toLowerCase().includes(query))
+        .slice(0, RESULT_LIMIT)
         .map((t) => ({ label: t.name, typeLabel: 'Task', onSelect: () => planner.linkEventToTask(eventId, t.id) }));
     }
     return [];
@@ -113,8 +126,8 @@
           </div>
           {#if !e.linked}
             <div class="event-row__actions">
-              <Button variant="ghost" size="sm" onclick={() => planner.openLinkPanel(e.id)}>Link to task</Button>
-              <Button variant="secondary" size="sm" onclick={() => planner.openAddPanel(e.id)}>Add as task</Button>
+              <IconButton icon="plus" title="Add as task" size={32} iconSize={16} onclick={() => planner.openAddPanel(e.id)} />
+              <IconButton icon="chevron-right" title="More actions" size={32} iconSize={16} onclick={() => planner.openEventPopup(e.id)} />
             </div>
           {/if}
         </div>
@@ -127,8 +140,11 @@
             <Input placeholder="Search projects or tasks…" value={planner.searchQuery} onchange={(v) => planner.onSearchChange(v)} />
             <div class="search-results">
               {#each resultsFor(e.id, mode) as r}
+                {@const m = matchSplit(r.label)}
                 <button class="search-result" onclick={r.onSelect}>
-                  <div class="search-result__label">{r.label}</div>
+                  <div class="search-result__label">
+                    {#if m}{m.pre}<mark>{m.match}</mark>{m.post}{:else}{r.label}{/if}
+                  </div>
                   <div class="search-result__type">{r.typeLabel}</div>
                 </button>
               {/each}
@@ -138,10 +154,35 @@
       </div>
     {/each}
   </div>
+
+  {#if planner.activeEventPopupId}
+    {@const popupEvent = planner.events.find((e) => e.id === planner.activeEventPopupId)}
+    {#if popupEvent}
+      <div class="popup-backdrop" onclick={() => planner.closeEventPopup()}>
+        <div class="popup" onclick={(e) => e.stopPropagation()}>
+          <div class="popup__title">{popupEvent.title}</div>
+          <div class="popup__subtitle">{popupEvent.timeLabel}</div>
+          <button
+            class="popup__action"
+            onclick={() => {
+              const id = popupEvent.id;
+              planner.closeEventPopup();
+              planner.openLinkPanel(id);
+            }}
+          >
+            Link to task
+          </button>
+          <button class="popup__action popup__action--danger" onclick={() => planner.ignoreEvent(popupEvent.id)}> Ignore this event </button>
+          <button class="popup__cancel" onclick={() => planner.closeEventPopup()}>Cancel</button>
+        </div>
+      </div>
+    {/if}
+  {/if}
 </div>
 
 <style>
   .screen {
+    position: relative;
     height: 100%;
     display: flex;
     flex-direction: column;
@@ -331,5 +372,69 @@
     font-size: 11px;
     color: var(--color-text-muted);
     flex-shrink: 0;
+  }
+  .search-result__label mark {
+    background: none;
+    color: var(--color-brand-primary);
+    font-weight: var(--font-weight-bold);
+  }
+  .popup-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(22, 32, 60, 0.4);
+    display: flex;
+    align-items: flex-end;
+    z-index: 70;
+  }
+  .popup {
+    width: 100%;
+    background: var(--color-bg-surface);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    padding: 20px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+  }
+  .popup__title {
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-extrabold);
+    font-size: 17px;
+    color: var(--color-text-primary);
+  }
+  .popup__subtitle {
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    color: var(--color-text-muted);
+    margin-top: 4px;
+    margin-bottom: 16px;
+  }
+  .popup__action {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: var(--color-bg-page);
+    border: none;
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 15px;
+    color: var(--color-text-primary);
+    cursor: pointer;
+  }
+  .popup__action--danger {
+    color: var(--color-feedback-wrong);
+  }
+  .popup__cancel {
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: none;
+    border: none;
+    padding: 12px;
+    margin-top: 4px;
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 14px;
+    color: var(--color-text-muted);
+    cursor: pointer;
   }
 </style>

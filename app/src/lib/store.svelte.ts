@@ -1097,6 +1097,30 @@ class PlannerStore {
     this.searchQuery = v;
   }
 
+  // --- overview: per-event popup ("›") — Link to task / Ignore. "Add as
+  // task" ("+") skips this and opens the add panel directly.
+  activeEventPopupId: string | null = $state(null);
+  openEventPopup(eventId: string) {
+    this.activeEventPopupId = eventId;
+  }
+  closeEventPopup() {
+    this.activeEventPopupId = null;
+  }
+  /// Dismisses an event from the Overview list — persisted server-side
+  /// (see routes/calendar.ts), not just hidden client-side, so it stays
+  /// gone across reloads.
+  async ignoreEvent(eventId: string) {
+    const ev = this.events.find((e) => e.id === eventId);
+    try {
+      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/ignore`, {});
+      this.events = this.events.filter((e) => e.id !== eventId);
+      this.closeEventPopup();
+      if (ev) this.showToast(`Ignored "${ev.title}"`);
+    } catch (err) {
+      this.reportError(err, 'Could not ignore this event');
+    }
+  }
+
   async addEventAsTaskWithProject(eventId: string, projectGid: string, projectName: string) {
     const ev = this.events.find((e) => e.id === eventId);
     if (!ev) return;

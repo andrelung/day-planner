@@ -102,16 +102,22 @@ model PendingAction {
   @@index([status, nextAttemptAt])
 }
 
-/// Persists the "linked to task" / "added as task" state for an Outlook
-/// calendar event, since that's local app state Graph doesn't know about.
+/// Persists the "linked to task" / "added as task" / "ignored" state for an
+/// Outlook calendar event, since that's local app state Graph doesn't know
+/// about. A row is either a link (linkedAsanaTaskGid set) or a dismissal
+/// (ignored true) — see routes/calendar.ts, which keeps the two mutually
+/// exclusive rather than the schema enforcing it.
 model CalendarEventLink {
   id                 String   @id @default(uuid())
   userId             String
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   /// Microsoft Graph event id.
   externalEventId    String
-  linkedAsanaTaskGid String
-  linkedTaskName     String
+  linkedAsanaTaskGid String?
+  linkedTaskName     String?
+  /// The user dismissed this event from the Overview list without linking
+  /// it to anything.
+  ignored            Boolean  @default(false)
   createdAt          DateTime @default(now())
 
   @@unique([userId, externalEventId])
