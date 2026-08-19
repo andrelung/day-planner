@@ -14,5 +14,13 @@ export default defineConfig({
       '/auth': 'http://localhost:3000',
       '/healthz': 'http://localhost:3000',
     },
+    // Bind every interface (not just localhost) so a phone on the same LAN,
+    // or a tunnel like `ngrok http 5173`, can reach the dev server — see
+    // "Testing on an iPhone" in the README. allowedHosts:true skips Vite's
+    // Host-header check, which otherwise 403s any hostname it doesn't
+    // recognize (LAN IPs, ngrok's random subdomains, etc.) — fine for a
+    // local dev server with no real data behind it.
+    host: true,
+    allowedHosts: true,
   },
 })

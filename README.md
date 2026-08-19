@@ -35,6 +35,35 @@ docker compose up --build
 
 Open http://localhost:3000.
 
+## Testing on an iPhone (or any phone)
+
+This is a mobile-web app, so at some point you want it on an actual phone instead of a resized browser window. Two options depending on what you need to check:
+
+### Quick UI check over your home WiFi (no extra tooling)
+
+Both dev servers already bind every network interface, not just `localhost` — `npm run dev` in `app/` is enough. Find your Mac's LAN IP (**System Settings → Wi-Fi → Details**, or `ipconfig getifaddr en0` in a terminal) and open `http://<that-ip>:5173` in Safari on the iPhone, as long as it's on the same WiFi network.
+
+This is enough for layout/interaction work, but **real Asana/Microsoft sign-in won't work over plain HTTP** — Asana's OAuth (and most Microsoft Entra configurations) reject non-HTTPS redirect URIs other than `localhost`. For that you need a real HTTPS URL — see below.
+
+### Full test including real sign-in, via ngrok
+
+[ngrok](https://ngrok.com) tunnels a local port to a public HTTPS URL, which also satisfies the OAuth redirect-URI requirement.
+
+1. Install it if you don't have it: `brew install ngrok`.
+2. Sign up (free) at https://dashboard.ngrok.com/signup, then authenticate the CLI once: `ngrok config add-authtoken <your-token>` (from https://dashboard.ngrok.com/get-started/your-authtoken).
+3. With both dev servers running (`npm run dev` in `server/` and in `app/`), tunnel the **frontend** port only — Vite's dev proxy already forwards `/api` and `/auth` to the local backend, so the phone never needs to reach port 3000 directly:
+   ```
+   ngrok http 5173
+   ```
+4. ngrok prints a `https://<random>.ngrok-free.app` URL. Open that on the iPhone.
+5. To also test real sign-in through the tunnel, point the backend at that URL and register it as the OAuth redirect URI:
+   - Set `PUBLIC_APP_URL=https://<random>.ngrok-free.app` in `server/.env` and restart `npm run dev` in `server/`.
+   - Add `https://<random>.ngrok-free.app/auth/asana/callback` and `https://<random>.ngrok-free.app/auth/outlook/callback` as redirect URIs in the Asana app and Azure app registration respectively (see "Registering the OAuth apps" below) — in addition to your `localhost` ones, not instead of.
+
+ngrok's free tier gives you a new random subdomain every time you restart the tunnel, which means re-adding the redirect URIs each time. If you're doing this often, either use a paid ngrok static domain, or [claim ngrok's one free static domain](https://dashboard.ngrok.com/domains) and tunnel with `ngrok http --url=your-name.ngrok-free.app 5173` instead — then the redirect URIs only need registering once.
+
+`vite.config.ts` sets `allowedHosts: true` so Vite accepts requests carrying an ngrok (or LAN-IP) `Host` header instead of 403ing them — that's dev-only (`vite build`/production is unaffected) and fine for a local dev server with no real data behind it directly.
+
 ## Testing
 
 Unit tests cover the pure business logic — the pieces most likely to silently regress: the `[4]`-in-title duration convention, doubled-task/queue-ordering, free-slot computation, workload day-bucketing, and token encryption. They don't need a database, Docker, or real OAuth credentials.
