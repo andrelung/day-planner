@@ -21,7 +21,7 @@
           barWidth: '0%',
           barColor: 'var(--color-text-muted)',
           textColor: 'var(--color-text-muted)',
-          active: d.date === planner.activeDayDateStr,
+          active: d.date === planner.activeDate,
         };
       }
       const ratio = d.capacity > 0 ? d.planned / d.capacity : 0;
@@ -32,72 +32,14 @@
         barWidth: Math.min(100, ratio * 100) + '%',
         barColor: over ? 'var(--color-feedback-wrong)' : 'var(--color-feedback-correct)',
         textColor: over ? 'var(--color-feedback-wrong)' : 'var(--color-text-muted)',
-        active: d.date === planner.activeDayDateStr,
+        active: d.date === planner.activeDate,
       };
     }),
   );
 
-  interface SearchResult {
-    label: string;
-    typeLabel: string;
-    onSelect: () => void;
-  }
-
-  const query = $derived(planner.searchQuery.trim().toLowerCase());
-
-  // Autocomplete: an empty query browses a short default list (most
-  // recently-touched first, since project/task order is otherwise
-  // arbitrary) rather than the entire — possibly huge — project/task list;
-  // typing narrows it, and the matched substring is highlighted below.
-  const RESULT_LIMIT = 8;
-
-  function matchSplit(label: string): { pre: string; match: string; post: string } | null {
-    if (!query) return null;
-    const idx = label.toLowerCase().indexOf(query);
-    if (idx === -1) return null;
-    return { pre: label.slice(0, idx), match: label.slice(idx, idx + query.length), post: label.slice(idx + query.length) };
-  }
-
-  /// Asana's typeahead is the primary source (see planner.runTypeahead) —
-  /// this only falls back to filtering the client's already-loaded
-  /// projects/tasks if that failed (e.g. the connected account predates
-  /// the workspaces.typeahead:read scope and hasn't been reconnected yet),
-  /// so search still works either way.
-  ///
-  /// Both panels show the same project results now — selecting one always
-  /// creates a new task for this event under it, "link" mode included,
-  /// since linking only ever made sense against an existing *task*. Only
-  /// the task-result action differs: "add" nests it as a subtask, "link"
-  /// attaches the event directly to it.
-  function resultsFor(eventId: string, mode: 'add' | 'link' | null): SearchResult[] {
-    if (!mode) return [];
-    const taskTypeLabel = mode === 'add' ? 'Subtask of' : 'Task';
-    const taskAction =
-      mode === 'add'
-        ? (gid: string, name: string) => planner.addEventAsSubtask(eventId, gid, name)
-        : (gid: string, name: string) => planner.linkEventToTask(eventId, gid, name);
-    if (planner.typeaheadOk) {
-      return planner.typeaheadResults
-        .map((r) =>
-          r.resourceType === 'project'
-            ? { label: r.name, typeLabel: 'Project', onSelect: () => planner.addEventAsTaskWithProject(eventId, r.gid, r.name) }
-            : { label: r.name, typeLabel: taskTypeLabel, onSelect: () => taskAction(r.gid, r.name) },
-        )
-        .slice(0, RESULT_LIMIT);
-    }
-    return [
-      ...planner.projects
-        .filter((p) => !query || p.name.toLowerCase().includes(query))
-        .map((p) => ({
-          label: p.name,
-          typeLabel: 'Project',
-          onSelect: () => planner.addEventAsTaskWithProject(eventId, p.gid, p.name),
-        })),
-      ...planner.tasks
-        .filter((t) => !query || t.name.toLowerCase().includes(query))
-        .map((t) => ({ label: t.name, typeLabel: taskTypeLabel, onSelect: () => taskAction(t.id, t.name) })),
-    ].slice(0, RESULT_LIMIT);
-  }
+  // Search-result matching/highlighting and the add/link result list itself
+  // live on the store now (planner.searchResultsFor / planner.matchSplit) —
+  // shared with the same panel embedded in Triage's event-triage card.
 </script>
 
 <div class="screen">
@@ -136,13 +78,19 @@
       {@const statusLabel = e.linked ? `${e.timeLabel} · linked to "${e.linkedName}"` : e.timeLabel}
       <div class="event-row">
         <div class="event-row__top">
-          <div class="event-row__text">
+          <div
+            class="event-row__text"
+            role="button"
+            tabindex="0"
+            onclick={() => planner.openEventInTriage(e)}
+            onkeydown={(evt) => (evt.key === 'Enter' || evt.key === ' ') && planner.openEventInTriage(e)}
+          >
             <div class="event-row__title">{e.title}</div>
             <div class="event-row__status">{statusLabel}</div>
           </div>
           {#if !e.linked}
             <div class="event-row__actions">
-              <IconButton icon="plus" title="Add as task" size={32} iconSize={16} onclick={() => planner.openAddPanel(e.id)} />
+              <IconButton icon="plus" title="Add as new subtask" size={32} iconSize={16} onclick={() => planner.openAddPanel(e.id)} />
               <IconButton icon="chevron-right" title="More actions" size={32} iconSize={16} onclick={() => planner.openEventPopup(e.id)} />
             </div>
           {/if}
@@ -161,8 +109,8 @@
               </div>
             {:else}
               <div class="search-results">
-                {#each resultsFor(e.id, mode) as r}
-                  {@const m = matchSplit(r.label)}
+                {#each planner.searchResultsFor(e.id, mode) as r}
+                  {@const m = planner.matchSplit(r.label)}
                   <button class="search-result" onclick={r.onSelect}>
                     <div class="search-result__label">
                       {#if m}{m.pre}<mark>{m.match}</mark>{m.post}{:else}{r.label}{/if}
@@ -193,7 +141,7 @@
               planner.openAddPanel(id);
             }}
           >
-            Add as a new task
+            Add as new subtask
           </button>
           <button
             class="popup__action"
@@ -203,7 +151,7 @@
               planner.openLinkPanel(id);
             }}
           >
-            Link to task
+            Link existing task
           </button>
           <button class="popup__action popup__action--danger" onclick={() => planner.ignoreEvent(popupEvent.id)}> Ignore this event </button>
           <button class="popup__cancel" onclick={() => planner.closeEventPopup()}>Cancel</button>
@@ -316,6 +264,12 @@
   }
   .event-row__text {
     min-width: 0;
+    flex: 1;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .event-row__text:active {
+    opacity: 0.6;
   }
   .event-row__title {
     font-family: var(--font-family-base);

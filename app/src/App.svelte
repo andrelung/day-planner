@@ -18,6 +18,7 @@
   import FreeSlotsLater from './lib/screens/FreeSlotsLater.svelte';
   import DayFull from './lib/screens/DayFull.svelte';
   import SlotConflict from './lib/screens/SlotConflict.svelte';
+  import EventLinkConflict from './lib/screens/EventLinkConflict.svelte';
   import BreakName from './lib/screens/BreakName.svelte';
   import BreakTime from './lib/screens/BreakTime.svelte';
   import BreakDuration from './lib/screens/BreakDuration.svelte';
@@ -139,6 +140,8 @@
       <DayFull />
     {:else if planner.screen === 'slotConflict'}
       <SlotConflict />
+    {:else if planner.screen === 'eventLinkConflict'}
+      <EventLinkConflict />
     {:else if planner.screen === 'breakName'}
       <BreakName />
     {:else if planner.screen === 'breakTime'}

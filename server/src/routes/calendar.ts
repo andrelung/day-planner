@@ -44,8 +44,11 @@ calendarRouter.get('/events', async (req, res) => {
           id: e.id,
           title: e.subject,
           timeLabel: timeLabel(e.start, now),
+          start: e.start.toISOString(),
+          end: e.end.toISOString(),
           linked: !!link?.linkedAsanaTaskGid,
           linkedName: link?.linkedTaskName ?? null,
+          linkedTaskGid: link?.linkedAsanaTaskGid ?? null,
         };
       }),
   });

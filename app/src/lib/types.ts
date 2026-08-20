@@ -14,6 +14,7 @@ export type Screen =
   | 'freeSlotsLater'
   | 'dayFull'
   | 'slotConflict'
+  | 'eventLinkConflict'
   | 'breakName'
   | 'breakTime'
   | 'breakDuration'
@@ -61,8 +62,17 @@ export interface CalendarEvent {
   id: string;
   title: string;
   timeLabel: string;
+  /// Full ISO instants (UTC) — used to bucket an event onto a calendar day
+  /// (e.g. "is this today's event") the same way tasks use dueAt/dueOn,
+  /// distinct from timeLabel which is display-only.
+  start: string;
+  end: string;
   linked: boolean;
   linkedName: string | null;
+  /// The Asana task gid this event is linked to, or null — lets the
+  /// Overview list jump straight to that task's own card (see
+  /// openEventInTriage) instead of just landing on the event's date.
+  linkedTaskGid: string | null;
 }
 
 /// An Outlook event for one specific day, as returned alongside free-slots
@@ -97,12 +107,33 @@ export interface ConflictItem {
   hours: number;
 }
 
-/// An optional action shown alongside a toast — "Retry" on a load failure,
-/// "Undo" on most task-mutating actions.
-export interface ToastAction {
-  label: string;
-  onClick: () => void;
+/// A link the user chose that would attach a task to a second calendar
+/// event — stashed here while eventLinkConflict asks whether that's really
+/// what they meant (see PlannerStore.linkEventToTask), same shape as
+/// pendingSlotPlan for the equivalent double-booking guard.
+export interface PendingEventLink {
+  eventId: string;
+  taskId: string;
+  taskName: string;
+  /// Carried through to the eventual success toast's "Open task" action.
+  permalinkUrl: string;
+  /// Title of the *other* event this task is already linked to, purely for
+  /// the confirmation screen's copy.
+  conflictingEventTitle: string;
+  /// Screen the link attempt started from — Overview's inline panel or
+  /// Triage's event card both reach linkEventToTask, so "choose a
+  /// different task" needs to know which one to go back to.
+  returnScreen: 'triage' | 'overview';
 }
+
+/// An optional action shown alongside a toast — "Retry" on a load failure,
+/// "Undo" on most task-mutating actions, or "Open task" (via `href`) to
+/// confirm a typeahead pick landed on the right Asana task. `href` renders
+/// as a real `<a target="_blank">` rather than a button calling
+/// window.open() — same reasoning as IconButton's href prop: on an iOS
+/// home-screen PWA, window.open() from a click handler isn't reliably
+/// treated as a direct user gesture and gets silently blocked.
+export type ToastAction = { label: string } & ({ onClick: () => void; href?: undefined } | { href: string; onClick?: undefined });
 
 /// A queued Asana write — set due time, set estimate, etc. — being applied
 /// by the background worker instead of blocking the action that queued it.

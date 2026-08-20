@@ -5,11 +5,15 @@
 {#if planner.toastMsg}
   <div class="toast">
     <div class="toast__msg">{planner.toastMsg}</div>
-    {#if planner.toastAction}
+    {#if planner.toastAction?.href}
+      <a class="toast__action" href={planner.toastAction.href} target="_blank" rel="noopener noreferrer" onclick={() => planner.dismissToast()}>
+        {planner.toastAction.label}
+      </a>
+    {:else if planner.toastAction}
       <button
         class="toast__action"
         onclick={() => {
-          planner.toastAction?.onClick();
+          planner.toastAction?.onClick?.();
           planner.dismissToast();
         }}
       >

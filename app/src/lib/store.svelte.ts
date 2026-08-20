@@ -3,6 +3,7 @@ import type {
   ConflictItem,
   OutlookBlock,
   PendingActionDto,
+  PendingEventLink,
   PendingPlan,
   PendingSlotPlan,
   Project,
@@ -102,7 +103,30 @@ class PlannerStore {
   /// on the Overview screen.
   tasksWithoutDueDate: Task[] = $state([]);
   projects: Project[] = $state([]);
-  focusIndex = $state(0);
+  private _focusIndex = $state(0);
+  /// Whichever date the Triage screen is currently showing — the queue-nav
+  /// arrows and Overview's day rows drive this directly (see jumpToDate),
+  /// and the focusIndex setter below keeps it in sync automatically the
+  /// rest of the time (swiping through the queue, a plan committing and
+  /// advancing to the next task, etc.), so most code never has to think
+  /// about which one is authoritative. Not clamped to today when a task is
+  /// overdue — an overdue-from-yesterday task genuinely shows "Yesterday".
+  activeDate: string = $state(this.toDateStr(new Date()));
+  /// Set by openEventInTriage when a calendar entry is clicked directly in
+  /// Overview — shows that event's card in Triage even if it's already
+  /// linked (normal day-gating only ever shows unlinked ones — see
+  /// activeDayUnlinkedEvents), so re-visiting a linked entry offers a way
+  /// to change which task it's linked to instead of just landing on
+  /// whatever else that day happens to hold. Cleared by jumpToDate (any
+  /// other navigation) and closeSearchPanel (done editing this one).
+  pinnedEventId: string | null = $state(null);
+  get focusIndex(): number {
+    return this._focusIndex;
+  }
+  set focusIndex(v: number) {
+    this._focusIndex = v;
+    this.activeDate = this.queueTasks[v]?.dueOn ?? this.toDateStr(new Date());
+  }
 
   /// Tasks just committed (planned/moved/split) during this Triage visit —
   /// hidden from the swipeable queue (queueTasks) so the loop moves on to
@@ -164,6 +188,7 @@ class PlannerStore {
   pendingPlan: PendingPlan | null = $state(null);
   pendingSlotPlan: PendingSlotPlan | null = $state(null);
   conflictItems: ConflictItem[] = $state([]);
+  pendingEventLink: PendingEventLink | null = $state(null);
 
   toastMsg: string | null = $state(null);
 
@@ -203,8 +228,12 @@ class PlannerStore {
     return t?.loaded ? `${t.planned}/${t.capacity}h` : '';
   }
   private get todayDateStr(): string {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return this.toDateStr(new Date());
+  }
+  private get yesterdayDateStr(): string {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return this.toDateStr(d);
   }
   /// Tasks due today, by Asana's due date (dueOn — set whether or not a
   /// specific time is attached), independent of the "unplanned if no time"
@@ -213,40 +242,63 @@ class PlannerStore {
     const todayStr = this.todayDateStr;
     return this.tasks.filter((t) => t.dueOn === todayStr);
   }
-  /// The "day" the queue is currently working through, driven by whichever
-  /// task is focused rather than hardcoded to literal today — so the header
-  /// and Overview's highlight follow you as you swipe into tomorrow's tasks
-  /// or jump around. An overdue task's own due date is clamped up to today:
-  /// there's nothing to plan in the past, so it's treated as today's problem
-  /// (see resetToday's inverse case: only *today's* tasks get reset).
-  get activeDayDateStr(): string {
+  /// Every date the queue-nav arrows and Overview's day rows can land on:
+  /// each concrete named workload day (today..day5) whether or not it has
+  /// any task or event yet (see focusQueueForDay), plus any earlier date
+  /// that still has an overdue task pending — so "Yesterday" and further
+  /// back stay reachable instead of being folded into today. The aggregate
+  /// "Next week" bucket isn't included: it's a 7-day range, not one date.
+  private get navigableDates(): string[] {
+    const named = this.workloadDays.filter((d): d is WorkloadDay & { date: string } => !!d.date).map((d) => d.date);
     const todayStr = this.todayDateStr;
-    const focusDueOn = this.focusTaskRaw?.dueOn;
-    if (!focusDueOn || focusDueOn < todayStr) return todayStr;
-    return focusDueOn;
+    const overdue = this.tasks.filter((t): t is Task & { dueOn: string } => !!t.dueOn && t.dueOn < todayStr).map((t) => t.dueOn);
+    return [...new Set([...overdue, ...named])].sort();
+  }
+  /// Points the Triage screen at a specific date — focusIndex follows along
+  /// if that date has a task (so the existing plan/split/remove-due-date
+  /// actions keep operating on the right one), but activeDate is set
+  /// either way, so a date with no task at all (just events, or nothing)
+  /// is still reachable and displayed.
+  private jumpToDate(date: string) {
+    this.pinnedEventId = null;
+    const idx = this.queueTasks.findIndex((t) => t.dueOn === date);
+    if (idx >= 0) this.focusIndex = idx;
+    this.activeDate = date;
+  }
+  /// The active day's calendar events that haven't been linked to a task
+  /// (or added as one) yet — these gate the Triage focus card ahead of any
+  /// task on that same day (see Triage.svelte), since an event's time is
+  /// already fixed on the calendar, unlike a task that still needs a slot
+  /// picked for it. Follows activeDate rather than being pinned to literal
+  /// today, so jumping to another day (Overview's day rows) or crossing a
+  /// day boundary (goPrev/goNext) surfaces that day's events too, not just
+  /// today's. Ignored events never reach here — the server excludes them
+  /// from /api/calendar/events entirely.
+  get activeDayUnlinkedEvents(): CalendarEvent[] {
+    const active = this.activeDate;
+    return this.events.filter((e) => !e.linked && this.toLocalDateStr(e.start) === active);
   }
   private get tasksForActiveDay(): Task[] {
-    const active = this.activeDayDateStr;
-    const todayStr = this.todayDateStr;
-    return this.tasks.filter((t) => (t.dueOn && t.dueOn < todayStr ? todayStr : t.dueOn) === active);
+    return this.tasks.filter((t) => t.dueOn === this.activeDate);
   }
-  /// Shared by queueLabel and Triage's Up Next day-section headers — the
-  /// same "which named bucket does this date fall under, clamped up to
-  /// today for anything overdue" logic either way.
+  /// Shared by queueLabel, Triage's date-nav header and its Up Next
+  /// day-section headers — same "which named bucket (or Yesterday, or a
+  /// formatted date) does this date fall under" logic everywhere, no
+  /// clamping: an overdue task keeps its own real due date rather than
+  /// being folded into "Today".
   dayLabelFor(dueOn: string | null): string {
     if (!dueOn) return '';
-    const todayStr = this.todayDateStr;
-    const active = dueOn < todayStr ? todayStr : dueOn;
-    const namedDay = this.workloadDays.find((d) => d.date === active);
-    return namedDay ? namedDay.label : new Date(`${active}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+    const namedDay = this.workloadDays.find((d) => d.date === dueOn);
+    if (namedDay) return namedDay.label;
+    if (dueOn === this.yesterdayDateStr) return 'Yesterday';
+    return new Date(`${dueOn}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
   }
   get queueLabel() {
-    if (!this.hasFocusTask) return '';
     if (this.reviewingBacklog) {
       const n = this.queueTasks.length;
       return `Backlog - ${n} task${n === 1 ? '' : 's'} without a due date`;
     }
-    const dateLabel = this.dayLabelFor(this.activeDayDateStr);
+    const dateLabel = this.dayLabelFor(this.activeDate);
     const dueThatDay = this.tasksForActiveDay;
     const withTime = dueThatDay.filter((t) => t.dueAt).length;
     return `${dateLabel} - ${withTime}/${dueThatDay.length} timeslots assigned`;
@@ -369,6 +421,10 @@ class PlannerStore {
     // Workload doesn't gate entering triage — it fills in the header badges
     // once it resolves, same as any other in-app refresh.
     void this.refreshWorkload();
+    // The active day's unlinked calendar events gate the task queue (see
+    // activeDayUnlinkedEvents) — needs to be loaded before Triage renders,
+    // not just when Overview happens to be opened.
+    void this.refreshEvents();
     this.scheduleMidnightRefresh();
     await this.bootRefreshTasks();
   }
@@ -640,15 +696,35 @@ class PlannerStore {
   }
 
   // --- queue nav ---
-  goPrev() {
+  /// Steps activeDate to the previous/next entry in navigableDates — dates,
+  /// not tasks, so a click always moves a whole day even when the target
+  /// day has no task of its own (see jumpToDate). Clamped at the ends
+  /// rather than wrapping, like a calendar picker.
+  private stepActiveDate(dir: -1 | 1) {
+    const dates = this.navigableDates;
+    if (dates.length === 0) return;
+    const idx = dates.indexOf(this.activeDate);
+    const from = idx === -1 ? (dir === 1 ? -1 : dates.length) : idx;
+    const next = Math.max(0, Math.min(dates.length - 1, from + dir));
+    this.jumpToDate(dates[next]);
+  }
+  /// Backlog tasks have no due date at all, so date-stepping doesn't apply
+  /// while reviewing them — cycle through the backlog list itself instead
+  /// (wrapping, since there's no natural start/end the way dates have).
+  private stepFocusIndexInBacklog(dir: -1 | 1) {
     if (this.queueTasks.length <= 1) return;
-    this.focusIndex = (this.focusIndex - 1 + this.queueTasks.length) % this.queueTasks.length;
+    this.focusIndex = (this.focusIndex + dir + this.queueTasks.length) % this.queueTasks.length;
+  }
+  goPrev() {
+    if (this.reviewingBacklog) this.stepFocusIndexInBacklog(-1);
+    else this.stepActiveDate(-1);
   }
   goNext() {
-    if (this.queueTasks.length <= 1) return;
-    this.focusIndex = (this.focusIndex + 1) % this.queueTasks.length;
+    if (this.reviewingBacklog) this.stepFocusIndexInBacklog(1);
+    else this.stepActiveDate(1);
   }
   selectFocus(id: string) {
+    this.pinnedEventId = null;
     this.focusIndex = Math.max(0, this.queueTasks.findIndex((t) => t.id === id));
   }
 
@@ -991,34 +1067,53 @@ class PlannerStore {
   /// returns to the normal queue, same as justPlannedIds' "re-open the day".
   reviewBacklog() {
     if (this.tasksWithoutDueDate.length === 0) return;
+    this.pinnedEventId = null;
     this.reviewingBacklog = true;
     this.focusIndex = 0;
     this.screen = 'triage';
   }
 
-  /// Clicking a day (or the aggregate "Next week" row) in Overview jumps the
-  /// triage queue to the earliest task due that day/week — goNext() from
-  /// there naturally continues on to later due dates since `tasks` is
-  /// already sorted ascending by due date.
+  /// Clicking a day in Overview jumps Triage straight to that date — every
+  /// named day is reachable this way whether or not it has a task yet (a
+  /// day with only calendar events, or nothing at all, still needs to be
+  /// reachable — see jumpToDate/activeDate). The aggregate "Next week" row
+  /// has no single date to land on, so it keeps the old behavior of
+  /// jumping to its earliest task instead (or telling you there isn't one)
+  /// — calendar events aren't even fetched that far ahead.
   focusQueueForDay(day: WorkloadDay) {
-    const rangeStart = day.date ? new Date(day.date) : day.rangeStart ? new Date(day.rangeStart) : null;
-    const rangeEnd = day.date ? new Date(new Date(day.date).getTime() + 86_400_000) : day.rangeEnd ? new Date(day.rangeEnd) : null;
-    if (!rangeStart || !rangeEnd) return;
-
+    if (day.date) {
+      // Clears justPlannedIds before jumping, so the day's own task (if
+      // any) is found against the same (now unfiltered) queue it'll
+      // actually be read against once this returns to Triage.
+      this.closeOverview();
+      this.jumpToDate(day.date);
+      return;
+    }
+    if (!day.rangeStart || !day.rangeEnd) return;
+    const rangeStart = new Date(day.rangeStart);
+    const rangeEnd = new Date(day.rangeEnd);
     const matches = this.tasks
       .filter((t): t is Task & { dueAt: string } => !!t.dueAt && new Date(t.dueAt) >= rangeStart && new Date(t.dueAt) < rangeEnd)
       .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
-
     if (!matches.length) {
       this.showToast(`No tasks due ${day.label}`);
       return;
     }
-    // Clears justPlannedIds before searching, so the index below is
-    // computed against the same (now unfiltered) array it'll actually be
-    // read against once this returns to Triage.
     this.closeOverview();
-    const idx = this.queueTasks.findIndex((t) => t.id === matches[0].id);
-    if (idx >= 0) this.focusIndex = idx;
+    this.jumpToDate(matches[0].dueOn!);
+  }
+
+  /// Clicking a calendar entry itself (not just its +/› action buttons) in
+  /// Overview's "From your calendar" list reopens its card in Triage —
+  /// pinning it (see pinnedEventId) so it shows regardless of link status,
+  /// not just when it's unlinked and gating that day's tasks. An already
+  /// linked event doesn't get relinked automatically; its card shows what
+  /// it's currently linked to and offers the same add/link actions to
+  /// change that, same as picking the link the first time.
+  openEventInTriage(event: CalendarEvent) {
+    this.closeOverview();
+    this.jumpToDate(this.toLocalDateStr(event.start));
+    this.pinnedEventId = event.id;
   }
 
   get laterDays() {
@@ -1722,6 +1817,7 @@ class PlannerStore {
     this.searchQuery = '';
     this.typeaheadResults = [];
     this.typeaheadLoading = false;
+    this.pinnedEventId = null;
   }
   onSearchChange(v: string) {
     this.searchQuery = v;
@@ -1737,7 +1833,7 @@ class PlannerStore {
   /// Overview.svelte's resultsFor — if this fails, e.g. the connected
   /// Asana account predates the workspaces.typeahead:read scope and hasn't
   /// been reconnected yet.
-  typeaheadResults: { gid: string; name: string; resourceType: 'task' | 'project' }[] = $state([]);
+  typeaheadResults: { gid: string; name: string; permalinkUrl: string; resourceType: 'task' | 'project' }[] = $state([]);
   typeaheadOk = $state(true);
   /// Set the instant a search is scheduled (not just once the request
   /// actually goes out) so the panel can show a spinner through the 250ms
@@ -1760,7 +1856,9 @@ class PlannerStore {
     const seq = ++this.typeaheadSeq;
     this.typeaheadLoading = true;
     const fetchOne = (resourceType: 'task' | 'project') =>
-      api.get<{ results: { gid: string; name: string }[] }>(`/api/tasks/typeahead?resourceType=${resourceType}&query=${encodeURIComponent(q)}`);
+      api.get<{ results: { gid: string; name: string; permalinkUrl: string }[] }>(
+        `/api/tasks/typeahead?resourceType=${resourceType}&query=${encodeURIComponent(q)}`,
+      );
     try {
       // Both panels show projects and tasks now — "link" used to only ask
       // for tasks, which is why projects looked like they were missing
@@ -1779,6 +1877,56 @@ class PlannerStore {
     } finally {
       if (seq === this.typeaheadSeq) this.typeaheadLoading = false;
     }
+  }
+
+  /// Highlights the matched substring of a search result label against the
+  /// current query — shared by Overview's and Triage's search-result lists
+  /// so the highlight logic (and its "no query yet" no-op) only lives once.
+  matchSplit(label: string): { pre: string; match: string; post: string } | null {
+    const query = this.searchQuery.trim().toLowerCase();
+    if (!query) return null;
+    const idx = label.toLowerCase().indexOf(query);
+    if (idx === -1) return null;
+    return { pre: label.slice(0, idx), match: label.slice(idx, idx + query.length), post: label.slice(idx + query.length) };
+  }
+  /// Backs the search-result list in both the add/link panels' project or
+  /// subtask/task search — shared by Overview.svelte and Triage.svelte's
+  /// event-triage card. Asana's own typeahead endpoint (runTypeahead) is
+  /// the primary source; falls back to filtering the client's already-loaded
+  /// projects/tasks if that failed (e.g. the connected account predates the
+  /// workspaces.typeahead:read scope and hasn't been reconnected yet).
+  ///
+  /// Both panels show the same project results — selecting one always
+  /// creates a new task for this event under it, "link" mode included,
+  /// since linking only ever made sense against an existing *task*. Only
+  /// the task-result action differs: "add" nests it as a subtask, "link"
+  /// attaches the event directly to it.
+  searchResultsFor(eventId: string, mode: 'add' | 'link' | null): { label: string; typeLabel: string; onSelect: () => void }[] {
+    if (!mode) return [];
+    const RESULT_LIMIT = 8;
+    const query = this.searchQuery.trim().toLowerCase();
+    const taskTypeLabel = mode === 'add' ? 'Subtask of' : 'Task';
+    const taskAction =
+      mode === 'add'
+        ? (gid: string, name: string, permalinkUrl: string) => this.addEventAsSubtask(eventId, gid, name, permalinkUrl)
+        : (gid: string, name: string, permalinkUrl: string) => this.linkEventToTask(eventId, gid, name, permalinkUrl);
+    if (this.typeaheadOk) {
+      return this.typeaheadResults
+        .map((r) =>
+          r.resourceType === 'project'
+            ? { label: r.name, typeLabel: 'Project', onSelect: () => this.addEventAsTaskWithProject(eventId, r.gid, r.name) }
+            : { label: r.name, typeLabel: taskTypeLabel, onSelect: () => taskAction(r.gid, r.name, r.permalinkUrl) },
+        )
+        .slice(0, RESULT_LIMIT);
+    }
+    return [
+      ...this.projects
+        .filter((p) => !query || p.name.toLowerCase().includes(query))
+        .map((p) => ({ label: p.name, typeLabel: 'Project', onSelect: () => this.addEventAsTaskWithProject(eventId, p.gid, p.name) })),
+      ...this.tasks
+        .filter((t) => !query || t.name.toLowerCase().includes(query))
+        .map((t) => ({ label: t.name, typeLabel: taskTypeLabel, onSelect: () => taskAction(t.id, t.name, t.permalinkUrl) })),
+    ].slice(0, RESULT_LIMIT);
   }
 
   // --- overview: per-event popup ("›") — Link to task / Ignore. "Add as
@@ -1838,7 +1986,7 @@ class PlannerStore {
   /// so picking a real typeahead result just... did nothing, with no error
   /// surfaced anywhere — exactly the reported "selecting it doesn't do
   /// anything, the menu stays open" bug.
-  async addEventAsSubtask(eventId: string, parentTaskId: string, parentTaskName: string) {
+  async addEventAsSubtask(eventId: string, parentTaskId: string, parentTaskName: string, parentPermalinkUrl: string) {
     const ev = this.events.find((e) => e.id === eventId);
     if (!ev) return;
     try {
@@ -1846,7 +1994,13 @@ class PlannerStore {
         title: ev.title,
         target: { parentGid: parentTaskId },
       });
-      this.showToast(`Added "${ev.title}" as a subtask of "${parentTaskName}" · synced to Asana`);
+      // The subtask itself is new, so there's nothing ambiguous about it —
+      // it's the *parent*, picked from typeahead's name-only results, that's
+      // worth a second look (see linkEventToTask's identical reasoning).
+      this.showToast(`Added "${ev.title}" as a subtask of "${parentTaskName}" · synced to Asana`, {
+        label: 'Open parent',
+        href: parentPermalinkUrl,
+      });
       this.closeSearchPanel();
       await Promise.all([this.refreshEvents(), this.refreshTasks()]);
     } catch (err) {
@@ -1855,18 +2009,60 @@ class PlannerStore {
   }
   /// Same reasoning as addEventAsSubtask above — takes the task's name
   /// directly instead of requiring it to already be in the locally-loaded
-  /// `this.tasks`.
-  async linkEventToTask(eventId: string, taskId: string, taskName: string) {
+  /// `this.tasks`. Guards against linking a task that's already linked to a
+  /// *different* event — that's normally a sign of picking the wrong
+  /// search result rather than something intentional (one task standing in
+  /// for two separate meetings), so it's confirmed via eventLinkConflict
+  /// (see resolveEventLinkAnyway/resolveEventLinkChooseDifferent) rather
+  /// than applied silently.
+  async linkEventToTask(eventId: string, taskId: string, taskName: string, permalinkUrl: string) {
+    const conflict = this.events.find((e) => e.id !== eventId && e.linkedTaskGid === taskId);
+    if (conflict) {
+      this.pendingEventLink = {
+        eventId,
+        taskId,
+        taskName,
+        permalinkUrl,
+        conflictingEventTitle: conflict.title,
+        returnScreen: this.screen === 'overview' ? 'overview' : 'triage',
+      };
+      this.screen = 'eventLinkConflict';
+      return;
+    }
+    await this.commitEventLink(eventId, taskId, taskName, permalinkUrl);
+  }
+  private async commitEventLink(eventId: string, taskId: string, taskName: string, permalinkUrl: string) {
     const ev = this.events.find((e) => e.id === eventId);
     if (!ev) return;
     try {
       await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/link`, { taskGid: taskId, taskName });
-      this.showToast(`Linked "${ev.title}" to "${taskName}"`);
+      // Typeahead only shows a name, which isn't always enough to be sure
+      // it's the right task among several similarly-named ones — "Open
+      // task" lets the user confirm the actual Asana task before trusting
+      // the link.
+      this.showToast(`Linked "${ev.title}" to "${taskName}"`, { label: 'Open task', href: permalinkUrl });
       this.closeSearchPanel();
       await this.refreshEvents();
     } catch (err) {
       this.reportError(err, 'Could not link the event');
     }
+  }
+  /// "Choose a different task" (or closing the conflict screen) — the
+  /// search panel underneath was never touched, so going back to
+  /// returnScreen lands right back on the same results.
+  resolveEventLinkChooseDifferent() {
+    const p = this.pendingEventLink;
+    this.pendingEventLink = null;
+    this.screen = p?.returnScreen ?? 'triage';
+  }
+  /// "Link anyway" — proceeds with the link the user actually picked,
+  /// leaving the other event's link to the same task in place too.
+  async resolveEventLinkAnyway() {
+    const p = this.pendingEventLink;
+    if (!p) return;
+    this.screen = p.returnScreen;
+    this.pendingEventLink = null;
+    await this.commitEventLink(p.eventId, p.taskId, p.taskName, p.permalinkUrl);
   }
 }
 
