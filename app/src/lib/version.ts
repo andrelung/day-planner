@@ -5,7 +5,10 @@
 /// 'dev' when running `npm run dev` directly, where there's no build step
 /// to inject them.
 export const APP_VERSION = __APP_VERSION__;
-const gitCommit = import.meta.env.VITE_GIT_COMMIT || 'dev';
+/// Exported (not just folded into VERSION_LABEL) so the store can compare
+/// it against /api/version's live commit and detect a stale, long-open
+/// session — see checkForUpdate.
+export const GIT_COMMIT = import.meta.env.VITE_GIT_COMMIT || 'dev';
 const gitDirty = import.meta.env.VITE_GIT_DIRTY === '1' ? '-dirty' : '';
 
-export const VERSION_LABEL = `v${APP_VERSION} - commit ${gitCommit}${gitDirty}`;
+export const VERSION_LABEL = `v${APP_VERSION} - commit ${GIT_COMMIT}${gitDirty}`;

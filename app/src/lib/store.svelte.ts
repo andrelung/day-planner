@@ -15,6 +15,7 @@ import type {
 } from './types';
 import { api, ApiError } from './api';
 import { fmtHours, slotStartTime } from './format';
+import { GIT_COMMIT } from './version';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -346,8 +347,47 @@ class PlannerStore {
   // kept changing without any of it being true.
   bootStatus = $state('Connecting to Asana…');
 
+  // --- update notice ---
+  // A PWA can sit open for days (see schedulePeriodicTaskRefresh's comment
+  // on iOS not reliably firing resume events) — long enough to be running
+  // noticeably older code than what's actually deployed. /api/version
+  // reports the server's own build commit; a mismatch against this
+  // client's own baked-in GIT_COMMIT means a newer build exists and a
+  // reload would pick it up. `updateAvailableCommit` is null until that's
+  // detected. Runs independent of auth (called from boot(), not
+  // enterTriage()) so it still surfaces on the Login screen.
+  updateAvailableCommit: string | null = $state(null);
+  private dismissedUpdateCommit: string | null = null;
+  /// Not private — App.svelte's resume() also calls this directly, on the
+  /// same background/foreground transition that triggers refreshTasks().
+  async checkForUpdate() {
+    if (GIT_COMMIT === 'dev') return; // no build step to be stale against
+    try {
+      const res = await fetch('/api/version');
+      if (!res.ok) return;
+      const data = (await res.json()) as { commit: string };
+      if (data.commit && data.commit !== GIT_COMMIT && data.commit !== this.dismissedUpdateCommit) {
+        this.updateAvailableCommit = data.commit;
+      }
+    } catch {
+      // transient network hiccup — the next periodic check retries
+    }
+  }
+  private scheduleUpdateCheck() {
+    void this.checkForUpdate();
+    setInterval(() => void this.checkForUpdate(), 5 * 60_000);
+  }
+  dismissUpdateNotice() {
+    this.dismissedUpdateCommit = this.updateAvailableCommit;
+    this.updateAvailableCommit = null;
+  }
+  reloadForUpdate() {
+    window.location.reload();
+  }
+
   async boot() {
     this.bootStatus = 'Starting app…';
+    this.scheduleUpdateCheck();
     // Purely a device-capability check (iOS + not already standalone + not
     // previously dismissed) — independent of auth, so it needs to run
     // before the /api/me call below, not after login succeeds. Installing
@@ -402,7 +442,24 @@ class PlannerStore {
     // not just when Overview happens to be opened.
     void this.refreshEvents();
     this.scheduleMidnightRefresh();
+    this.schedulePeriodicTaskRefresh();
     await this.bootRefreshTasks();
+  }
+
+  /// Backstop against `tasks` silently going stale for good in a long-lived
+  /// session — the app's *only* other resync triggers are a genuine reload
+  /// (boot) and background/foreground transitions (App.svelte's resume()),
+  /// and iOS is known to not reliably fire those for a standalone PWA (see
+  /// resume()'s own comment). A tab/PWA left open continuously for days,
+  /// with neither ever firing, would otherwise keep showing a task Asana
+  /// itself has long since marked complete — this is what that looked
+  /// like when it happened. 15 minutes: frequent enough that "stale for
+  /// days" can't recur, cheap enough not to matter against Asana's rate
+  /// limits for a single-user tool.
+  private schedulePeriodicTaskRefresh() {
+    setInterval(() => {
+      if (this.asanaConnected) void this.refreshTasks();
+    }, 15 * 60_000);
   }
 
   /// workloadDays' buckets (today/tomorrow/day2../nextweek) are computed
@@ -1353,7 +1410,6 @@ class PlannerStore {
       dueAt: dueAtIso,
       dueOn: dueAtIso ? this.toLocalDateStr(dueAtIso) : null,
       dueHour: dueAtIso ? this.toLocalTimeStr(dueAtIso) : null,
-      doubled: false,
     };
     this.tasks = this.tasks.filter((t) => t.id !== taskId);
     this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
@@ -1371,7 +1427,7 @@ class PlannerStore {
   private restoreTaskDueFieldsLocally(taskId: string, previousDueOn: string | null, previousDueAt: string | null) {
     const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
     if (!existing) return;
-    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? this.toLocalTimeStr(previousDueAt) : null, doubled: false };
+    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? this.toLocalTimeStr(previousDueAt) : null };
     this.tasks = this.tasks.filter((t) => t.id !== taskId);
     this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
     if (previousDueOn) this.tasks = [...this.tasks, updated];
@@ -1398,7 +1454,7 @@ class PlannerStore {
   private restoreTaskDueFieldsAndRefocus(taskId: string, previousDueOn: string | null, previousDueAt: string | null) {
     const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
     if (!existing) return;
-    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? this.toLocalTimeStr(previousDueAt) : null, doubled: false };
+    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? this.toLocalTimeStr(previousDueAt) : null };
     this.tasks = this.tasks.filter((t) => t.id !== taskId);
     this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
     if (previousDueOn) this.tasks = [updated, ...this.tasks];

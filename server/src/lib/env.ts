@@ -37,4 +37,12 @@ export const env = {
   // brand-new user's Settings → Timezone, before they've picked one
   // themselves. See lib/settings.ts.
   TZ: process.env.TZ || null,
+  // Baked in at Docker build time from the host's git state (same build
+  // args as the frontend's VITE_GIT_COMMIT/VITE_GIT_DIRTY — see
+  // Dockerfile) — served from /api/version so a long-lived open client can
+  // notice the server's since moved on to a newer build and prompt for a
+  // reload. 'dev' outside Docker (`npm run dev`), where there's no build
+  // step to inject these.
+  GIT_COMMIT: process.env.GIT_COMMIT || 'dev',
+  GIT_DIRTY: process.env.GIT_DIRTY === '1',
 };

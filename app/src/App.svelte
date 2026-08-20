@@ -3,6 +3,7 @@
   import { planner } from './lib/store.svelte';
   import { VERSION_LABEL } from './lib/version';
   import Toast from './lib/components/Toast.svelte';
+  import UpdateNotice from './lib/components/UpdateNotice.svelte';
   import Celebration from './lib/components/Celebration.svelte';
   import Icon from './lib/components/Icon.svelte';
   import Login from './lib/screens/Login.svelte';
@@ -74,6 +75,7 @@
       forceRepaint();
       void planner.refreshTasks();
       void planner.refreshWorkload();
+      void planner.checkForUpdate();
     }
     function onVisibilityChange() {
       if (!document.hidden) resume();
@@ -154,6 +156,7 @@
       <BreakConfirm />
     {/if}
     <Toast />
+    <UpdateNotice />
     {#if planner.celebrationKey > 0}
       {#key planner.celebrationKey}
         <Celebration label={planner.celebrationLabel} />

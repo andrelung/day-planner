@@ -24,6 +24,11 @@ app.use(cookieParser());
 app.use(attachSession);
 
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+// Unauthenticated and cheap on purpose — the client polls this (see
+// store.svelte's checkForUpdate) to notice a long-open session is running
+// against an older build than what's actually deployed now, and prompt for
+// a reload. No auth gate needed since a git commit hash isn't sensitive.
+app.get('/api/version', (_req, res) => res.json({ commit: env.GIT_COMMIT, dirty: env.GIT_DIRTY }));
 
 app.use('/auth', authRouter);
 app.use('/api/me', meRouter);

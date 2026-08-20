@@ -36,6 +36,14 @@ RUN cp src/generated/prisma/*.so.node dist/generated/prisma/
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+# Same host-provided build args as the frontend stage (see its comment) —
+# served back out via GET /api/version so a long-lived open client can
+# notice it's running against a stale build. Re-declared here since a Docker
+# ARG only stays in scope for the stage that declares it.
+ARG GIT_COMMIT=dev
+ARG GIT_DIRTY=""
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_DIRTY=$GIT_DIRTY
 # Same reason as the server-build stage — needed here too since this is
 # where `prisma migrate deploy` and the running server actually load the
 # query engine.
