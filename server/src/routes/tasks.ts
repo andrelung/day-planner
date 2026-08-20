@@ -103,7 +103,7 @@ tasksRouter.get('/typeahead', async (req, res) => {
   }
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
   const results = await typeahead(accessToken, parsed.data.resourceType, parsed.data.query);
-  res.json({ results: results.map((r) => ({ gid: r.gid, name: r.name })) });
+  res.json({ results: results.map((r) => ({ gid: r.gid, name: r.name, permalinkUrl: r.permalinkUrl })) });
 });
 
 const patchSchema = z

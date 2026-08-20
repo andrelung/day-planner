@@ -288,18 +288,21 @@ export async function typeahead(
   accessToken: string,
   resourceType: 'task' | 'project',
   query: string,
-): Promise<{ gid: string; name: string }[]> {
+): Promise<{ gid: string; name: string; permalinkUrl: string }[]> {
   const workspaces = await listWorkspaces(accessToken);
   const results = await Promise.all(
     workspaces.map((ws) =>
       asanaFetch(
         accessToken,
-        `/workspaces/${ws.gid}/typeahead?resource_type=${resourceType}&query=${encodeURIComponent(query)}&count=20&opt_fields=name`,
-      ) as Promise<{ gid: string; name: string }[]>,
+        `/workspaces/${ws.gid}/typeahead?resource_type=${resourceType}&query=${encodeURIComponent(query)}&count=20&opt_fields=name,permalink_url`,
+      ) as Promise<{ gid: string; name: string; permalink_url: string }[]>,
     ),
   );
   const seen = new Set<string>();
-  return results.flat().filter((r) => (seen.has(r.gid) ? false : (seen.add(r.gid), true)));
+  return results
+    .flat()
+    .filter((r) => (seen.has(r.gid) ? false : (seen.add(r.gid), true)))
+    .map((r) => ({ gid: r.gid, name: r.name, permalinkUrl: r.permalink_url }));
 }
 
 /// Fetches every incomplete task assigned to the caller, across all of their
