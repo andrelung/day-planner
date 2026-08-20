@@ -63,41 +63,40 @@
   /// projects/tasks if that failed (e.g. the connected account predates
   /// the workspaces.typeahead:read scope and hasn't been reconnected yet),
   /// so search still works either way.
+  ///
+  /// Both panels show the same project results now — selecting one always
+  /// creates a new task for this event under it, "link" mode included,
+  /// since linking only ever made sense against an existing *task*. Only
+  /// the task-result action differs: "add" nests it as a subtask, "link"
+  /// attaches the event directly to it.
   function resultsFor(eventId: string, mode: 'add' | 'link' | null): SearchResult[] {
     if (!mode) return [];
+    const taskTypeLabel = mode === 'add' ? 'Subtask of' : 'Task';
+    const taskAction =
+      mode === 'add'
+        ? (gid: string, name: string) => planner.addEventAsSubtask(eventId, gid, name)
+        : (gid: string, name: string) => planner.linkEventToTask(eventId, gid, name);
     if (planner.typeaheadOk) {
-      if (mode === 'add') {
-        return planner.typeaheadResults
-          .map((r) =>
-            r.resourceType === 'project'
-              ? { label: r.name, typeLabel: 'Project', onSelect: () => planner.addEventAsTaskWithProject(eventId, r.gid, r.name) }
-              : { label: r.name, typeLabel: 'Subtask of', onSelect: () => planner.addEventAsSubtask(eventId, r.gid) },
-          )
-          .slice(0, RESULT_LIMIT);
-      }
       return planner.typeaheadResults
-        .filter((r) => r.resourceType === 'task')
-        .slice(0, RESULT_LIMIT)
-        .map((r) => ({ label: r.name, typeLabel: 'Task', onSelect: () => planner.linkEventToTask(eventId, r.gid) }));
+        .map((r) =>
+          r.resourceType === 'project'
+            ? { label: r.name, typeLabel: 'Project', onSelect: () => planner.addEventAsTaskWithProject(eventId, r.gid, r.name) }
+            : { label: r.name, typeLabel: taskTypeLabel, onSelect: () => taskAction(r.gid, r.name) },
+        )
+        .slice(0, RESULT_LIMIT);
     }
-    if (mode === 'add') {
-      return [
-        ...planner.projects
-          .filter((p) => !query || p.name.toLowerCase().includes(query))
-          .map((p) => ({
-            label: p.name,
-            typeLabel: 'Project',
-            onSelect: () => planner.addEventAsTaskWithProject(eventId, p.gid, p.name),
-          })),
-        ...planner.tasks
-          .filter((t) => !query || t.name.toLowerCase().includes(query))
-          .map((t) => ({ label: t.name, typeLabel: 'Subtask of', onSelect: () => planner.addEventAsSubtask(eventId, t.id) })),
-      ].slice(0, RESULT_LIMIT);
-    }
-    return planner.tasks
-      .filter((t) => !query || t.name.toLowerCase().includes(query))
-      .slice(0, RESULT_LIMIT)
-      .map((t) => ({ label: t.name, typeLabel: 'Task', onSelect: () => planner.linkEventToTask(eventId, t.id) }));
+    return [
+      ...planner.projects
+        .filter((p) => !query || p.name.toLowerCase().includes(query))
+        .map((p) => ({
+          label: p.name,
+          typeLabel: 'Project',
+          onSelect: () => planner.addEventAsTaskWithProject(eventId, p.gid, p.name),
+        })),
+      ...planner.tasks
+        .filter((t) => !query || t.name.toLowerCase().includes(query))
+        .map((t) => ({ label: t.name, typeLabel: taskTypeLabel, onSelect: () => taskAction(t.id, t.name) })),
+    ].slice(0, RESULT_LIMIT);
   }
 </script>
 
@@ -151,21 +150,28 @@
         {#if panelOpen}
           <div class="search-panel">
             <div class="search-panel__top">
-              <div class="search-panel__title">{mode === 'add' ? 'Add to project or subtask' : 'Link to a task'}</div>
+              <div class="search-panel__title">{mode === 'add' ? 'Add to project or subtask' : 'Link to a task or project'}</div>
               <button class="search-panel__cancel" onclick={() => planner.closeSearchPanel()}>Cancel</button>
             </div>
             <Input placeholder="Search projects or tasks…" value={planner.searchQuery} onchange={(v) => planner.onSearchChange(v)} />
-            <div class="search-results">
-              {#each resultsFor(e.id, mode) as r}
-                {@const m = matchSplit(r.label)}
-                <button class="search-result" onclick={r.onSelect}>
-                  <div class="search-result__label">
-                    {#if m}{m.pre}<mark>{m.match}</mark>{m.post}{:else}{r.label}{/if}
-                  </div>
-                  <div class="search-result__type">{r.typeLabel}</div>
-                </button>
-              {/each}
-            </div>
+            {#if planner.typeaheadLoading}
+              <div class="search-loading">
+                <div class="search-loading__spinner"></div>
+                <span>Searching…</span>
+              </div>
+            {:else}
+              <div class="search-results">
+                {#each resultsFor(e.id, mode) as r}
+                  {@const m = matchSplit(r.label)}
+                  <button class="search-result" onclick={r.onSelect}>
+                    <div class="search-result__label">
+                      {#if m}{m.pre}<mark>{m.match}</mark>{m.post}{:else}{r.label}{/if}
+                    </div>
+                    <div class="search-result__type">{r.typeLabel}</div>
+                  </button>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -179,6 +185,16 @@
         <div class="popup" onclick={(e) => e.stopPropagation()}>
           <div class="popup__title">{popupEvent.title}</div>
           <div class="popup__subtitle">{popupEvent.timeLabel}</div>
+          <button
+            class="popup__action"
+            onclick={() => {
+              const id = popupEvent.id;
+              planner.closeEventPopup();
+              planner.openAddPanel(id);
+            }}
+          >
+            Add as a new task
+          </button>
           <button
             class="popup__action"
             onclick={() => {
@@ -354,6 +370,29 @@
     max-height: 160px;
     overflow-y: auto;
     margin-top: 8px;
+  }
+  .search-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 16px 0;
+    font-family: var(--font-family-base);
+    font-size: 12px;
+    color: var(--color-text-muted);
+  }
+  .search-loading__spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-brand-primary);
+    border-radius: 50%;
+    animation: search-loading-spin 0.7s linear infinite;
+  }
+  @keyframes search-loading-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .search-result {
     display: flex;
