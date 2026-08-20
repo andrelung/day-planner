@@ -31,6 +31,39 @@ void test('the buffer-between-tasks setting pads each busy block only on the tra
   assert.deepEqual(slots, ['09:00–09:30', '10:15–10:45']);
 });
 
+void test('a busy block that ends exactly at window start does not push the first slot later via buffer', () => {
+  const slots = computeFreeSlots(
+    DAY,
+    '09:00',
+    '11:00',
+    10,
+    [{ start: new Date('2026-08-19T08:00:00'), end: new Date('2026-08-19T09:00:00') }],
+  );
+  assert.deepEqual(slots, ['09:00–09:30', '09:30–10:00', '10:00–10:30', '10:30–11:00']);
+});
+
+void test('a busy block that ends before window start does not push the first slot later via buffer either', () => {
+  const slots = computeFreeSlots(
+    DAY,
+    '09:00',
+    '10:00',
+    30,
+    [{ start: new Date('2026-08-19T08:00:00'), end: new Date('2026-08-19T08:55:00') }],
+  );
+  assert.deepEqual(slots, ['09:00–09:30', '09:30–10:00']);
+});
+
+void test('a busy block that crosses into the window still gets its full trailing buffer', () => {
+  const slots = computeFreeSlots(
+    DAY,
+    '09:00',
+    '11:00',
+    10,
+    [{ start: new Date('2026-08-19T08:30:00'), end: new Date('2026-08-19T09:05:00') }],
+  );
+  assert.deepEqual(slots, ['09:15–09:45', '09:45–10:15', '10:15–10:45']);
+});
+
 void test('two back-to-back busy blocks only get one buffer gap between them, not a doubled one', () => {
   const slots = computeFreeSlots(
     DAY,

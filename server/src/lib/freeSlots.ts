@@ -31,7 +31,15 @@ export function computeFreeSlots(
 
   const bufMs = bufferMinutes * 60_000;
   const padded = busy
-    .map((b) => ({ start: b.start, end: new Date(b.end.getTime() + bufMs) }))
+    .map((b) => {
+      // The buffer is overflow/wrap-up time after a task, there to space
+      // out whatever gets picked next — it shouldn't eat into the window
+      // for a task that already ended at or before the window even opens;
+      // nothing should push the window's own start later than the time the
+      // user actually asked to start at.
+      const bufferedEnd = b.end.getTime() <= windowStart.getTime() ? windowStart : new Date(b.end.getTime() + bufMs);
+      return { start: b.start, end: bufferedEnd };
+    })
     .sort((a, b) => a.start.getTime() - b.start.getTime());
 
   const merged: BusyBlock[] = [];
