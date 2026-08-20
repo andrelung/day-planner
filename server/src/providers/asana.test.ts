@@ -8,7 +8,7 @@ process.env.TOKEN_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString('base64');
 process.env.SESSION_JWT_SECRET ??= 'test-secret';
 process.env.PUBLIC_APP_URL ??= 'http://localhost:3000';
 
-const { listIncompleteAssignedTasks } = await import('./asana.js');
+const { listIncompleteAssignedTasks, listWorkspaces } = await import('./asana.js');
 
 interface Call {
   url: string;
@@ -50,7 +50,7 @@ void test('listIncompleteAssignedTasks follows next_page.uri across multiple pag
   }) as typeof fetch;
 
   try {
-    const tasks = await listIncompleteAssignedTasks('fake-token');
+    const tasks = await listIncompleteAssignedTasks('fake-token-pagination');
     assert.deepEqual(
       tasks.map((t) => t.gid),
       ['t1', 't2'],
@@ -114,7 +114,7 @@ void test('listIncompleteAssignedTasks resolves subtask project via the parent c
   }) as typeof fetch;
 
   try {
-    const tasks = await listIncompleteAssignedTasks('fake-token', { withBreadcrumbs: true });
+    const tasks = await listIncompleteAssignedTasks('fake-token-breadcrumbs', { withBreadcrumbs: true });
     const byGid = new Map(tasks.map((t) => [t.gid, t]));
     assert.equal(byGid.get('sub1')?.project, 'Project One › Parent task');
     assert.equal(byGid.get('sub2')?.project, 'Project Two › Grandparent two › Parent two');
@@ -141,7 +141,7 @@ void test('listIncompleteAssignedTasks leaves subtasks as "No project" when with
   }) as typeof fetch;
 
   try {
-    const tasks = await listIncompleteAssignedTasks('fake-token');
+    const tasks = await listIncompleteAssignedTasks('fake-token-no-breadcrumbs');
     assert.equal(tasks[0].project, 'No project');
     assert.equal(calls.length, 2); // just workspaces + the one list page, no extra parent lookups
   } finally {
@@ -186,7 +186,7 @@ void test('listIncompleteAssignedTasks reports a cumulative running count and ta
   try {
     const progressCounts: number[] = [];
     const progressGids: string[][] = [];
-    await listIncompleteAssignedTasks('fake-token', {
+    await listIncompleteAssignedTasks('fake-token-onbatch', {
       onBatch: (tasksSoFar, totalSoFar) => {
         progressCounts.push(totalSoFar);
         progressGids.push(tasksSoFar.map((t) => t.gid));
@@ -195,6 +195,37 @@ void test('listIncompleteAssignedTasks reports a cumulative running count and ta
     // ws1 page1 -> 1, ws1 page2 -> 2, ws2 page1 -> 3: always cumulative, never resets.
     assert.deepEqual(progressCounts, [1, 2, 3]);
     assert.deepEqual(progressGids, [['t1'], ['t1', 't2'], ['t1', 't2', 't3']]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// Regression test for the typeahead speedup: listWorkspaces used to hit
+/// /users/me on every call, adding a whole extra sequential Asana round-trip
+/// in front of every keystroke's search. It should now serve repeat calls
+/// (same access token) from cache instead of refetching.
+void test('listWorkspaces caches by access token instead of refetching /users/me every call', async () => {
+  const originalFetch = global.fetch;
+  let callCount = 0;
+
+  global.fetch = (async (url: string) => {
+    if (String(url).includes('/users/me')) {
+      callCount++;
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const first = await listWorkspaces('fake-token-cache-test');
+    const second = await listWorkspaces('fake-token-cache-test');
+    assert.deepEqual(first, [{ gid: 'ws1', name: 'Workspace 1' }]);
+    assert.deepEqual(second, first);
+    assert.equal(callCount, 1);
+
+    // A different token is a genuinely different cache entry, not a hit.
+    await listWorkspaces('fake-token-cache-test-2');
+    assert.equal(callCount, 2);
   } finally {
     global.fetch = originalFetch;
   }

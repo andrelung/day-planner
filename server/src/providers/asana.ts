@@ -169,8 +169,19 @@ interface AsanaTaskDto {
 // resolveBreadcrumbs below.
 const TASK_OPT_FIELDS = 'name,due_on,due_at,permalink_url,projects.gid,projects.name,parent.gid,parent.name,parent.projects.gid,parent.projects.name';
 
+/// due_at is a real UTC instant (see setTaskDueAt) — reading its wall-clock
+/// hour back has to go through Date's local getters (which respect this
+/// process's TZ env var, i.e. the operator's timezone — see settings.ts),
+/// not string-slicing: slicing reads the UTC digits directly, which are
+/// only ever right on a UTC server. That mismatch is what made a task
+/// dragged to, say, 11:00 redisplay a couple hours off.
+function localHHMM(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 function toRemoteTask(dto: AsanaTaskDto): RemoteTask & { projectGid: string | null } {
-  const dueHour = dto.due_at ? dto.due_at.slice(11, 16) : null;
+  const dueHour = dto.due_at ? localHHMM(dto.due_at) : null;
   return {
     gid: dto.gid,
     // Display name is the "[4]"-stripped title — the duration lives in the
@@ -245,9 +256,23 @@ async function resolveBreadcrumbs(
   );
 }
 
+// Workspace membership essentially never changes mid-session, but
+// typeahead() (below) used to re-fetch it on every single call — an entire
+// extra sequential Asana round-trip in front of the actual search on every
+// keystroke, roughly doubling typeahead's latency. Caching by access token
+// removes that round-trip for every call after the first; a token refresh
+// naturally busts the cache (a new token is a new key), and the TTL is
+// just a backstop against a workspace genuinely changing mid-session.
+const workspaceCache = new Map<string, { workspaces: { gid: string; name: string }[]; expiresAt: number }>();
+const WORKSPACE_CACHE_TTL_MS = 10 * 60_000;
+
 export async function listWorkspaces(accessToken: string): Promise<{ gid: string; name: string }[]> {
+  const cached = workspaceCache.get(accessToken);
+  if (cached && cached.expiresAt > Date.now()) return cached.workspaces;
   const me = await asanaFetch(accessToken, '/users/me?opt_fields=workspaces.gid,workspaces.name');
-  return me.workspaces ?? [];
+  const workspaces = me.workspaces ?? [];
+  workspaceCache.set(accessToken, { workspaces, expiresAt: Date.now() + WORKSPACE_CACHE_TTL_MS });
+  return workspaces;
 }
 
 /// Asana's typeahead search — the same fast, relevance-ranked endpoint the
