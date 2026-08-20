@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth } from '../lib/auth.js';
 import { getValidAccessToken } from '../lib/tokens.js';
-import { buildWorkloadDays, buildWorkloadItems, dailyCapacityHours } from '../lib/workload.js';
+import { buildWorkloadDays, buildWorkloadItems, dailyCapacityHours, toLocalDateStr } from '../lib/workload.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { listIncompleteAssignedTasks } from '../providers/asana.js';
 import { listEvents } from '../providers/outlook.js';
@@ -54,7 +54,7 @@ workloadRouter.get('/', async (req, res) => {
     return {
       key: d.key,
       label: d.label,
-      date: d.date ? d.date.toISOString().slice(0, 10) : null,
+      date: d.date ? toLocalDateStr(d.date) : null,
       rangeStart: d.rangeStart ? d.rangeStart.toISOString() : null,
       rangeEnd: d.rangeEnd ? d.rangeEnd.toISOString() : null,
       planned: Math.round(planned * 10) / 10,

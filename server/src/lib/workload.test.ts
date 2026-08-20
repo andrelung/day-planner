@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildWorkloadDays, buildWorkloadItems, dailyCapacityHours } from './workload.js';
+import { buildWorkloadDays, buildWorkloadItems, dailyCapacityHours, toLocalDateStr } from './workload.js';
 
 // workload.ts builds all its dates from local getters (getFullYear/Month/Date),
 // so read them back the same way — not via toISOString(), which converts to
@@ -87,4 +87,17 @@ void test('buildWorkloadItems counts an unlinked task alongside an unrelated eve
 void test('buildWorkloadItems skips tasks with no due date regardless of linking', () => {
   const items = buildWorkloadItems([{ gid: 'task-1', dueAt: null, hours: 3 }], [], new Set(['task-1']));
   assert.equal(items.length, 0);
+});
+
+void test('toLocalDateStr reads back a local-midnight Date without shifting it through UTC', () => {
+  // Regression test for the "tomorrow's free-slots/Outlook events actually
+  // show today's" bug: /api/workload used to serialize each bucket's date
+  // via toISOString().slice(0, 10), which converts to UTC first — for any
+  // timezone ahead of UTC (this suite runs under TZ=Europe/Berlin, see
+  // .env), local midnight is still the previous day in UTC, so the string
+  // silently came out one day early. buildWorkloadDays' own dates are all
+  // local-midnight (see startOfDay), so this has to round-trip exactly.
+  const days = buildWorkloadDays(new Date('2026-08-20T08:00:00'));
+  assert.equal(toLocalDateStr(days[0].date!), '2026-08-20'); // today
+  assert.equal(toLocalDateStr(days[1].date!), '2026-08-21'); // tomorrow
 });

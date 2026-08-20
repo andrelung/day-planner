@@ -17,6 +17,17 @@ function addDays(d: Date, n: number): Date {
 function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
+/// Formats a Date's *local* calendar date as "YYYY-MM-DD" — every date in
+/// this file is built from local getters (startOfDay/addDays) specifically
+/// to represent a calendar day, not an instant, so it has to be read back
+/// the same way. toISOString().slice(0, 10) converts to UTC first, which
+/// silently shifts the string back a day for any timezone ahead of UTC
+/// (local midnight becomes the previous day's evening in UTC) — exactly
+/// the kind of "today's Outlook event shows up under tomorrow" bug this
+/// exists to avoid.
+export function toLocalDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 function isWeekend(d: Date): boolean {
   const day = d.getDay();
   return day === 0 || day === 6;
