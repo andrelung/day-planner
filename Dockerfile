@@ -7,6 +7,15 @@ WORKDIR /src/app
 COPY app/package*.json ./
 RUN npm ci
 COPY app/ ./
+# .git is excluded from the build context (see .dockerignore) — the commit
+# hash/dirty flag has to come in from the host as build args instead (see
+# docker-compose.yml's build.args, sourced from the host's actual git
+# state). Vite auto-exposes any VITE_-prefixed env var as import.meta.env.*
+# (see app/src/lib/version.ts), no extra config needed.
+ARG GIT_COMMIT=dev
+ARG GIT_DIRTY=""
+ENV VITE_GIT_COMMIT=$GIT_COMMIT
+ENV VITE_GIT_DIRTY=$GIT_DIRTY
 RUN npm run build
 
 FROM node:22-bookworm-slim AS server-build

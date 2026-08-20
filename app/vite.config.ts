@@ -1,9 +1,20 @@
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8'))
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [svelte()],
+  // Read by app/src/lib/version.ts — the git commit/dirty half of the
+  // version label comes from VITE_GIT_COMMIT/VITE_GIT_DIRTY instead (plain
+  // env vars, not `define`, since those are only ever set at Docker build
+  // time — see Dockerfile).
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   server: {
     // Lets `npm run dev` talk to a locally running backend (`npm run dev`
     // in server/) without CORS — cookies stay same-origin from the browser's

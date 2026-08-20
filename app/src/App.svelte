@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { planner } from './lib/store.svelte';
+  import { VERSION_LABEL } from './lib/version';
   import Toast from './lib/components/Toast.svelte';
   import Celebration from './lib/components/Celebration.svelte';
   import Icon from './lib/components/Icon.svelte';
@@ -111,6 +112,7 @@
             <p class="loading__progress">{planner.loadingProgressLabel}</p>
           {/if}
         {/if}
+        <p class="loading__version">{VERSION_LABEL}</p>
       </div>
     {:else if planner.screen === 'login'}
       <Login />
@@ -184,6 +186,7 @@
     flex-direction: column;
   }
   .loading {
+    position: relative;
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -219,6 +222,16 @@
     font-weight: var(--font-weight-normal);
     font-variant-numeric: tabular-nums;
     opacity: 0.75;
+  }
+  .loading__version {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 16px;
+    font-size: 11px;
+    font-weight: var(--font-weight-normal);
+    font-variant-numeric: tabular-nums;
+    opacity: 0.5;
   }
   @keyframes loading-spin {
     to {

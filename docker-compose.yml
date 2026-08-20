@@ -20,7 +20,14 @@ services:
       retries: 10
 
   app:
-    build: .
+    build:
+      context: .
+      # Passed through from the host's actual git state (see the "docker
+      # up" README section / rebuild.sh) — falls back to "dev"/no dirty
+      # flag if built without them, e.g. a plain `docker compose up --build`.
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-dev}
+        GIT_DIRTY: ${GIT_DIRTY:-}
     restart: unless-stopped
     depends_on:
       db:

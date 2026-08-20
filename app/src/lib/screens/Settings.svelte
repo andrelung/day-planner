@@ -3,6 +3,7 @@
   import { planner } from '../store.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Input from '../components/Input.svelte';
+  import { VERSION_LABEL } from '../version';
 
   // Intl.supportedValuesOf isn't in every older browser (Safari added it in
   // 15.4) — fall back to just the current value plus UTC so the picker still
@@ -76,6 +77,7 @@
       />
     </label>
     <div class="more-to-come">More to come</div>
+    <div class="version">{VERSION_LABEL}</div>
   </div>
 </div>
 
@@ -199,5 +201,13 @@
     color: var(--color-text-muted);
     padding-top: 8px;
     border-top: 1px solid var(--color-border);
+  }
+  .version {
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-muted);
+    opacity: 0.6;
+    text-align: center;
   }
 </style>
