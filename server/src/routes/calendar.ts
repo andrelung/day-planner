@@ -87,12 +87,18 @@ calendarRouter.get('/free-slots', async (req, res) => {
   const settings = await getOrCreateSettings(req.userId!);
 
   const busy: { start: Date; end: Date }[] = [];
+  // Returned alongside `slots` so the client's day-calendar view can draw
+  // these as blocks too — it previously only ever showed Asana tasks, even
+  // though an Outlook meeting is exactly as much a reason a slot isn't
+  // really free.
+  let outlookEvents: { id: string; title: string; start: string; end: string }[] = [];
 
   const outlookAccount = await prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId: req.userId!, provider: 'OUTLOOK' } } });
   if (outlookAccount) {
     const accessToken = await getValidAccessToken(req.userId!, 'OUTLOOK');
     const events = await listEvents(accessToken, day, dayEnd);
     busy.push(...events.map((e) => ({ start: e.start, end: e.end })));
+    outlookEvents = events.map((e) => ({ id: e.id, title: e.subject, start: e.start.toISOString(), end: e.end.toISOString() }));
   }
 
   if (busyTasks) {
@@ -111,7 +117,7 @@ calendarRouter.get('/free-slots', async (req, res) => {
   }
 
   const slots = computeFreeSlots(day, settings.prefStartTime, settings.prefEndTime, settings.bufferMinutes, busy, Math.round(hours * 60));
-  res.json({ slots });
+  res.json({ slots, outlookEvents });
 });
 
 const linkSchema = z.object({ taskGid: z.string().min(1), taskName: z.string().min(1) });
