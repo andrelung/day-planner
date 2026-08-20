@@ -1493,19 +1493,13 @@ class PlannerStore {
 
   /// Drag-to-move on the day calendar (see DayCalendar.svelte) — moves a
   /// *different* task than the one currently being planned, without
-  /// disturbing the current planning flow (no screen change). A conflict
-  /// just reverts the drag with a toast rather than routing to the full
-  /// slotConflict screen, since that screen's "plan anyway" flow is built
-  /// around the task actually being planned, not an incidental drag
-  /// elsewhere on the day.
+  /// disturbing the current planning flow (no screen change). Overlaps are
+  /// allowed — the calendar renders them side-by-side rather than blocking
+  /// the move, so this never needs to consult findConflicts.
   moveOtherTask(taskId: string, date: string, hhmm: string): boolean {
     const task = this.tasks.find((t) => t.id === taskId);
     if (!task) return false;
     const dueAtIso = this.toIsoDateTime(date, hhmm);
-    if (this.findConflicts(dueAtIso, task.hours, taskId).length) {
-      this.showToast('That time is already taken');
-      return false;
-    }
     const previousDueOn = task.dueOn;
     const previousDueAt = task.dueAt;
     this.setTaskDueDateLocally(taskId, dueAtIso);

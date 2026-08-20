@@ -207,6 +207,23 @@
     return Math.round(mins / SNAP_MIN) * SNAP_MIN;
   }
 
+  /// Current-time indicator — only meaningful when `date` is today, and
+  /// only worth re-deriving once a minute (any faster is wasted renders for
+  /// a line that moves ~1.4px/min).
+  let now: Date = $state(new Date());
+  $effect(() => {
+    const id = setInterval(() => {
+      now = new Date();
+    }, 60_000);
+    return () => clearInterval(id);
+  });
+  function localDateStr(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  const nowMin = $derived(now.getHours() * 60 + now.getMinutes());
+  const showNowLine = $derived(localDateStr(now) === date && nowMin >= startMin && nowMin <= endMin);
+  const nowLineTop = $derived((nowMin - startMin) * PX_PER_MIN);
+
   // --- tentative placement for the task being planned: seeded from
   // suggestedStartTime if given (see PlanToday — lands the task on the
   // earliest free slot immediately instead of requiring a first tap),
@@ -300,6 +317,9 @@
         <span class="hour-label">{m.label}</span>
       </div>
     {/each}
+    {#if showNowLine}
+      <div class="now-line" style="top:{nowLineTop}px;"></div>
+    {/if}
     {#each blocks as b (b.task.id)}
       <div
         class="task-block"
@@ -445,6 +465,24 @@
     font-family: var(--font-family-base);
     font-size: 11px;
     color: var(--color-text-muted);
+  }
+  .now-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 2px solid var(--color-feedback-wrong);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .now-line::before {
+    content: '';
+    position: absolute;
+    left: -4px;
+    top: -4px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-feedback-wrong);
   }
   .task-block {
     position: absolute;
