@@ -305,6 +305,36 @@ export async function typeahead(
     .map((r) => ({ gid: r.gid, name: r.name, permalinkUrl: r.permalink_url }));
 }
 
+/// Best-effort speed-up for the progressive boot fetch below: the plain
+/// /tasks list endpoint (used for the full, source-of-truth fetch) returns
+/// pages in whatever internal order Asana happens to store them in, not
+/// sorted by due date — a task due today can just as easily land on page 6
+/// as page 1. Since the triage queue only ever shows tasks *with* a due
+/// date (see buildTasksPayload), a boot that's chewing through pages
+/// dominated by no-due-date/far-future tasks looks stalled even while
+/// genuinely making progress.
+///
+/// The Search API has a real due_on.before filter and returns already-
+/// relevant results in one shot — but it's gated behind a paid Asana plan
+/// (402 Payment Required on a free workspace). Treated as a pure
+/// optimization: any failure here (402 or otherwise) just means the caller
+/// gets nothing back and falls through to the unaffected full fetch. Capped
+/// at one page (the search endpoint's own pagination is a manual, cursor-
+/// less scheme not worth the complexity for what's only ever a head start —
+/// anything beyond the first 100 still arrives via the full fetch, just
+/// without the fast-track).
+async function searchNearTermTasks(accessToken: string, workspaceGid: string, dueOnBefore: string): Promise<AsanaTaskDto[]> {
+  try {
+    const data = await asanaFetch(
+      accessToken,
+      `/workspaces/${workspaceGid}/tasks/search?assignee.any=me&completed=false&due_on.before=${dueOnBefore}&sort_by=due_date&sort_ascending=true&limit=100&opt_fields=${TASK_OPT_FIELDS}`,
+    );
+    return data as AsanaTaskDto[];
+  } catch {
+    return [];
+  }
+}
+
 /// Fetches every incomplete task assigned to the caller, across all of their
 /// workspaces. Asana's API requires querying one workspace at a time.
 /// `withBreadcrumbs` resolves subtasks' project via their parent chain (see
@@ -317,20 +347,50 @@ export async function typeahead(
 /// like the boot-time stream hand the client a usable (if not yet fully
 /// breadcrumb-resolved) queue well before the whole fetch finishes, rather
 /// than making them wait for the entire — possibly paginated many times
-/// over — result.
+/// over — result. `onPhase` fires with a short human-readable label at each
+/// real transition (workspace lookup done, near-term search, full fetch,
+/// breadcrumb resolution) — every label names something actually happening
+/// at that moment, not a decorative placeholder.
 export async function listIncompleteAssignedTasks(
   accessToken: string,
   options?: {
     withBreadcrumbs?: boolean;
     onBatch?: (tasksSoFar: (RemoteTask & { projectGid: string | null })[], totalSoFar: number) => void;
+    onPhase?: (label: string) => void;
   },
 ): Promise<(RemoteTask & { projectGid: string | null })[]> {
   const workspaces = await listWorkspaces(accessToken);
   const entries: { dto: AsanaTaskDto; task: RemoteTask & { projectGid: string | null } }[] = [];
+  const seen = new Set<string>();
+
+  options?.onPhase?.('Looking for upcoming tasks…');
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + 35);
+  const dueOnBefore = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, '0')}-${String(cutoff.getDate()).padStart(2, '0')}`;
+  for (const ws of workspaces) {
+    const nearTerm = await searchNearTermTasks(accessToken, ws.gid, dueOnBefore);
+    for (const dto of nearTerm) {
+      if (seen.has(dto.gid)) continue;
+      seen.add(dto.gid);
+      entries.push({ dto, task: toRemoteTask(dto) });
+    }
+    if (nearTerm.length) {
+      options?.onBatch?.(
+        entries.map((e) => e.task),
+        entries.length,
+      );
+    }
+  }
+
+  options?.onPhase?.('Fetching the rest of your tasks…');
   for (const ws of workspaces) {
     const path = `/tasks?assignee=me&workspace=${ws.gid}&completed_since=now&opt_fields=${TASK_OPT_FIELDS}`;
     await asanaFetchAllPages(accessToken, path, (page: AsanaTaskDto[]) => {
-      for (const dto of page) entries.push({ dto, task: toRemoteTask(dto) });
+      for (const dto of page) {
+        if (seen.has(dto.gid)) continue;
+        seen.add(dto.gid);
+        entries.push({ dto, task: toRemoteTask(dto) });
+      }
       options?.onBatch?.(
         entries.map((e) => e.task),
         entries.length,
@@ -338,6 +398,7 @@ export async function listIncompleteAssignedTasks(
     });
   }
   if (options?.withBreadcrumbs) {
+    options?.onPhase?.('Organizing your tasks…');
     await resolveBreadcrumbs(accessToken, entries);
   }
   return entries.map((e) => e.task);

@@ -56,8 +56,11 @@ void test('listIncompleteAssignedTasks follows next_page.uri across multiple pag
       ['t1', 't2'],
     );
     // Confirms it actually followed the second page rather than just
-    // guessing/duplicating — exactly 3 requests: workspaces, page 1, page 2.
-    assert.equal(calls.length, 3);
+    // guessing/duplicating — exactly 4 requests: workspaces, the near-term
+    // search pass (this mock happens to answer it with the same page-1
+    // fixture — deduped against below, hence still just ['t1', 't2']),
+    // page 1, page 2.
+    assert.equal(calls.length, 4);
     assert.equal(calls[1].url.includes('limit=100'), true);
   } finally {
     global.fetch = originalFetch;
@@ -143,7 +146,10 @@ void test('listIncompleteAssignedTasks leaves subtasks as "No project" when with
   try {
     const tasks = await listIncompleteAssignedTasks('fake-token-no-breadcrumbs');
     assert.equal(tasks[0].project, 'No project');
-    assert.equal(calls.length, 2); // just workspaces + the one list page, no extra parent lookups
+    // workspaces + the near-term search pass (this mock answers it with the
+    // same fixture, deduped below) + the one list page — no extra parent
+    // lookups, since withBreadcrumbs isn't set.
+    assert.equal(calls.length, 3);
   } finally {
     global.fetch = originalFetch;
   }
@@ -195,6 +201,88 @@ void test('listIncompleteAssignedTasks reports a cumulative running count and ta
     // ws1 page1 -> 1, ws1 page2 -> 2, ws2 page1 -> 3: always cumulative, never resets.
     assert.deepEqual(progressCounts, [1, 2, 3]);
     assert.deepEqual(progressGids, [['t1'], ['t1', 't2'], ['t1', 't2', 't3']]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// The near-term search pass is a pure optimization gated behind a paid
+/// Asana plan — a free workspace 402s on it. That must never surface as a
+/// failure; it should just fall straight through to the full fetch below,
+/// unaffected.
+void test('listIncompleteAssignedTasks falls back to the full fetch when the near-term search 402s (free-plan workspace)', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) {
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    }
+    if (u.includes('/tasks/search')) {
+      return new Response('Payment Required', { status: 402 });
+    }
+    if (u.includes('/tasks?assignee=me')) {
+      return jsonResponse({
+        data: [{ gid: 't1', name: 'Task one', due_on: '2026-08-25', due_at: null, permalink_url: 'https://x/1', projects: [], parent: null }],
+        next_page: null,
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const tasks = await listIncompleteAssignedTasks('fake-token-402');
+    assert.deepEqual(
+      tasks.map((t) => t.gid),
+      ['t1'],
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// The whole point of the near-term search pass: a task due soon should
+/// reach onBatch before tasks that happen to sit on an earlier page of the
+/// plain (unsorted) list fetch, so the boot screen's queue fills with
+/// actually-relevant tasks first instead of stalling on undated ones.
+void test('listIncompleteAssignedTasks fast-tracks a near-term-due task ahead of the plain list fetch', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) {
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    }
+    if (u.includes('/tasks/search')) {
+      return jsonResponse({
+        data: [{ gid: 'soon', name: 'Due soon', due_on: '2026-08-22', due_at: null, permalink_url: 'https://x/soon', projects: [], parent: null }],
+      });
+    }
+    if (u.includes('/tasks?assignee=me')) {
+      // The plain list's own page order puts the undated task first, as if
+      // Asana just happened to store it that way — the near-term search
+      // pass above should still have gotten 'soon' to onBatch first.
+      return jsonResponse({
+        data: [
+          { gid: 'undated', name: 'No due date', due_on: null, due_at: null, permalink_url: 'https://x/undated', projects: [], parent: null },
+          { gid: 'soon', name: 'Due soon', due_on: '2026-08-22', due_at: null, permalink_url: 'https://x/soon', projects: [], parent: null },
+        ],
+        next_page: null,
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const batches: string[][] = [];
+    const tasks = await listIncompleteAssignedTasks('fake-token-prioritized', {
+      onBatch: (tasksSoFar) => batches.push(tasksSoFar.map((t) => t.gid)),
+    });
+    assert.deepEqual(batches[0], ['soon']);
+    assert.deepEqual(
+      tasks.map((t) => t.gid).sort(),
+      ['soon', 'undated'],
+    );
   } finally {
     global.fetch = originalFetch;
   }

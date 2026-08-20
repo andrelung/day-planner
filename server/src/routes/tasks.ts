@@ -70,6 +70,9 @@ tasksRouter.get('/stream', async (req, res) => {
       onBatch: (tasksSoFar, totalSoFar) => {
         res.write(`event: progress\ndata: ${JSON.stringify({ count: totalSoFar, ...buildTasksPayload(tasksSoFar) })}\n\n`);
       },
+      onPhase: (label) => {
+        res.write(`event: phase\ndata: ${JSON.stringify({ label })}\n\n`);
+      },
     });
     res.write(`event: done\ndata: ${JSON.stringify(buildTasksPayload(raw))}\n\n`);
   } catch (err) {
