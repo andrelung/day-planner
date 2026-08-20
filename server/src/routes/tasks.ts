@@ -22,7 +22,7 @@ function buildTasksPayload(raw: (RemoteTask & { projectGid: string | null })[]) 
   for (const t of raw) {
     if (t.projectGid) projects.set(t.projectGid, t.project);
   }
-  const toTaskDto = (t: RemoteTask & { doubled?: boolean }) => ({
+  const toTaskDto = (t: RemoteTask) => ({
     id: t.gid,
     name: t.name,
     project: t.project,
@@ -30,7 +30,6 @@ function buildTasksPayload(raw: (RemoteTask & { projectGid: string | null })[]) 
     dueHour: t.dueHour,
     dueAt: t.dueAt,
     dueOn: t.dueOn,
-    doubled: t.doubled ?? false,
     permalinkUrl: t.permalinkUrl,
   });
   return {

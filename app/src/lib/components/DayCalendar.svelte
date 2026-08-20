@@ -47,15 +47,11 @@
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   }
 
-  /// dueAt, not dueHour: the server clears dueHour to null for a "doubled"
-  /// task (two tasks sharing the exact same due instant — see taskQueue.ts)
-  /// so Triage shows it as "Unplanned" instead of trusting an ambiguous
-  /// time, but that task is still *really* due at that instant — it still
-  /// occupies the time and still shows up in findConflicts (which reads
-  /// dueAt). Gating this view on dueHour too made a doubled task silently
-  /// disappear from the calendar entirely while it kept right on
-  /// conflicting at confirm time, which looked exactly like "the app
-  /// thinks something's here that isn't showing anywhere."
+  /// dueAt, not dueHour: dueHour is null whenever there's no due_at at all
+  /// (a date-only due date) — gating this view on it too used to make a
+  /// task with a real but server-untrusted time (see taskQueue.ts's old
+  /// "doubled" flag, since removed) silently disappear from the calendar
+  /// while it kept right on conflicting at confirm time.
   const otherTasks = $derived(planner.tasks.filter((t) => t.dueOn === date && t.dueAt && t.id !== excludeTaskId));
 
   /// Local minutes-of-day for an Outlook event's start, or a task's dueAt —

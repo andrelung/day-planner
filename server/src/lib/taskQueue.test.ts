@@ -6,6 +6,7 @@ interface Fixture {
   id: string;
   dueAt: string | null;
   dueOn: string | null;
+  dueHour?: string | null;
 }
 
 void test('a task with no due date at all is excluded from the queue', () => {
@@ -13,32 +14,18 @@ void test('a task with no due date at all is excluded from the queue', () => {
   assert.deepEqual(results, []);
 });
 
-void test('a task with a due date but no due time is not doubled and keeps a null dueHour', () => {
-  const [result] = deriveQueue<Fixture>([{ id: 'date-only', dueAt: null, dueOn: '2026-08-20' }]);
-  assert.equal(result.doubled, false);
+void test('a task with a due date but no due time passes through untouched', () => {
+  const [result] = deriveQueue<Fixture>([{ id: 'date-only', dueAt: null, dueOn: '2026-08-20', dueHour: null }]);
   assert.equal(result.dueHour, null);
 });
 
-void test('two tasks sharing the exact same due timestamp are both flagged doubled', () => {
+void test('two tasks sharing the exact same due timestamp each keep their own real due time — no special-casing', () => {
   const dueAt = '2026-08-20T09:00:00.000Z';
   const results = deriveQueue<Fixture>([
-    { id: 'a', dueAt, dueOn: '2026-08-20' },
-    { id: 'b', dueAt, dueOn: '2026-08-20' },
+    { id: 'a', dueAt, dueOn: '2026-08-20', dueHour: '09:00' },
+    { id: 'b', dueAt, dueOn: '2026-08-20', dueHour: '09:00' },
   ]);
-  assert.equal(results.every((r) => r.doubled), true);
-  // Per the briefing's "unplanned if doubled" rule, a doubled task's
-  // displayed due-hour is cleared even though the real due_at is untouched.
-  assert.equal(results.every((r) => r.dueHour === null), true);
-});
-
-void test('two tasks with different due timestamps are not doubled', () => {
-  const results = deriveQueue<Fixture>([
-    { id: 'a', dueAt: '2026-08-20T09:00:00.000Z', dueOn: '2026-08-20' },
-    { id: 'b', dueAt: '2026-08-20T10:00:00.000Z', dueOn: '2026-08-20' },
-  ]);
-  assert.equal(results.every((r) => r.doubled === false), true);
-  assert.equal(results[0].dueHour, '09:00');
-  assert.equal(results[1].dueHour, '10:00');
+  assert.equal(results.every((r) => r.dueHour === '09:00'), true);
 });
 
 void test('queue sorts ascending by day, overdue (earliest) first', () => {
@@ -65,17 +52,17 @@ void test('within a day, the due-date-but-no-time task leads, then timed tasks i
   );
 });
 
-void test('a doubled task is treated like a date-only task for sorting — leads its day, not pushed to the very end', () => {
+void test('two tasks sharing the exact same due timestamp sort by that real time among the day\'s other timed tasks, not pushed to the end', () => {
   const dueAt = '2026-08-20T09:00:00.000Z';
   const results = deriveQueue<Fixture>([
     { id: 'timed', dueAt: '2026-08-20T15:00:00.000Z', dueOn: '2026-08-20' },
-    { id: 'doubled-1', dueAt, dueOn: '2026-08-20' },
-    { id: 'doubled-2', dueAt, dueOn: '2026-08-20' },
+    { id: 'same-time-1', dueAt, dueOn: '2026-08-20' },
+    { id: 'same-time-2', dueAt, dueOn: '2026-08-20' },
   ]);
   assert.deepEqual(results[2].id, 'timed');
   assert.deepEqual(
     new Set(results.slice(0, 2).map((r) => r.id)),
-    new Set(['doubled-1', 'doubled-2']),
+    new Set(['same-time-1', 'same-time-2']),
   );
 });
 

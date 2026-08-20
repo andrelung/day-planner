@@ -14,7 +14,7 @@ export interface RemoteTask {
   /// "HH:MM" in the task's due_at, or null if only a due_on date (no time)
   /// or no due date at all was set.
   dueHour: string | null;
-  /// ISO datetime this task is due, for queue sorting and doubled-slot
+  /// ISO datetime this task is due, for queue sorting and conflict
   /// detection — null when there's no due_at.
   dueAt: string | null;
   /// "YYYY-MM-DD", set whenever there's any due date at all (with or

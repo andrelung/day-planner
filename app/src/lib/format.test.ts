@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fmtHours } from './format';
+import { fmtElapsed, fmtHours } from './format';
 
 describe('fmtHours', () => {
   it('formats whole numbers with no decimal', () => {
@@ -21,5 +21,26 @@ describe('fmtHours', () => {
 
   it('drops the decimal once rounding lands back on a whole number', () => {
     expect(fmtHours(3.96)).toBe('4h');
+  });
+});
+
+describe('fmtElapsed', () => {
+  it('shows whole minutes under an hour, floored', () => {
+    expect(fmtElapsed(90_000)).toBe('1m'); // 1.5 min floors to 1
+    expect(fmtElapsed(59 * 60_000)).toBe('59m');
+  });
+
+  it('never shows 0m for a task that just tipped into overdue', () => {
+    expect(fmtElapsed(500)).toBe('1m');
+  });
+
+  it('shows whole hours once past 60 minutes, floored', () => {
+    expect(fmtElapsed(60 * 60_000)).toBe('1h');
+    expect(fmtElapsed(4 * 60 * 60_000 + 59 * 60_000)).toBe('4h');
+  });
+
+  it('shows whole days once past 24 hours, floored', () => {
+    expect(fmtElapsed(24 * 60 * 60_000)).toBe('1d');
+    expect(fmtElapsed(50 * 60 * 60_000)).toBe('2d');
   });
 });

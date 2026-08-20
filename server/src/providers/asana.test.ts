@@ -288,6 +288,41 @@ void test('listIncompleteAssignedTasks fast-tracks a near-term-due task ahead of
   }
 });
 
+/// Regression test for a real production bug: Asana's Search API runs off
+/// an index that can lag behind a task's live completion state, so a
+/// just-completed task can still come back from /tasks/search with
+/// completed=false honored server-side yet the dto itself still marked
+/// completed:true. A completed task slipping through the near-term
+/// fast-track and into the triage queue is exactly what that looked like.
+void test('listIncompleteAssignedTasks drops a near-term search result that is actually completed (stale search index)', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) {
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    }
+    if (u.includes('/tasks/search')) {
+      return jsonResponse({
+        data: [
+          { gid: 'stale-done', name: 'Actually done', due_on: '2026-08-07', due_at: null, completed: true, permalink_url: 'https://x/done', projects: [], parent: null },
+        ],
+      });
+    }
+    if (u.includes('/tasks?assignee=me')) {
+      return jsonResponse({ data: [], next_page: null });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const tasks = await listIncompleteAssignedTasks('fake-token-stale-completed');
+    assert.deepEqual(tasks, []);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 /// Regression test for the typeahead speedup: listWorkspaces used to hit
 /// /users/me on every call, adding a whole extra sequential Asana round-trip
 /// in front of every keystroke's search. It should now serve repeat calls

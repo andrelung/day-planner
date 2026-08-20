@@ -3,40 +3,30 @@ export interface QueueableTask {
   dueOn: string | null;
 }
 
-/// Applies the briefing's definition literally: "A task is unplanned if it
-/// has no time assigned OR if it is doubled" (two tasks sharing the exact
-/// same due timestamp). A doubled task's displayed due-hour is cleared —
-/// its real Asana due_at is left untouched, this only affects how it's
-/// triaged here.
-///
 /// A task with no due date at all doesn't belong in this queue (the
 /// swipeable triage loop) — the caller is expected to have filtered those
 /// out already; see "Tasks without Due Date" on the Overview screen
 /// instead. Everything passed in here is assumed to have a `dueOn`.
 ///
 /// Sorted ascending by day (`dueOn`), earliest — including overdue, which
-/// naturally sorts first — leading. Within a day, undated-time tasks (no
-/// due_at, or doubled — its due_at is real but untrustworthy for triage)
-/// come first, followed by the day's timed tasks in time order.
-export function deriveQueue<T extends QueueableTask>(tasks: T[]): (T & { doubled: boolean; dueHour: string | null })[] {
-  const countByDueAt = new Map<string, number>();
-  for (const t of tasks) {
-    if (t.dueAt) countByDueAt.set(t.dueAt, (countByDueAt.get(t.dueAt) ?? 0) + 1);
-  }
-
-  const withDoubled = tasks
+/// naturally sorts first — leading. Within a day, date-only tasks (no
+/// due_at at all) come first, followed by the day's timed tasks in time
+/// order.
+///
+/// Two tasks can genuinely share the exact same due_at — no special
+/// handling for that here: each keeps its own real time and sorts by it
+/// like any other timed task (a stable tie on index order). This used to
+/// flag such a pair "doubled" and hide both their times behind an
+/// "Unplanned" label, on the theory that an identical instant was probably
+/// a data artifact rather than a real intentional double-booking — but the
+/// calendar already renders genuinely overlapping tasks side by side
+/// rather than hiding either one, and hiding a real, correct due time here
+/// caused more confusion than the thing it was meant to prevent (a
+/// same-time task reading as "Unplanned" instead of overdue).
+export function deriveQueue<T extends QueueableTask>(tasks: T[]): T[] {
+  return tasks
     .filter((t) => t.dueOn !== null)
-    .map((t) => {
-      const doubled = !!t.dueAt && (countByDueAt.get(t.dueAt) ?? 0) > 1;
-      return {
-        ...t,
-        doubled,
-        dueHour: !doubled && t.dueAt ? t.dueAt.slice(11, 16) : null,
-      };
-    });
-
-  return withDoubled
-    .map((t, index) => ({ t, index, hasTime: !t.doubled && !!t.dueAt }))
+    .map((t, index) => ({ t, index, hasTime: !!t.dueAt }))
     .sort((a, b) => {
       if (a.t.dueOn !== b.t.dueOn) return a.t.dueOn! < b.t.dueOn! ? -1 : 1;
       if (a.hasTime !== b.hasTime) return a.hasTime ? 1 : -1;

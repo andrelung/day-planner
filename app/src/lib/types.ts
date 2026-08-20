@@ -26,9 +26,9 @@ export interface Task {
   name: string;
   project: string;
   hours: number;
-  /// "HH:MM" or null. Presence is what makes a task "Overdue" instead of
-  /// "Unplanned" — a task flagged `doubled` by the server always has this
-  /// cleared, per the briefing's "unplanned if no time, or if doubled" rule.
+  /// "HH:MM" or null — null whenever there's no due_at at all (a date-only
+  /// due date, or no due date). Display-only; anything computing whether a
+  /// task is overdue should use dueAt instead (see Triage.svelte).
   dueHour: string | null;
   /// Full ISO instant (UTC), unlike dueHour's display-only "HH:MM" — used to
   /// figure out which calendar day/week a task actually falls on.
@@ -37,7 +37,6 @@ export interface Task {
   /// without a time) — used for "how many tasks are due today" counts,
   /// distinct from dueAt which is null unless a specific time is set too.
   dueOn: string | null;
-  doubled: boolean;
   permalinkUrl: string;
 }
 

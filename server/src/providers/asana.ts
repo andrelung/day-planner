@@ -158,6 +158,7 @@ interface AsanaTaskDto {
   due_on: string | null;
   due_at: string | null;
   permalink_url: string;
+  completed: boolean;
   projects: { gid: string; name: string }[];
   parent: { gid: string; name: string; projects?: { gid: string; name: string }[] } | null;
 }
@@ -166,8 +167,13 @@ interface AsanaTaskDto {
 // immediate parent is usually the one that actually sits in a project, so
 // this resolves the common case for free in the same request. Deeper
 // nesting (subtask of a subtask) falls back to live lookups in
-// resolveBreadcrumbs below.
-const TASK_OPT_FIELDS = 'name,due_on,due_at,permalink_url,projects.gid,projects.name,parent.gid,parent.name,parent.projects.gid,parent.projects.name';
+// resolveBreadcrumbs below. `completed` is requested so callers can filter
+// defensively themselves (see listIncompleteAssignedTasks) rather than
+// trusting each endpoint's own completed-tasks filter to be exact —
+// Asana's Search API in particular runs off an index that can lag behind
+// a task's live completion state, so `completed=false` there isn't a hard
+// guarantee the way the plain /tasks list's completed_since trick is.
+const TASK_OPT_FIELDS = 'name,due_on,due_at,permalink_url,completed,projects.gid,projects.name,parent.gid,parent.name,parent.projects.gid,parent.projects.name';
 
 /// due_at is a real UTC instant (see setTaskDueAt) — reading its wall-clock
 /// hour back has to go through Date's local getters (which respect this
@@ -370,7 +376,11 @@ export async function listIncompleteAssignedTasks(
   for (const ws of workspaces) {
     const nearTerm = await searchNearTermTasks(accessToken, ws.gid, dueOnBefore);
     for (const dto of nearTerm) {
-      if (seen.has(dto.gid)) continue;
+      // Belt-and-suspenders: the search call already asked for
+      // completed=false, but its index can lag behind a task's real
+      // completion state (see TASK_OPT_FIELDS) — checked again here rather
+      // than trusting that filter alone.
+      if (dto.completed || seen.has(dto.gid)) continue;
       seen.add(dto.gid);
       entries.push({ dto, task: toRemoteTask(dto) });
     }
@@ -387,7 +397,7 @@ export async function listIncompleteAssignedTasks(
     const path = `/tasks?assignee=me&workspace=${ws.gid}&completed_since=now&opt_fields=${TASK_OPT_FIELDS}`;
     await asanaFetchAllPages(accessToken, path, (page: AsanaTaskDto[]) => {
       for (const dto of page) {
-        if (seen.has(dto.gid)) continue;
+        if (dto.completed || seen.has(dto.gid)) continue;
         seen.add(dto.gid);
         entries.push({ dto, task: toRemoteTask(dto) });
       }

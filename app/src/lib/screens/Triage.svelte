@@ -1,7 +1,7 @@
 <script lang="ts">
   import { flip } from 'svelte/animate';
   import { planner } from '../store.svelte';
-  import { fmtHours } from '../format';
+  import { fmtElapsed, fmtHours } from '../format';
   import Icon from '../components/Icon.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Stepper from '../components/Stepper.svelte';
@@ -66,8 +66,36 @@
     return items;
   });
 
-  const badgeTone = $derived(focusRaw?.dueHour ? 'wrong' : 'neutral');
-  const badgeLabel = $derived(focusRaw?.dueHour ? `Overdue · ${focusRaw.dueHour}` : 'Unplanned');
+  // Ticks once a minute so "Overdue since Xh" stays roughly accurate without
+  // needing some other reactive dependency to happen to re-render this card.
+  let now: Date = $state(new Date());
+  $effect(() => {
+    const id = setInterval(() => {
+      now = new Date();
+    }, 60_000);
+    return () => clearInterval(id);
+  });
+
+  // dueAt (a real instant), not dueHour — dueHour is null for a genuinely
+  // date-only task (no due_at at all), which is exactly the case the
+  // end-of-day fallback below exists for. A task with no time at all is
+  // treated as due at the end of that day — it isn't overdue while today
+  // is still today, only once today has actually ended.
+  const focusEffectiveDueAt = $derived.by(() => {
+    if (!focusRaw) return null;
+    if (focusRaw.dueAt) return new Date(focusRaw.dueAt);
+    if (!focusRaw.dueOn) return null;
+    const endOfDay = new Date(`${focusRaw.dueOn}T00:00:00`);
+    endOfDay.setDate(endOfDay.getDate() + 1);
+    return endOfDay;
+  });
+  const focusOverdueMs = $derived(focusEffectiveDueAt ? now.getTime() - focusEffectiveDueAt.getTime() : 0);
+  const focusIsOverdue = $derived(focusOverdueMs > 0);
+
+  const badgeTone = $derived(focusIsOverdue ? 'wrong' : 'neutral');
+  const badgeLabel = $derived(
+    focusIsOverdue ? `Overdue since ${fmtElapsed(focusOverdueMs)}` : focusRaw?.dueHour ? `Due · ${focusRaw.dueHour}` : 'Unplanned',
+  );
 
   const cardTransform = $derived(`translateX(${planner.dragX}px) rotate(${planner.dragX / 20}deg)`);
   const cardTransition = $derived(planner.dragging ? 'none' : 'transform 220ms cubic-bezier(0.4,0,0.2,1)');
