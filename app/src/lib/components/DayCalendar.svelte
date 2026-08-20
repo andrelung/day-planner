@@ -1,6 +1,7 @@
 <script lang="ts">
   import { planner } from '../store.svelte';
-  import type { Task } from '../types';
+  import Icon from './Icon.svelte';
+  import type { OutlookBlock, Task } from '../types';
 
   interface Props {
     /// "YYYY-MM-DD" — the day being planned.
@@ -8,15 +9,23 @@
     /// The task currently being planned — excluded from the calendar's own
     /// blocks (it's not "placed" yet, that's what this view is for).
     excludeTaskId: string;
+    /// Outlook events for this day — drawn read-only, same reason a slot
+    /// isn't free as an Asana task, but not draggable/clearable since this
+    /// app doesn't own them.
+    outlookEvents: OutlookBlock[];
     /// Fires once the user confirms a tentative placement (see the pending
     /// block below) — not on the first tap.
     onPickTime: (hhmm: string) => void;
   }
-  let { date, excludeTaskId, onPickTime }: Props = $props();
+  let { date, excludeTaskId, outlookEvents, onPickTime }: Props = $props();
 
   const PX_PER_MIN = 1.4;
   const SNAP_MIN = 15;
   const MIN_BLOCK_HEIGHT = 30;
+  /// Taller than a real task block would otherwise get from its own
+  /// duration — the pending block needs room for a full-size, easy-to-tap
+  /// Confirm/Remove button row regardless of how short the task is.
+  const PENDING_MIN_HEIGHT = 108;
 
   function toMinutes(hhmm: string): number {
     const [h, m] = hhmm.split(':').map(Number);
@@ -28,11 +37,38 @@
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   }
 
-  const startMin = $derived(toMinutes(planner.prefStartTime));
-  const endMin = $derived(toMinutes(planner.prefEndTime));
-  const totalHeight = $derived(Math.max(1, endMin - startMin) * PX_PER_MIN);
-
   const otherTasks = $derived(planner.tasks.filter((t) => t.dueOn === date && t.dueAt && t.dueHour && t.id !== excludeTaskId));
+
+  /// Local minutes-of-day for an Outlook event's start — has to go through
+  /// Date's local getters (like toLocalTimeStr in store.svelte.ts), not
+  /// string-slicing the ISO instant, for the same reason dueHour does.
+  function isoStartMinutes(iso: string): number {
+    const d = new Date(iso);
+    return d.getHours() * 60 + d.getMinutes();
+  }
+  function isoDurationMinutes(startIso: string, endIso: string): number {
+    return (new Date(endIso).getTime() - new Date(startIso).getTime()) / 60_000;
+  }
+
+  /// The visible range is the preferred working hours plus 2h of slack on
+  /// each side, expanded further still if an already-placed task or
+  /// Outlook event falls outside even that — otherwise its block renders
+  /// past the track's own height instead of inside it (e.g. a 19:00 task
+  /// against an 09:00-18:00 window used to render below the calendar card
+  /// entirely). Rounded to the hour so the hour-mark ruler stays clean.
+  const startMin = $derived.by(() => {
+    const base = toMinutes(planner.prefStartTime) - 120;
+    const earliestTask = otherTasks.reduce((min, t) => Math.min(min, toMinutes(t.dueHour!)), base);
+    const earliest = outlookEvents.reduce((min, e) => Math.min(min, isoStartMinutes(e.start)), earliestTask);
+    return Math.max(0, Math.floor(earliest / 60) * 60);
+  });
+  const endMin = $derived.by(() => {
+    const base = toMinutes(planner.prefEndTime) + 120;
+    const latestTask = otherTasks.reduce((max, t) => Math.max(max, toMinutes(t.dueHour!) + t.hours * 60), base);
+    const latest = outlookEvents.reduce((max, e) => Math.max(max, isoStartMinutes(e.start) + isoDurationMinutes(e.start, e.end)), latestTask);
+    return Math.min(24 * 60, Math.ceil(latest / 60) * 60);
+  });
+  const totalHeight = $derived(Math.max(1, endMin - startMin) * PX_PER_MIN);
 
   interface Block {
     task: Task;
@@ -44,6 +80,19 @@
       task: t,
       top: Math.max(0, (toMinutes(t.dueHour!) - startMin) * PX_PER_MIN),
       height: Math.max(MIN_BLOCK_HEIGHT, t.hours * 60 * PX_PER_MIN),
+    })),
+  );
+
+  interface OutlookPos {
+    event: OutlookBlock;
+    top: number;
+    height: number;
+  }
+  const outlookBlocks = $derived<OutlookPos[]>(
+    outlookEvents.map((e) => ({
+      event: e,
+      top: Math.max(0, (isoStartMinutes(e.start) - startMin) * PX_PER_MIN),
+      height: Math.max(MIN_BLOCK_HEIGHT, isoDurationMinutes(e.start, e.end) * PX_PER_MIN),
     })),
   );
 
@@ -67,7 +116,7 @@
   // tap Confirm/Remove. ---
   let pendingMin: number | null = $state(null);
   const focusHours = $derived(planner.focusTaskRaw?.hours ?? 1);
-  const pendingHeight = $derived(Math.max(MIN_BLOCK_HEIGHT, focusHours * 60 * PX_PER_MIN));
+  const pendingHeight = $derived(Math.max(PENDING_MIN_HEIGHT, focusHours * 60 * PX_PER_MIN));
   const pendingTop = $derived(pendingMin === null ? 0 : Math.max(0, (pendingMin - startMin) * PX_PER_MIN));
   const pendingHHMM = $derived(pendingMin === null ? '' : toHHMM(pendingMin));
 
@@ -77,18 +126,20 @@
   let dragTop = $state(0);
   let dragStartY = 0;
   let dragOrigTop = 0;
+  let dragHeight = 0;
 
-  function beginDrag(e: PointerEvent, target: DragTarget, origTop: number) {
+  function beginDrag(e: PointerEvent, target: DragTarget, origTop: number, height: number) {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragTarget = target;
     dragStartY = e.clientY;
     dragOrigTop = origTop;
     dragTop = origTop;
+    dragHeight = height;
   }
   function onDragMove(e: PointerEvent) {
     if (!dragTarget) return;
     const next = dragOrigTop + (e.clientY - dragStartY);
-    dragTop = Math.max(0, Math.min(next, totalHeight - MIN_BLOCK_HEIGHT));
+    dragTop = Math.max(0, Math.min(next, totalHeight - dragHeight));
   }
   async function endDrag() {
     if (!dragTarget) return;
@@ -132,7 +183,7 @@
         class="task-block"
         class:task-block--dragging={dragTarget?.kind === 'other' && dragTarget.taskId === b.task.id}
         style="top:{dragTarget?.kind === 'other' && dragTarget.taskId === b.task.id ? dragTop : b.top}px; height:{b.height}px;"
-        onpointerdown={(e) => beginDrag(e, { kind: 'other', taskId: b.task.id }, b.top)}
+        onpointerdown={(e) => beginDrag(e, { kind: 'other', taskId: b.task.id }, b.top, b.height)}
         onpointermove={onDragMove}
         onpointerup={endDrag}
         onpointercancel={endDrag}
@@ -155,12 +206,21 @@
         </button>
       </div>
     {/each}
+    {#each outlookBlocks as o (o.event.id)}
+      <div class="outlook-block" style="top:{o.top}px; height:{o.height}px;" onclick={(e) => e.stopPropagation()}>
+        <Icon name="calendar" size={12} color="var(--color-text-muted)" />
+        <div class="outlook-block__text">
+          <div class="outlook-block__name">{o.event.title}</div>
+          <div class="outlook-block__time">{toHHMM(isoStartMinutes(o.event.start))}–{toHHMM(isoStartMinutes(o.event.end))}</div>
+        </div>
+      </div>
+    {/each}
     {#if pendingMin !== null}
       <div
         class="pending-block"
         class:pending-block--dragging={dragTarget?.kind === 'pending'}
         style="top:{dragTarget?.kind === 'pending' ? dragTop : pendingTop}px; height:{pendingHeight}px;"
-        onpointerdown={(e) => beginDrag(e, { kind: 'pending' }, pendingTop)}
+        onpointerdown={(e) => beginDrag(e, { kind: 'pending' }, pendingTop, pendingHeight)}
         onpointermove={onDragMove}
         onpointerup={endDrag}
         onpointercancel={endDrag}
@@ -172,26 +232,22 @@
         </div>
         <div class="pending-block__actions">
           <button
-            class="pending-block__btn pending-block__btn--confirm"
-            title="Confirm"
-            aria-label="Confirm"
-            onclick={(e) => {
-              e.stopPropagation();
-              confirmPending();
-            }}
-          >
-            ✓
-          </button>
-          <button
             class="pending-block__btn pending-block__btn--remove"
-            title="Remove"
-            aria-label="Remove"
             onclick={(e) => {
               e.stopPropagation();
               removePending();
             }}
           >
-            ×
+            ✕ Remove
+          </button>
+          <button
+            class="pending-block__btn pending-block__btn--confirm"
+            onclick={(e) => {
+              e.stopPropagation();
+              confirmPending();
+            }}
+          >
+            ✓ Confirm
           </button>
         </div>
       </div>
@@ -290,6 +346,42 @@
     justify-content: center;
     cursor: pointer;
   }
+  /* Read-only — no drag, no reset button — this app doesn't own Outlook
+     events, it's just showing why a time might not really be free. Striped
+     background instead of a solid fill to read as "not a task" at a
+     glance, distinct from .task-block. */
+  .outlook-block {
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    background: repeating-linear-gradient(135deg, var(--color-bg-page), var(--color-bg-page) 6px, var(--color-border) 6px, var(--color-border) 12px);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    z-index: 3;
+  }
+  .outlook-block__text {
+    min-width: 0;
+  }
+  .outlook-block__name {
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 12px;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .outlook-block__time {
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    color: var(--color-text-muted);
+  }
   .hint {
     font-family: var(--font-family-base);
     font-size: 11px;
@@ -304,12 +396,11 @@
     background: var(--color-bg-page);
     border: 2px dashed var(--color-brand-primary);
     border-radius: var(--radius-sm);
-    padding: 4px 8px;
+    padding: 8px;
     box-sizing: border-box;
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
+    flex-direction: column;
+    gap: 8px;
     cursor: grab;
     touch-action: none;
     overflow: hidden;
@@ -340,16 +431,17 @@
   .pending-block__actions {
     flex-shrink: 0;
     display: flex;
-    gap: 4px;
+    gap: 8px;
+    margin-top: auto;
   }
   .pending-block__btn {
-    flex-shrink: 0;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
+    flex: 1;
+    height: 40px;
+    border-radius: var(--radius-sm);
     border: none;
-    font-size: 12px;
-    line-height: 1;
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 13px;
     display: flex;
     align-items: center;
     justify-content: center;

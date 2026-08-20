@@ -4,8 +4,7 @@
   import Button from '../components/Button.svelte';
   import Badge from '../components/Badge.svelte';
 
-  const laterDays = $derived(planner.laterDays);
-  const weekDeferOptions = $derived(planner.weekDeferOptions);
+  const nextWeekDays = $derived(planner.nextWeekDays);
 </script>
 
 <div class="screen">
@@ -15,32 +14,24 @@
     </button>
   </div>
   <div class="heading-wrap">
-    <div class="heading">When later?</div>
+    <div class="heading">Next week</div>
     <div class="subtitle">{planner.planTargetLabel}</div>
   </div>
 
   <div class="content">
-    {#each laterDays as d}
-      <button class="day-row" onclick={() => (d.key === 'nextweek' ? planner.openNextWeekDays() : planner.selectLaterDay(d.key))}>
+    {#each nextWeekDays as d}
+      <button class="day-row" onclick={() => planner.selectSpecificDay(d.date, d.label)}>
         <div class="day-row__label">{d.label}</div>
-        <Badge tone={d.tone}>{d.badgeLabel}</Badge>
-      </button>
-    {/each}
-    {#each weekDeferOptions as w}
-      <button class="day-row" onclick={() => planner.deferToWeek(w.key)}>
-        <div class="day-row__label">{w.label}</div>
         <div class="day-row__trailing">
-          <Badge tone={w.tone}>{w.badgeLabel}</Badge>
+          <Badge tone={d.tone}>{d.badgeLabel}</Badge>
           <Icon name="arrow-right" size={16} color="var(--color-text-muted)" />
         </div>
       </button>
     {/each}
-    <button class="day-row day-row--center" onclick={() => planner.openPickDate()}>Pick a date</button>
   </div>
 
   <div class="footer">
-    <Button variant="secondary" size="md" invertedBorder onclick={() => planner.closeFlow()}>back</Button>
-    <Button variant="secondary" size="md" invertedBorder onclick={() => planner.removeDueDate()}>Remove due date</Button>
+    <Button variant="secondary" size="md" invertedBorder onclick={() => planner.backToPlanLater()}>back</Button>
   </div>
 </div>
 
@@ -55,12 +46,12 @@
   .close-wrap {
     display: flex;
     justify-content: flex-end;
-    padding: 10px 20px 0;
+    padding: 18px 20px 0;
     flex-shrink: 0;
   }
   .close-btn {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     border-radius: var(--radius-md);
     border: 1px solid rgba(255, 255, 255, 0.4);
     display: flex;
@@ -70,25 +61,25 @@
     background: none;
   }
   .heading-wrap {
-    padding: 0 24px 0;
+    padding: 4px 24px 0;
     text-align: center;
     flex-shrink: 0;
   }
   .heading {
     font-family: var(--font-family-base);
     font-weight: var(--font-weight-extrabold);
-    font-size: 19px;
+    font-size: 22px;
     color: var(--color-text-inverse);
   }
   .subtitle {
     font-family: var(--font-family-base);
-    font-size: 12px;
+    font-size: 13px;
     color: var(--color-text-inverse);
     opacity: 0.85;
-    margin-top: 3px;
+    margin-top: 6px;
   }
   .content {
-    padding: 10px 20px 0;
+    padding: 20px 20px 0;
     flex: 1;
     overflow-y: auto;
     min-height: 0;
@@ -98,20 +89,16 @@
     background: var(--color-bg-surface);
     border: none;
     border-radius: var(--radius-md);
-    padding: 11px 14px;
+    padding: 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 6px;
+    margin-bottom: 10px;
     cursor: pointer;
     font-family: var(--font-family-base);
     font-weight: var(--font-weight-bold);
-    font-size: 14px;
+    font-size: 15px;
     color: var(--color-text-primary);
-  }
-  .day-row--center {
-    justify-content: center;
-    text-align: center;
   }
   .day-row__trailing {
     display: flex;
@@ -120,10 +107,10 @@
   }
   .footer {
     background: var(--color-bg-inverse);
-    padding: 8px 20px 12px;
+    padding: 14px 20px 24px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     flex-shrink: 0;
   }
 </style>

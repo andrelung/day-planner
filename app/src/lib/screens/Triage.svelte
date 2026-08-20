@@ -7,10 +7,35 @@
   import Stepper from '../components/Stepper.svelte';
   import Button from '../components/Button.svelte';
   import Badge from '../components/Badge.svelte';
+  import InstallBanner from '../components/InstallBanner.svelte';
 
   const focusRaw = $derived(planner.focusTaskRaw);
   const hasFocusTask = $derived(planner.hasFocusTask);
-  const restTasks = $derived(hasFocusTask ? planner.queueTasks.filter((t) => t.id !== focusRaw!.id) : []);
+  // The queue is an ordered list with focusIndex as the current pointer —
+  // "Up next" is everything still ahead of it, not "everything but the
+  // focused task" (that included already-passed tasks above the focus,
+  // which made clicking one further down look like a swap instead of a
+  // jump-to). Tapping a row earlier deliberately skips whatever was before
+  // it (see selectFocus), matching goNext/goPrev's forward-only stepping.
+  const restTasks = $derived(hasFocusTask ? planner.queueTasks.slice(planner.focusIndex + 1) : []);
+
+  // Up next is chronological, so a day boundary only ever needs one header
+  // when the label actually changes from the row before it — not a full
+  // group-by, just a "does this differ from the last one" scan.
+  type UpNextItem = { kind: 'header'; label: string } | { kind: 'task'; task: (typeof restTasks)[number] };
+  const restItems = $derived.by(() => {
+    const items: UpNextItem[] = [];
+    let lastLabel: string | null = null;
+    for (const t of restTasks) {
+      const label = planner.dayLabelFor(t.dueOn);
+      if (label !== lastLabel) {
+        items.push({ kind: 'header', label });
+        lastLabel = label;
+      }
+      items.push({ kind: 'task', task: t });
+    }
+    return items;
+  });
 
   const badgeTone = $derived(focusRaw?.dueHour ? 'wrong' : 'neutral');
   const badgeLabel = $derived(focusRaw?.dueHour ? `Overdue · ${focusRaw.dueHour}` : 'Unplanned');
@@ -31,71 +56,54 @@
     <IconButton icon="settings" title="Settings" onclick={() => planner.openSettings()} />
   </div>
 
-  {#if planner.showInstallBanner}
-    <div class="install-banner">
-      <div class="install-banner__text">
-        {#if planner.installBannerKind === 'ios'}
-          <div class="install-banner__title">Add to Home Screen</div>
-          <div class="install-banner__sub">Tap the Share icon, then "Add to Home Screen"</div>
-        {:else}
-          <div class="install-banner__title">Install Day Planner</div>
-          <div class="install-banner__sub">Add it to your home screen for quick access</div>
-        {/if}
-      </div>
-      {#if planner.installBannerKind === 'android'}
-        <Button variant="primary" size="sm" onclick={() => planner.promptInstall()}>Install</Button>
-      {/if}
-      <IconButton
-        icon="close"
-        title="Dismiss"
-        size={28}
-        iconSize={14}
-        color="var(--color-text-inverse)"
-        borderColor="transparent"
-        onclick={() => planner.dismissInstallBanner()}
-      />
-    </div>
-  {/if}
+  <InstallBanner />
 
   <div class="up-next-wrap">
     {#if restTasks.length > 0}
       <div class="section-label">Up next</div>
-      {#each restTasks as t (t.id)}
-        <div class="up-next-row" animate:flip={{ duration: 220 }}>
-          <div
-            class="up-next-row__main"
-            role="button"
-            tabindex="0"
-            onclick={() => planner.selectFocus(t.id)}
-            onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && planner.selectFocus(t.id)}
-          >
-            <div class="dot" style="background:{t.dueHour ? 'var(--color-feedback-wrong)' : 'var(--color-border-strong)'};"></div>
-            <div class="up-next-row__text">
-              <div class="up-next-row__name">{t.name}</div>
-              <div class="up-next-row__project">{t.project}</div>
-            </div>
-            {#if planner.editingRestId !== t.id}
-              <button
-                class="hour-edit"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  planner.onEditRestHours(t.id, t.hours);
-                }}
+      {#each restItems as item (item.kind === 'header' ? `day:${item.label}` : item.task.id)}
+        <div animate:flip={{ duration: 220 }}>
+          {#if item.kind === 'header'}
+            <div class="day-divider">{item.label}</div>
+          {:else}
+            {@const t = item.task}
+            <div class="up-next-row">
+              <div
+                class="up-next-row__main"
+                role="button"
+                tabindex="0"
+                onclick={() => planner.selectFocus(t.id)}
+                onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && planner.selectFocus(t.id)}
               >
-                <div class="hour-edit__label">{fmtHours(t.hours)}</div>
-                <Icon name="pencil" size={11} color="var(--color-text-muted)" />
-              </button>
-            {/if}
-          </div>
-          {#if planner.editingRestId === t.id}
-            <div class="inline-editor">
-              <Stepper
-                valueText={String(planner.restHoursDraft)}
-                ondec={() => planner.decRestHour()}
-                oninc={() => planner.incRestHour()}
-                oninput={(v) => planner.onRestHoursInput(v)}
-              />
-              <Button variant="primary" size="sm" onclick={() => planner.confirmRestHours(t.id)}>Save</Button>
+                <div class="dot" style="background:{t.dueHour ? 'var(--color-feedback-wrong)' : 'var(--color-border-strong)'};"></div>
+                <div class="up-next-row__text">
+                  <div class="up-next-row__name">{t.name}</div>
+                  <div class="up-next-row__project">{t.project}</div>
+                </div>
+                {#if planner.editingRestId !== t.id}
+                  <button
+                    class="hour-edit"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      planner.onEditRestHours(t.id, t.hours);
+                    }}
+                  >
+                    <div class="hour-edit__label">{fmtHours(t.hours)}</div>
+                    <Icon name="pencil" size={11} color="var(--color-text-muted)" />
+                  </button>
+                {/if}
+              </div>
+              {#if planner.editingRestId === t.id}
+                <div class="inline-editor">
+                  <Stepper
+                    valueText={String(planner.restHoursDraft)}
+                    ondec={() => planner.decRestHour()}
+                    oninc={() => planner.incRestHour()}
+                    oninput={(v) => planner.onRestHoursInput(v)}
+                  />
+                  <Button variant="primary" size="sm" onclick={() => planner.confirmRestHours(t.id)}>Save</Button>
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -137,7 +145,7 @@
               size={32}
               iconSize={16}
               color="var(--color-text-muted)"
-              onclick={() => planner.openAsana(focusRaw!)}
+              href={focusRaw.permalinkUrl}
             />
           </div>
 
@@ -214,36 +222,6 @@
     font-size: 16px;
     color: var(--color-text-primary);
   }
-  .install-banner {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 8px 20px 0;
-    padding: 10px 12px;
-    background: var(--color-bg-inverse);
-    border-radius: var(--radius-md);
-    flex-shrink: 0;
-  }
-  .install-banner__text {
-    flex: 1;
-    min-width: 0;
-  }
-  .install-banner__title {
-    font-family: var(--font-family-base);
-    font-weight: var(--font-weight-bold);
-    font-size: 13px;
-    color: var(--color-text-inverse);
-  }
-  .install-banner__sub {
-    font-family: var(--font-family-base);
-    font-size: 11px;
-    color: var(--color-text-inverse);
-    opacity: 0.75;
-    margin-top: 2px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
   .up-next-wrap {
     padding: 16px 20px 8px;
     flex: 1;
@@ -258,6 +236,20 @@
     letter-spacing: 0.04em;
     color: var(--color-text-muted);
     margin-bottom: 8px;
+  }
+  .day-divider {
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-muted);
+    padding-top: 10px;
+    margin-top: 2px;
+    border-top: 1px solid var(--color-border);
+  }
+  .day-divider:first-child {
+    padding-top: 0;
+    margin-top: 0;
+    border-top: none;
   }
   .up-next-row {
     padding: 12px 4px;
