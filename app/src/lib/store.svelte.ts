@@ -1,6 +1,7 @@
 import type {
   CalendarEvent,
   ConflictItem,
+  OutlookBlock,
   PendingActionDto,
   PendingPlan,
   PendingSlotPlan,
@@ -139,6 +140,10 @@ class PlannerStore {
   showCustomTimeLater = $state(false);
   planTodaySlots: string[] = $state([]);
   laterSlots: string[] = $state([]);
+  todaySlotsLoading = $state(false);
+  laterSlotsLoading = $state(false);
+  todayOutlookEvents: OutlookBlock[] = $state([]);
+  laterOutlookEvents: OutlookBlock[] = $state([]);
 
   breakNameDraft = $state('');
   breakTimeSlot: string | null = $state(null);
@@ -167,6 +172,9 @@ class PlannerStore {
   /// two celebrations back-to-back both restart the animation instead of the
   /// second one being a no-op because "celebrating" was already true.
   celebrationKey = $state(0);
+  /// What the burst is celebrating (e.g. "Today is fully planned!") — set
+  /// alongside celebrationKey, see bumpWorkloadLocally.
+  celebrationLabel = $state('');
 
   // --- derived ---
   get focusTaskRaw(): Task | null {
@@ -222,18 +230,26 @@ class PlannerStore {
     const todayStr = this.todayDateStr;
     return this.tasks.filter((t) => (t.dueOn && t.dueOn < todayStr ? todayStr : t.dueOn) === active);
   }
+  /// Shared by queueLabel and Triage's Up Next day-section headers — the
+  /// same "which named bucket does this date fall under, clamped up to
+  /// today for anything overdue" logic either way.
+  dayLabelFor(dueOn: string | null): string {
+    if (!dueOn) return '';
+    const todayStr = this.todayDateStr;
+    const active = dueOn < todayStr ? todayStr : dueOn;
+    const namedDay = this.workloadDays.find((d) => d.date === active);
+    return namedDay ? namedDay.label : new Date(`${active}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+  }
   get queueLabel() {
     if (!this.hasFocusTask) return '';
     if (this.reviewingBacklog) {
       const n = this.queueTasks.length;
       return `Backlog - ${n} task${n === 1 ? '' : 's'} without a due date`;
     }
-    const active = this.activeDayDateStr;
-    const namedDay = this.workloadDays.find((d) => d.date === active);
-    const dateLabel = namedDay ? namedDay.label : new Date(`${active}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+    const dateLabel = this.dayLabelFor(this.activeDayDateStr);
     const dueThatDay = this.tasksForActiveDay;
     const withTime = dueThatDay.filter((t) => t.dueAt).length;
-    return `${dateLabel} - ${withTime}/${dueThatDay.length} Tasks planned`;
+    return `${dateLabel} - ${withTime}/${dueThatDay.length} timeslots assigned`;
   }
   get chosenDayLabel() {
     if (this.laterDayKey === 'custom') return this.customDayLabel;
@@ -304,6 +320,14 @@ class PlannerStore {
 
   async boot() {
     this.bootStatus = 'Starting app…';
+    // Purely a device-capability check (iOS + not already standalone + not
+    // previously dismissed) — independent of auth, so it needs to run
+    // before the /api/me call below, not after login succeeds. Installing
+    // before signing in avoids a double sign-in: Safari-in-browser and the
+    // installed standalone app are separate storage contexts on iOS, so
+    // signing in only in the browser and installing afterward meant
+    // logging in again once inside the installed app.
+    this.maybeShowIosInstallBanner();
     const params = new URLSearchParams(window.location.search);
     const onboarding = params.get('onboarding') === 'secondary';
     if (onboarding) {
@@ -345,8 +369,27 @@ class PlannerStore {
     // Workload doesn't gate entering triage — it fills in the header badges
     // once it resolves, same as any other in-app refresh.
     void this.refreshWorkload();
+    this.scheduleMidnightRefresh();
     await this.bootRefreshTasks();
-    this.maybeShowIosInstallBanner();
+  }
+
+  /// workloadDays' buckets (today/tomorrow/day2../nextweek) are computed
+  /// once — at boot, or whenever something happens to call refreshWorkload
+  /// — and don't shift on their own after that. Left open across midnight
+  /// (e.g. starting the app at 23:40 and working past 00:00), the day that
+  /// *was* "tomorrow" is now today, but nothing had re-fetched workloadDays
+  /// to notice — so the header/Overview/"When later?" kept labeling actual
+  /// today as "Tomorrow" (they look up a bucket by matching today's date
+  /// string against workloadDays' stale date fields). Reschedules itself
+  /// for the following midnight every time it fires.
+  private scheduleMidnightRefresh() {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+    setTimeout(() => {
+      if (this.asanaConnected) void this.refreshWorkload();
+      else this.workloadDays = buildSkeletonWorkloadDays(new Date());
+      this.scheduleMidnightRefresh();
+    }, nextMidnight.getTime() - now.getTime());
   }
 
   // --- boot-time task loading progress ---
@@ -625,6 +668,35 @@ class PlannerStore {
     this.screen = 'settings';
   }
 
+  /// Disconnecting the only connected provider leaves nothing useful to do
+  /// in the app, so the server treats that as a full sign-out (see the
+  /// DELETE /auth/:provider handler) — this reloads to a clean boot rather
+  /// than trying to patch a bunch of local state back into a coherent
+  /// "signed out" shape. Disconnecting one of two providers is simpler:
+  /// just flip the local flags, and adopt whatever primaryProvider the
+  /// server settled on if it had to reassign it.
+  async disconnectProvider(provider: 'ASANA' | 'OUTLOOK') {
+    const path = provider === 'ASANA' ? 'asana' : 'outlook';
+    try {
+      const res = await api.delete<{ loggedOut: boolean; primaryProvider?: 'ASANA' | 'OUTLOOK' }>(`/auth/${path}`);
+      if (res.loggedOut) {
+        window.location.href = '/';
+        return;
+      }
+      if (provider === 'ASANA') {
+        this.asanaConnected = false;
+        this.asanaAccountLabel = null;
+      } else {
+        this.outlookConnected = false;
+        this.outlookAccountLabel = null;
+      }
+      if (res.primaryProvider) this.primaryProvider = res.primaryProvider;
+      this.showToast(`Disconnected ${provider === 'ASANA' ? 'Asana' : 'Outlook'}`);
+    } catch (err) {
+      this.reportError(err, 'Could not disconnect');
+    }
+  }
+
   // --- pending actions lookup ---
   pendingActions: PendingActionDto[] = $state([]);
 
@@ -786,17 +858,17 @@ class PlannerStore {
   /// Both dismiss the DayFull warning (for this day only, or for good) and
   /// then proceed exactly as "Plan for this day anyway" would — the
   /// warning was already blocking whatever the user was trying to do.
-  async dontAskDayFullToday() {
+  dontAskDayFullToday() {
     const p = this.pendingPlan;
     const key = p ? (p.type === 'today' ? 'today' : p.key) : null;
     const date = key ? this.dateFor(key) : null;
     if (date) localStorage.setItem(this.dayFullDismissKey(date), '1');
-    await this.onPlanAnyway();
+    this.onPlanAnyway();
   }
-  async dontAskDayFullEver() {
+  dontAskDayFullEver() {
     this.skipDayFullWarning = true;
     void this.patchSettings({ skipDayFullWarning: true });
-    await this.onPlanAnyway();
+    this.onPlanAnyway();
   }
 
   private dateFor(key: string): string | null {
@@ -810,15 +882,22 @@ class PlannerStore {
     return this.laterDayKey ? this.dateFor(this.laterDayKey) : null;
   }
 
-  async openPlanToday() {
+  /// Switches to the free-slots screen immediately rather than waiting on
+  /// the network fetch first — that used to leave the tap looking dead for
+  /// however long /api/calendar/free-slots took (worse the slower or
+  /// flakier the connection, or while boot's task load is still in
+  /// flight). loadTodaySlots now runs in the background and the screen
+  /// itself shows a loading state (see PlanToday.svelte) until it resolves.
+  openPlanToday() {
     if (this.isDayFull('today')) {
       this.pendingPlan = { type: 'today' };
       this.screen = 'dayFull';
       return;
     }
-    await this.loadTodaySlots();
     this.showCustomTimeToday = false;
+    this.planTodaySlots = [];
     this.screen = 'planToday';
+    void this.loadTodaySlots();
   }
 
   /// Builds the free-slots query string: the target date, the duration the
@@ -843,39 +922,47 @@ class PlannerStore {
     return `date=${date}&hours=${hours}&busyTasks=${encodeURIComponent(JSON.stringify(busyTasks))}`;
   }
 
-  private async loadTodaySlots() {
+  /// Not private: PlanToday.svelte re-calls this whenever the same-day
+  /// task set changes while this screen is open (see its $effect) — the
+  /// slots/blocks here are a snapshot from whenever this last ran, and
+  /// tasks can keep arriving after that (e.g. the boot-time streaming
+  /// fetch still filling in) without anything else invalidating it.
+  async loadTodaySlots() {
     const date = this.dateFor('today');
     const focus = this.focusTaskRaw;
     if (!date || !focus) return;
+    this.todaySlotsLoading = true;
     try {
-      const res = await api.get<{ slots: string[] }>(`/api/calendar/free-slots?${this.freeSlotsQuery(date, focus.hours, focus.id)}`);
+      const res = await api.get<{ slots: string[]; outlookEvents: OutlookBlock[] }>(`/api/calendar/free-slots?${this.freeSlotsQuery(date, focus.hours, focus.id)}`);
       this.planTodaySlots = res.slots;
+      this.todayOutlookEvents = res.outlookEvents;
     } catch (err) {
-      this.reportError(err, 'Could not load free slots');
+      this.reportError(err, 'Could not load free slots', { label: 'Retry', onClick: () => void this.loadTodaySlots() });
+    } finally {
+      this.todaySlotsLoading = false;
     }
   }
 
   openPlanLater() {
     this.screen = 'planLater';
   }
-  openPickDate() {
-    this.screen = 'pickDate';
-  }
-  async onPlanAnyway() {
+  onPlanAnyway() {
     const p = this.pendingPlan;
     if (!p) {
       this.screen = 'triage';
       return;
     }
     if (p.type === 'today') {
-      await this.loadTodaySlots();
       this.showCustomTimeToday = false;
+      this.planTodaySlots = [];
       this.screen = 'planToday';
+      void this.loadTodaySlots();
     } else if (p.key) {
-      await this.loadLaterSlots(p.key);
       this.laterDayKey = p.key;
       this.showCustomTimeLater = false;
+      this.laterSlots = [];
       this.screen = 'freeSlotsLater';
+      void this.loadLaterSlots(p.key);
     }
   }
   onReviewOtherTasks() {
@@ -945,22 +1032,156 @@ class PlannerStore {
       }));
   }
 
-  /// "Further in the future, I'll plan it later" quick actions — unlike
-  /// laterDays, these don't lead to a time-slot picker and aren't
-  /// capacity-tracked; they just push the due date out to a future week's
-  /// Monday with no due time (see deferToWeek). Calendar-week Monday, not
-  /// tied to the today/day2../day5 weekday run above.
-  get weekDeferOptions(): { key: string; label: string; date: string }[] {
+  /// Monday of the current calendar week (could be a past date this week) —
+  /// shared basis for weekDeferOptions and nextWeekDays below, both of
+  /// which reason in real Mon-Sun weeks rather than the rolling
+  /// today/tomorrow/day2../day5 run.
+  private get thisWeekMonday(): Date {
     const now = new Date();
     const day = now.getDay();
     const mondayOffset = day === 0 ? -6 : 1 - day;
-    const thisWeekMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + mondayOffset);
-    const toDateStr = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + mondayOffset);
+  }
+  private toDateStr(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  /// A due-at ISO string (a real UTC instant — see toIsoDateTime) has to be
+  /// read back through the *device's* local getters to recover the
+  /// wall-clock date/time it was set to, not string-sliced: slicing an ISO
+  /// string reads its UTC digits directly, which are only ever right for a
+  /// UTC device — everywhere else it's off by the local UTC offset (e.g. a
+  /// drag to 11:00 on a UTC+2 device round-tripped through dueAtIso.slice()
+  /// used to redisplay as 09:00).
+  private toLocalDateStr(iso: string): string {
+    return this.toDateStr(new Date(iso));
+  }
+  private toLocalTimeStr(iso: string): string {
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  /// Booked/fullness cue shared by every "pick a day" surface — the later
+  /// day buckets (laterDays, tracked against real server capacity data) as
+  /// well as everything below this class doesn't have server-fetched
+  /// capacity for (weekDeferOptions, nextWeekDays, the calendar grid): all
+  /// of it's cheap to compute client-side since every task is already
+  /// loaded. Seeing at a glance how booked a day already is before picking
+  /// it is a core part of what this app is for, so every one of these
+  /// surfaces shows it, not just the ones with a server round-trip behind
+  /// them already.
+  private fullnessFor(date: string): { planned: number; capacity: number; ratio: number } {
+    const capacity = this.dailyCapacityHours;
+    const planned = this.plannedHoursFor(date);
+    return { planned, capacity, ratio: capacity > 0 ? planned / capacity : 0 };
+  }
+
+  /// "Further in the future, I'll plan it later" quick actions — unlike
+  /// laterDays, these don't lead to a time-slot picker; they just push the
+  /// due date out to a future week's Monday with no due time (see
+  /// deferToWeek). Still shows the same booked/fullness badge as
+  /// everywhere else, even though nothing gets scheduled at a specific
+  /// time here.
+  get weekDeferOptions(): { key: string; label: string; date: string; badgeLabel: string; tone: 'correct' | 'wrong' }[] {
     return [2, 3, 4].map((n) => {
-      const monday = new Date(thisWeekMonday);
+      const monday = new Date(this.thisWeekMonday);
       monday.setDate(monday.getDate() + n * 7);
-      return { key: `week+${n}`, label: `In ${n} weeks`, date: toDateStr(monday) };
+      const date = this.toDateStr(monday);
+      const { planned, capacity, ratio } = this.fullnessFor(date);
+      return { key: `week+${n}`, label: `Plan in ${n} weeks`, date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
     });
+  }
+
+  /// The 5 real weekdays of next calendar week — "Next week" opens this
+  /// list to pick a specific day from, unlike the other later-day buckets
+  /// (which stay untouched, still just today/tomorrow/day2../day5 plus the
+  /// week+N no-time defers above).
+  get nextWeekDays(): { key: string; label: string; date: string; badgeLabel: string; tone: 'correct' | 'wrong' }[] {
+    const nextMonday = new Date(this.thisWeekMonday);
+    nextMonday.setDate(nextMonday.getDate() + 7);
+    return [0, 1, 2, 3, 4].map((n) => {
+      const d = new Date(nextMonday);
+      d.setDate(d.getDate() + n);
+      const date = this.toDateStr(d);
+      const { planned, capacity, ratio } = this.fullnessFor(date);
+      return { key: `nextweekday+${n}`, label: d.toLocaleDateString('en-US', { weekday: 'long' }), date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
+    });
+  }
+  openNextWeekDays() {
+    this.screen = 'nextWeekDays';
+  }
+  /// Picking a specific day of next week reuses the same "arbitrary date"
+  /// plumbing as the manual "Pick a date" flow (laterDayKey: 'custom' /
+  /// dateFor('custom') reading customDateValue) rather than adding a new
+  /// bucket key to workloadDays — these days have no tracked capacity data
+  /// of their own, same reasoning as weekDeferOptions above.
+  selectSpecificDay(date: string, label: string) {
+    this.customDateValue = date;
+    this.customDayLabel = label;
+    this.laterDayKey = 'custom';
+    this.showCustomTimeLater = false;
+    this.laterSlots = [];
+    this.screen = 'freeSlotsLater';
+    void this.loadLaterSlots('custom');
+  }
+
+  // --- "Pick a date" calendar grid ---
+  // The month currently on screen — separate from the actual calendar date
+  // so prev/next navigation doesn't touch "today". Reset to the real
+  // current month each time the screen opens (see openPickDate).
+  private calendarCursor = $state({ year: 2000, month: 0 });
+  get calendarMonthLabel(): string {
+    return new Date(this.calendarCursor.year, this.calendarCursor.month, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  }
+  openPickDate() {
+    const now = new Date();
+    this.calendarCursor = { year: now.getFullYear(), month: now.getMonth() };
+    this.screen = 'pickDate';
+  }
+  calendarPrevMonth() {
+    const { year, month } = this.calendarCursor;
+    this.calendarCursor = month === 0 ? { year: year - 1, month: 11 } : { year, month: month - 1 };
+  }
+  calendarNextMonth() {
+    const { year, month } = this.calendarCursor;
+    this.calendarCursor = month === 11 ? { year: year + 1, month: 0 } : { year, month: month + 1 };
+  }
+  /// Same formula as the server's dailyCapacityHours (workload.ts) —
+  /// there's no per-day capacity data to fetch for a whole visible month,
+  /// but every task is already loaded client-side, so both halves of the
+  /// fullness ratio are cheap to compute here directly.
+  private get dailyCapacityHours(): number {
+    const [sh, sm] = this.prefStartTime.split(':').map(Number);
+    const [eh, em] = this.prefEndTime.split(':').map(Number);
+    return Math.max(0, (eh * 60 + em - (sh * 60 + sm)) / 60);
+  }
+  /// Planned hours for one date — timed tasks only (dueAt set), same
+  /// definition workloadDays/the capacity badge already use elsewhere, so
+  /// the calendar's fullness cue reads consistently with the rest of the app.
+  private plannedHoursFor(date: string): number {
+    return this.tasks.filter((t) => t.dueOn === date && t.dueAt).reduce((sum, t) => sum + t.hours, 0);
+  }
+  get calendarWeeks(): { date: string; day: number; inMonth: boolean; isToday: boolean; isPast: boolean; ratio: number }[][] {
+    const { year, month } = this.calendarCursor;
+    const firstOfMonth = new Date(year, month, 1);
+    const startOffset = (firstOfMonth.getDay() + 6) % 7; // Monday-first
+    const gridStart = new Date(year, month, 1 - startOffset);
+    const todayStr = this.todayDateStr;
+    const cells = Array.from({ length: 42 }, (_, i) => {
+      const d = new Date(gridStart);
+      d.setDate(d.getDate() + i);
+      const dateStr = this.toDateStr(d);
+      return {
+        date: dateStr,
+        day: d.getDate(),
+        inMonth: d.getMonth() === month,
+        isToday: dateStr === todayStr,
+        isPast: dateStr < todayStr,
+        ratio: this.fullnessFor(dateStr).ratio,
+      };
+    });
+    const weeks: (typeof cells)[] = [];
+    for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+    return weeks;
   }
 
   /// Moves the task being planned out to a future week's Monday with no
@@ -981,9 +1202,8 @@ class PlannerStore {
     this.showToast(`Moved "${task.name}" to ${opt.label} · syncing to Asana`, {
       label: 'Undo',
       onClick: () => {
-        this.restoreTaskDueFieldsLocally(task.id, previousDueOn, previousDueAt);
         this.justPlannedIds = this.justPlannedIds.filter((id) => id !== task.id);
-        this.selectFocus(task.id);
+        this.restoreTaskDueFieldsAndRefocus(task.id, previousDueOn, previousDueAt);
       },
     });
   }
@@ -1020,8 +1240,8 @@ class PlannerStore {
     const updated: Task = {
       ...existing,
       dueAt: dueAtIso,
-      dueOn: dueAtIso ? dueAtIso.slice(0, 10) : null,
-      dueHour: dueAtIso ? dueAtIso.slice(11, 16) : null,
+      dueOn: dueAtIso ? this.toLocalDateStr(dueAtIso) : null,
+      dueHour: dueAtIso ? this.toLocalTimeStr(dueAtIso) : null,
       doubled: false,
     };
     this.tasks = this.tasks.filter((t) => t.id !== taskId);
@@ -1040,12 +1260,40 @@ class PlannerStore {
   private restoreTaskDueFieldsLocally(taskId: string, previousDueOn: string | null, previousDueAt: string | null) {
     const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
     if (!existing) return;
-    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? previousDueAt.slice(11, 16) : null, doubled: false };
+    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? this.toLocalTimeStr(previousDueAt) : null, doubled: false };
     this.tasks = this.tasks.filter((t) => t.id !== taskId);
     this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
     if (previousDueOn) this.tasks = [...this.tasks, updated];
     else this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, updated];
     this.enqueueDueWrite(taskId, previousDueAt, previousDueOn);
+  }
+
+  /// Every "undo" that wants the user looking at the restored task again
+  /// (plan/defer/remove-due-date's Undo) needs more than
+  /// restoreTaskDueFieldsLocally + selectFocus: that plain combination put
+  /// the restored task at the *end* of `tasks` (appended, same as any
+  /// other restore) and then pointed focusIndex at that last slot — and
+  /// since Triage's "Up next" is everything *after* focusIndex (see
+  /// Triage.svelte), focusing the very last task makes Up next render
+  /// empty. This is the actual bug report: undoing "remove due date"
+  /// looked like it wiped the queue, but the queue was fine — the focused
+  /// task had just silently become the last one in it. Re-inserting at the
+  /// *front* instead keeps every other task visible in Up next, same as
+  /// undo landing on any other task would.
+  ///
+  /// Callers must clear the task from justPlannedIds (if applicable)
+  /// *before* calling this — this reads queueTasks to find the task's new
+  /// index, which excludes anything still in justPlannedIds.
+  private restoreTaskDueFieldsAndRefocus(taskId: string, previousDueOn: string | null, previousDueAt: string | null) {
+    const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
+    if (!existing) return;
+    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? this.toLocalTimeStr(previousDueAt) : null, doubled: false };
+    this.tasks = this.tasks.filter((t) => t.id !== taskId);
+    this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
+    if (previousDueOn) this.tasks = [updated, ...this.tasks];
+    else this.tasksWithoutDueDate = [updated, ...this.tasksWithoutDueDate];
+    this.enqueueDueWrite(taskId, previousDueAt, previousDueOn);
+    this.focusIndex = Math.max(0, this.queueTasks.findIndex((t) => t.id === taskId));
   }
 
   /// Fires the actual Asana write without making the caller wait on it —
@@ -1070,13 +1318,22 @@ class PlannerStore {
   /// would show the same number eventually, but only after a round trip we
   /// don't want to wait on) so the capacity badge and a possible
   /// celebration both react immediately instead of on the next unrelated
-  /// refresh.
+  /// refresh. The celebration only fires on the exact booking that pushes
+  /// the day from under capacity to full — checking `planned >= capacity`
+  /// alone (the old bug) stays true for every booking after the first one
+  /// that fills the day, e.g. clearing out a pile of overdue tasks onto an
+  /// already-full today used to confetti on every single one of them.
   private bumpWorkloadLocally(dayKey: string, addedHours: number) {
     const idx = this.workloadDays.findIndex((d) => d.key === dayKey);
     if (idx === -1) return;
-    const updated = { ...this.workloadDays[idx], planned: Math.round((this.workloadDays[idx].planned + addedHours) * 10) / 10 };
+    const before = this.workloadDays[idx];
+    const updated = { ...before, planned: Math.round((before.planned + addedHours) * 10) / 10 };
     this.workloadDays = [...this.workloadDays.slice(0, idx), updated, ...this.workloadDays.slice(idx + 1)];
-    if (updated.capacity > 0 && updated.planned >= updated.capacity) this.celebrationKey++;
+    const justFilled = updated.capacity > 0 && before.planned < updated.capacity && updated.planned >= updated.capacity;
+    if (justFilled) {
+      this.celebrationLabel = `${updated.label} is fully planned!`;
+      this.celebrationKey++;
+    }
   }
 
   /// The shared tail of every "plan this task" action: update local state
@@ -1098,10 +1355,9 @@ class PlannerStore {
     this.showToast(toastMsg, {
       label: 'Undo',
       onClick: () => {
-        this.restoreTaskDueFieldsLocally(task.id, previousDueOn, previousDueAt);
         this.justPlannedIds = this.justPlannedIds.filter((id) => id !== task.id);
+        this.restoreTaskDueFieldsAndRefocus(task.id, previousDueOn, previousDueAt);
         this.bumpWorkloadLocally(dayKey, -task.hours);
-        this.selectFocus(task.id);
       },
     });
   }
@@ -1167,15 +1423,21 @@ class PlannerStore {
     this.showCustomTimeToday = !this.showCustomTimeToday;
   }
 
-  private async loadLaterSlots(dayKey: string) {
+  /// Not private — see loadTodaySlots' comment, same reasoning applies to
+  /// FreeSlotsLater.svelte's $effect.
+  async loadLaterSlots(dayKey: string) {
     const date = this.dateFor(dayKey);
     const focus = this.focusTaskRaw;
     if (!date || !focus) return;
+    this.laterSlotsLoading = true;
     try {
-      const res = await api.get<{ slots: string[] }>(`/api/calendar/free-slots?${this.freeSlotsQuery(date, focus.hours, focus.id)}`);
+      const res = await api.get<{ slots: string[]; outlookEvents: OutlookBlock[] }>(`/api/calendar/free-slots?${this.freeSlotsQuery(date, focus.hours, focus.id)}`);
       this.laterSlots = res.slots;
+      this.laterOutlookEvents = res.outlookEvents;
     } catch (err) {
-      this.reportError(err, 'Could not load free slots');
+      this.reportError(err, 'Could not load free slots', { label: 'Retry', onClick: () => void this.loadLaterSlots(dayKey) });
+    } finally {
+      this.laterSlotsLoading = false;
     }
   }
 
@@ -1234,36 +1496,21 @@ class PlannerStore {
     this.enqueueDueWrite(task.id, null);
     this.showToast(`Removed due date on "${task.name}" · syncing to Asana`, {
       label: 'Undo',
-      onClick: () => {
-        this.restoreTaskDueFieldsLocally(task.id, previousDueOn, previousDueAt);
-        this.selectFocus(task.id);
-      },
+      onClick: () => this.restoreTaskDueFieldsAndRefocus(task.id, previousDueOn, previousDueAt),
     });
   }
 
-  async selectLaterDay(key: string) {
+  selectLaterDay(key: string) {
     if (this.isDayFull(key)) {
       this.pendingPlan = { type: 'later', key };
       this.screen = 'dayFull';
       return;
     }
-    await this.loadLaterSlots(key);
     this.laterDayKey = key;
     this.showCustomTimeLater = false;
+    this.laterSlots = [];
     this.screen = 'freeSlotsLater';
-  }
-  onCustomDateChange(v: string) {
-    this.customDateValue = v;
-  }
-  async continuePickDate() {
-    const v = this.customDateValue;
-    if (!v) return;
-    const label = new Date(`${v}T00:00`).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' });
-    this.customDayLabel = label;
-    this.laterDayKey = 'custom';
-    await this.loadLaterSlots('custom');
-    this.showCustomTimeLater = false;
-    this.screen = 'freeSlotsLater';
+    void this.loadLaterSlots(key);
   }
   toggleCustomTimeLater() {
     this.showCustomTimeLater = !this.showCustomTimeLater;
@@ -1449,20 +1696,32 @@ class PlannerStore {
   openAddPanel(eventId: string) {
     this.activePanelEventId = eventId;
     this.activePanelMode = 'add';
-    this.searchQuery = '';
+    this.searchQuery = this.firstWordOfEventTitle(eventId);
     void this.runTypeahead();
   }
   openLinkPanel(eventId: string) {
     this.activePanelEventId = eventId;
     this.activePanelMode = 'link';
-    this.searchQuery = '';
+    this.searchQuery = this.firstWordOfEventTitle(eventId);
     void this.runTypeahead();
   }
+  /// Seeds the search box with a head start instead of opening empty — the
+  /// event's own title is usually the best hint for which task/project it
+  /// belongs to. Just the first word, not the whole title: Asana's
+  /// typeahead is a substring/relevance match, and a full multi-word
+  /// title (e.g. one with a date or ticket number tacked on) is more
+  /// likely to under-match than a single common word is to over-match.
+  private firstWordOfEventTitle(eventId: string): string {
+    const title = this.events.find((e) => e.id === eventId)?.title.trim();
+    return title ? title.split(/\s+/)[0] : '';
+  }
   closeSearchPanel() {
+    clearTimeout(this.typeaheadTimer);
     this.activePanelEventId = null;
     this.activePanelMode = null;
     this.searchQuery = '';
     this.typeaheadResults = [];
+    this.typeaheadLoading = false;
   }
   onSearchChange(v: string) {
     this.searchQuery = v;
@@ -1480,10 +1739,17 @@ class PlannerStore {
   /// been reconnected yet.
   typeaheadResults: { gid: string; name: string; resourceType: 'task' | 'project' }[] = $state([]);
   typeaheadOk = $state(true);
+  /// Set the instant a search is scheduled (not just once the request
+  /// actually goes out) so the panel can show a spinner through the 250ms
+  /// debounce window too, not just the network round-trip after it — the
+  /// whole reason this got added is that a bare, silent wait *felt* slow
+  /// even before the debounce/fetch was accounted for.
+  typeaheadLoading = $state(false);
   private typeaheadTimer: ReturnType<typeof setTimeout> | undefined;
   private typeaheadSeq = 0;
 
   private scheduleTypeahead() {
+    this.typeaheadLoading = true;
     clearTimeout(this.typeaheadTimer);
     this.typeaheadTimer = setTimeout(() => void this.runTypeahead(), 250);
   }
@@ -1492,10 +1758,14 @@ class PlannerStore {
     if (!mode) return;
     const q = this.searchQuery.trim();
     const seq = ++this.typeaheadSeq;
+    this.typeaheadLoading = true;
     const fetchOne = (resourceType: 'task' | 'project') =>
       api.get<{ results: { gid: string; name: string }[] }>(`/api/tasks/typeahead?resourceType=${resourceType}&query=${encodeURIComponent(q)}`);
     try {
-      const [tasks, projects] = await Promise.all([fetchOne('task'), mode === 'add' ? fetchOne('project') : Promise.resolve({ results: [] })]);
+      // Both panels show projects and tasks now — "link" used to only ask
+      // for tasks, which is why projects looked like they were missing
+      // from that field specifically.
+      const [tasks, projects] = await Promise.all([fetchOne('task'), fetchOne('project')]);
       if (seq !== this.typeaheadSeq) return; // superseded by a newer keystroke
       this.typeaheadResults = [
         ...projects.results.map((p) => ({ ...p, resourceType: 'project' as const })),
@@ -1506,6 +1776,8 @@ class PlannerStore {
       if (seq !== this.typeaheadSeq) return;
       this.typeaheadOk = false;
       this.typeaheadResults = [];
+    } finally {
+      if (seq === this.typeaheadSeq) this.typeaheadLoading = false;
     }
   }
 
@@ -1557,38 +1829,44 @@ class PlannerStore {
       this.reportError(err, 'Could not add the task in Asana');
     }
   }
-  async addEventAsSubtask(eventId: string, parentTaskId: string) {
+  /// Takes the parent task's name directly rather than looking it up in
+  /// `this.tasks` — that list is only ever "incomplete, assigned to me,
+  /// has a due date" (see buildTasksPayload server-side), but typeahead
+  /// results (the primary source for this panel — see runTypeahead) can
+  /// name *any* task in the workspace. Looking the selection up in that
+  /// narrower local list silently found nothing for anything outside it,
+  /// so picking a real typeahead result just... did nothing, with no error
+  /// surfaced anywhere — exactly the reported "selecting it doesn't do
+  /// anything, the menu stays open" bug.
+  async addEventAsSubtask(eventId: string, parentTaskId: string, parentTaskName: string) {
     const ev = this.events.find((e) => e.id === eventId);
-    const parent = this.tasks.find((t) => t.id === parentTaskId);
-    if (!ev || !parent) return;
+    if (!ev) return;
     try {
       await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/add-task`, {
         title: ev.title,
-        target: { parentGid: parent.id },
+        target: { parentGid: parentTaskId },
       });
-      this.showToast(`Added "${ev.title}" as a subtask of "${parent.name}" · synced to Asana`);
+      this.showToast(`Added "${ev.title}" as a subtask of "${parentTaskName}" · synced to Asana`);
       this.closeSearchPanel();
       await Promise.all([this.refreshEvents(), this.refreshTasks()]);
     } catch (err) {
       this.reportError(err, 'Could not add the subtask in Asana');
     }
   }
-  async linkEventToTask(eventId: string, taskId: string) {
-    const task = this.tasks.find((t) => t.id === taskId);
+  /// Same reasoning as addEventAsSubtask above — takes the task's name
+  /// directly instead of requiring it to already be in the locally-loaded
+  /// `this.tasks`.
+  async linkEventToTask(eventId: string, taskId: string, taskName: string) {
     const ev = this.events.find((e) => e.id === eventId);
-    if (!task || !ev) return;
+    if (!ev) return;
     try {
-      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/link`, { taskGid: task.id, taskName: task.name });
-      this.showToast(`Linked "${ev.title}" to "${task.name}"`);
+      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/link`, { taskGid: taskId, taskName });
+      this.showToast(`Linked "${ev.title}" to "${taskName}"`);
       this.closeSearchPanel();
       await this.refreshEvents();
     } catch (err) {
       this.reportError(err, 'Could not link the event');
     }
-  }
-
-  openAsana(task: Task) {
-    window.open(task.permalinkUrl, '_blank', 'noopener');
   }
 }
 

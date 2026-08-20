@@ -13,6 +13,7 @@
   import Overview from './lib/screens/Overview.svelte';
   import PlanToday from './lib/screens/PlanToday.svelte';
   import PlanLater from './lib/screens/PlanLater.svelte';
+  import NextWeekDays from './lib/screens/NextWeekDays.svelte';
   import PickDate from './lib/screens/PickDate.svelte';
   import FreeSlotsLater from './lib/screens/FreeSlotsLater.svelte';
   import DayFull from './lib/screens/DayFull.svelte';
@@ -27,9 +28,19 @@
 
     // iOS suspends (and sometimes kills) a standalone home-screen web app's
     // WKWebView when it's backgrounded — e.g. tapping "Open in Asana" and
-    // switching back — which can leave it stuck on a blank, un-repainted
-    // screen; gated by a short delay so a quick app-switcher flick doesn't
-    // reboot the app and reset whatever screen the user was on.
+    // switching back, or switching to another app entirely (Asana itself)
+    // and back — which can leave it stuck on a blank, un-repainted screen
+    // and/or showing stale data from before the switch.
+    //
+    // visibilitychange alone isn't reliable for this: standalone iOS PWAs
+    // frequently don't fire it on the way back (sometimes not on the way
+    // out either), which is exactly why "task doesn't reload after coming
+    // back from Asana" kept happening even with a visibilitychange
+    // listener in place. pageshow (fired when the page is restored, e.g.
+    // from the bfcache-like state iOS uses for a resumed standalone app)
+    // and window focus are the other two events known to catch this same
+    // moment on iOS — wiring up all three, deduped by resume(), maximizes
+    // the chance at least one actually fires for a given iOS version.
     //
     // Two things happen on resume, addressing two different causes:
     // 1. A forced synchronous repaint (toggle a style, force layout, revert)
@@ -43,27 +54,42 @@
     //    background network suspension is still lifting is markedly less
     //    reliable than one plain fetch, which made the *data* half of this
     //    fix flaky again once boot() started streaming.
-    let hiddenAt: number | null = null;
+    let lastResumeAt = 0;
     function forceRepaint() {
       const el = document.documentElement;
       el.style.transform = 'translateZ(0)';
       void el.offsetHeight; // force a synchronous layout flush before reverting
       el.style.transform = '';
     }
+    function resume() {
+      if (planner.screen === 'loading') return;
+      // The three listeners below can all fire for the same real resume
+      // (e.g. visibilitychange then focus within the same tick) — only act
+      // on the first.
+      const now = Date.now();
+      if (now - lastResumeAt < 1500) return;
+      lastResumeAt = now;
+      forceRepaint();
+      void planner.refreshTasks();
+      void planner.refreshWorkload();
+    }
     function onVisibilityChange() {
-      if (document.hidden) {
-        hiddenAt = Date.now();
-        return;
-      }
-      if (hiddenAt !== null && Date.now() - hiddenAt > 3000 && planner.screen !== 'loading') {
-        forceRepaint();
-        void planner.refreshTasks();
-        void planner.refreshWorkload();
-      }
-      hiddenAt = null;
+      if (!document.hidden) resume();
+    }
+    function onPageShow(e: PageTransitionEvent) {
+      // A genuinely fresh load already gets current data from boot() —
+      // only treat this as a "resume" when the page was restored rather
+      // than newly loaded.
+      if (e.persisted) resume();
     }
     document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pageshow', onPageShow);
+    window.addEventListener('focus', resume);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pageshow', onPageShow);
+      window.removeEventListener('focus', resume);
+    };
   });
 </script>
 
@@ -103,6 +129,8 @@
       <PlanToday />
     {:else if planner.screen === 'planLater'}
       <PlanLater />
+    {:else if planner.screen === 'nextWeekDays'}
+      <NextWeekDays />
     {:else if planner.screen === 'pickDate'}
       <PickDate />
     {:else if planner.screen === 'freeSlotsLater'}
@@ -123,7 +151,7 @@
     <Toast />
     {#if planner.celebrationKey > 0}
       {#key planner.celebrationKey}
-        <Celebration />
+        <Celebration label={planner.celebrationLabel} />
       {/key}
     {/if}
   </div>

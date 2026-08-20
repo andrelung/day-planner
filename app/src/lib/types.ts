@@ -9,6 +9,7 @@ export type Screen =
   | 'overview'
   | 'planToday'
   | 'planLater'
+  | 'nextWeekDays'
   | 'pickDate'
   | 'freeSlotsLater'
   | 'dayFull'
@@ -62,6 +63,16 @@ export interface CalendarEvent {
   timeLabel: string;
   linked: boolean;
   linkedName: string | null;
+}
+
+/// An Outlook event for one specific day, as returned alongside free-slots
+/// — drawn read-only on DayCalendar so a meeting is visibly a reason a
+/// time isn't free, same as an Asana task block.
+export interface OutlookBlock {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
 }
 
 export interface Project {
