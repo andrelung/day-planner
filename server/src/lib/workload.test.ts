@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildWorkloadDays, dailyCapacityHours } from './workload.js';
+import { buildWorkloadDays, buildWorkloadItems, dailyCapacityHours } from './workload.js';
 
 // workload.ts builds all its dates from local getters (getFullYear/Month/Date),
 // so read them back the same way — not via toISOString(), which converts to
@@ -59,4 +59,32 @@ void test('dailyCapacityHours computes decimal hours between preferred start/end
 void test('dailyCapacityHours floors at 0 for an inverted or equal range rather than going negative', () => {
   assert.equal(dailyCapacityHours('18:00', '09:00'), 0);
   assert.equal(dailyCapacityHours('09:00', '09:00'), 0);
+});
+
+void test('buildWorkloadItems excludes a task linked to a calendar event, counting the event once instead of twice', () => {
+  const items = buildWorkloadItems(
+    [{ gid: 'task-1', dueAt: '2026-08-20T14:00:00.000Z', hours: 1 }],
+    [{ start: new Date('2026-08-20T14:00:00.000Z'), end: new Date('2026-08-20T15:00:00.000Z') }],
+    new Set(['task-1']),
+  );
+  assert.equal(items.length, 1);
+  assert.equal(items[0].hours, 1);
+});
+
+void test('buildWorkloadItems counts an unlinked task alongside an unrelated event — no false exclusion', () => {
+  const items = buildWorkloadItems(
+    [{ gid: 'task-1', dueAt: '2026-08-20T09:00:00.000Z', hours: 1 }],
+    [{ start: new Date('2026-08-20T14:00:00.000Z'), end: new Date('2026-08-20T15:00:00.000Z') }],
+    new Set(), // nothing linked
+  );
+  assert.equal(items.length, 2);
+  assert.equal(
+    items.reduce((sum, i) => sum + i.hours, 0),
+    2,
+  );
+});
+
+void test('buildWorkloadItems skips tasks with no due date regardless of linking', () => {
+  const items = buildWorkloadItems([{ gid: 'task-1', dueAt: null, hours: 3 }], [], new Set(['task-1']));
+  assert.equal(items.length, 0);
 });

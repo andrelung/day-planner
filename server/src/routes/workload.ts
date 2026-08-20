@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth } from '../lib/auth.js';
 import { getValidAccessToken } from '../lib/tokens.js';
-import { buildWorkloadDays, dailyCapacityHours } from '../lib/workload.js';
+import { buildWorkloadDays, buildWorkloadItems, dailyCapacityHours } from '../lib/workload.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { listIncompleteAssignedTasks } from '../providers/asana.js';
 import { listEvents } from '../providers/outlook.js';
@@ -21,23 +21,26 @@ workloadRouter.get('/', async (req, res) => {
     prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId: req.userId!, provider: 'OUTLOOK' } } }),
   ]);
 
-  const items: { start: Date; hours: number }[] = [];
+  let tasks: { dueAt: string | null; hours: number; gid: string }[] = [];
+  let events: { start: Date; end: Date }[] = [];
+  let linkedTaskGids = new Set<string>();
 
   if (asanaAccount) {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-    const tasks = await listIncompleteAssignedTasks(accessToken);
-    for (const t of tasks) {
-      if (t.dueAt) items.push({ start: new Date(t.dueAt), hours: t.hours });
-    }
+    tasks = await listIncompleteAssignedTasks(accessToken);
+    const links = await prisma.calendarEventLink.findMany({
+      where: { userId: req.userId!, ignored: false, linkedAsanaTaskGid: { not: null } },
+      select: { linkedAsanaTaskGid: true },
+    });
+    linkedTaskGids = new Set(links.map((l) => l.linkedAsanaTaskGid!));
   }
   if (outlookAccount) {
     const accessToken = await getValidAccessToken(req.userId!, 'OUTLOOK');
     const horizonEnd = new Date(now.getTime() + 21 * 86_400_000);
-    const events = await listEvents(accessToken, now, horizonEnd);
-    for (const e of events) {
-      items.push({ start: e.start, hours: (e.end.getTime() - e.start.getTime()) / 3_600_000 });
-    }
+    events = await listEvents(accessToken, now, horizonEnd);
   }
+
+  const items = buildWorkloadItems(tasks, events, linkedTaskGids);
 
   const result = days.map((d) => {
     const capacity = d.key === 'nextweek' ? capacityPerDay * 5 : capacityPerDay;

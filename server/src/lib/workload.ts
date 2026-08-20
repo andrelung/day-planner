@@ -59,3 +59,25 @@ export function dailyCapacityHours(prefStartTime: string, prefEndTime: string): 
   const minutes = eh * 60 + em - (sh * 60 + sm);
   return Math.max(0, minutes / 60);
 }
+
+/// Flattens timed tasks and calendar events into one pool of "planned hours"
+/// items for buildWorkloadDays' buckets to sum. A task linked to a calendar
+/// event (see CalendarEventLink) represents the same block of time as that
+/// event — the event's own duration is already an item below, so counting
+/// the linked task's hours too would double-count that slot. Excluded tasks
+/// still show up everywhere else in the app (Triage, the day calendar) —
+/// this only affects the "how full is this day" tally.
+export function buildWorkloadItems(
+  tasks: { dueAt: string | null; hours: number; gid: string }[],
+  events: { start: Date; end: Date }[],
+  linkedTaskGids: Set<string>,
+): { start: Date; hours: number }[] {
+  const items: { start: Date; hours: number }[] = [];
+  for (const t of tasks) {
+    if (t.dueAt && !linkedTaskGids.has(t.gid)) items.push({ start: new Date(t.dueAt), hours: t.hours });
+  }
+  for (const e of events) {
+    items.push({ start: e.start, hours: (e.end.getTime() - e.start.getTime()) / 3_600_000 });
+  }
+  return items;
+}
