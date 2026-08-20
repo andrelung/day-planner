@@ -18,6 +18,53 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="mobile-web-app-capable" content="yes" />
 
+    <!-- iOS's native launch screen (shown by the OS itself before ANY web
+         content paints, even the static splash below) is blank/black
+         unless the page provides `apple-touch-startup-image` links sized
+         to the device's exact screen — Apple's own auto-generation from
+         the manifest isn't reliably honored. There's no fixed device list
+         to maintain here: this draws the icon centered on the app's
+         background color at the CURRENT device's actual screen size (via
+         screen.width/height + devicePixelRatio) and registers that as both
+         the portrait and landscape startup image, so it's correct for
+         whatever device it happens to run on, present or future. Gated to
+         iOS Safari (the only place `navigator.standalone` exists) since
+         these links are meaningless — but not free to generate — elsewhere. -->
+    <script>
+      if (typeof navigator.standalone !== 'undefined') {
+        (function () {
+          var dpr = window.devicePixelRatio || 1;
+          var screenW = screen.width;
+          var screenH = screen.height;
+          var img = new Image();
+          img.onload = function () {
+            var iconSize = img.width / (3 / dpr);
+            function makeStartupImage(w, h) {
+              var canvas = document.createElement('canvas');
+              canvas.width = w;
+              canvas.height = h;
+              var ctx = canvas.getContext('2d');
+              ctx.fillStyle = '#f7fcff';
+              ctx.fillRect(0, 0, w, h);
+              ctx.drawImage(img, (w - iconSize) / 2, (h - iconSize) / 2, iconSize, iconSize);
+              return canvas.toDataURL('image/png');
+            }
+            var portrait = document.createElement('link');
+            portrait.setAttribute('rel', 'apple-touch-startup-image');
+            portrait.setAttribute('media', 'screen and (orientation: portrait)');
+            portrait.setAttribute('href', makeStartupImage(screenW * dpr, screenH * dpr));
+            document.head.appendChild(portrait);
+            var landscape = document.createElement('link');
+            landscape.setAttribute('rel', 'apple-touch-startup-image');
+            landscape.setAttribute('media', 'screen and (orientation: landscape)');
+            landscape.setAttribute('href', makeStartupImage(screenH * dpr, screenW * dpr));
+            document.head.appendChild(landscape);
+          };
+          img.src = '/pwa-512.png';
+        })();
+      }
+    </script>
+
     <!-- Static splash shown instantly at first paint, before the JS bundle
          has loaded/mounted — main.ts removes it once the real app (whose
          own 'loading' screen looks identical) has mounted. Styled inline

@@ -26,6 +26,14 @@
           {#if planner.primaryProvider === 'ASANA'}
             <div class="connected__primary">Primary</div>
           {/if}
+          <button
+            class="disconnect-link"
+            onclick={() => {
+              if (confirm('Disconnect your Asana account? You can reconnect any time.')) void planner.disconnectProvider('ASANA');
+            }}
+          >
+            Disconnect
+          </button>
         </div>
       {:else}
         <Button variant="secondary" size="sm" href={planner.asanaLoginUrl}>Connect</Button>
@@ -44,6 +52,14 @@
           {#if planner.primaryProvider === 'OUTLOOK'}
             <div class="connected__primary">Primary</div>
           {/if}
+          <button
+            class="disconnect-link"
+            onclick={() => {
+              if (confirm('Disconnect your Outlook account? You can reconnect any time.')) void planner.disconnectProvider('OUTLOOK');
+            }}
+          >
+            Disconnect
+          </button>
         </div>
       {:else}
         <Button variant="secondary" size="sm" href={planner.outlookLoginUrl}>Connect</Button>
@@ -151,5 +167,18 @@
     color: var(--color-feedback-correct);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+  }
+  .disconnect-link {
+    display: block;
+    margin-top: 6px;
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-feedback-wrong);
+    text-decoration: underline;
+    cursor: pointer;
   }
 </style>

@@ -2,6 +2,7 @@
   import { planner } from '../store.svelte';
   import Icon from '../components/Icon.svelte';
   import Button from '../components/Button.svelte';
+  import InstallBanner from '../components/InstallBanner.svelte';
 
   const label = $derived(planner.secondaryProviderLabel);
   const initial = $derived(planner.secondaryProviderInitial);
@@ -13,6 +14,7 @@
 </script>
 
 <div class="screen">
+  <InstallBanner />
   <div class="content">
     <div class="signed-in-hint">
       <Icon name="check-circle" size={16} color="var(--color-feedback-correct)" />

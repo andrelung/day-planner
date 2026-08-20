@@ -1,9 +1,11 @@
 <script lang="ts">
   import { planner } from '../store.svelte';
   import Icon from '../components/Icon.svelte';
+  import InstallBanner from '../components/InstallBanner.svelte';
 </script>
 
 <div class="screen">
+  <InstallBanner />
   <div class="content">
     <div class="heading">Plan your day</div>
     <div class="subtitle">
