@@ -14,7 +14,7 @@ import type {
   WorkloadDay,
 } from './types';
 import { api, ApiError } from './api';
-import { fmtHours } from './format';
+import { fmtHours, slotStartTime } from './format';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -160,8 +160,6 @@ class PlannerStore {
   laterDayKey: string | null = $state(null);
   customDateValue = $state('');
   customDayLabel = $state('');
-  showCustomTimeToday = $state(false);
-  showCustomTimeLater = $state(false);
   planTodaySlots: string[] = $state([]);
   laterSlots: string[] = $state([]);
   todaySlotsLoading = $state(false);
@@ -970,7 +968,6 @@ class PlannerStore {
       this.screen = 'dayFull';
       return;
     }
-    this.showCustomTimeToday = false;
     this.planTodaySlots = [];
     this.screen = 'planToday';
     void this.loadTodaySlots();
@@ -1018,6 +1015,21 @@ class PlannerStore {
       this.todaySlotsLoading = false;
     }
   }
+  /// Seeds DayCalendar's pending placement so opening "Plan today" lands the
+  /// task on the earliest free slot immediately instead of requiring a tap
+  /// on the track first — planTodaySlots is already chronological (see
+  /// freeSlots.ts), so the first entry is exactly that. On a day so full
+  /// there's no free slot at all, still propose *something* — the start of
+  /// the working day — rather than leaving the calendar with nothing
+  /// placed; the user will see it obviously conflicts and can drag it.
+  get earliestTodaySlotStart(): string | null {
+    const date = this.dateFor('today');
+    const focus = this.focusTaskRaw;
+    const clean = date && focus ? this.firstFreeSlotStart(this.planTodaySlots, date, focus.hours, focus.id) : null;
+    if (clean) return clean;
+    if (this.planTodaySlots.length > 0) return slotStartTime(this.planTodaySlots[0]);
+    return this.todaySlotsLoading ? null : this.prefStartTime;
+  }
 
   openPlanLater() {
     this.screen = 'planLater';
@@ -1029,13 +1041,11 @@ class PlannerStore {
       return;
     }
     if (p.type === 'today') {
-      this.showCustomTimeToday = false;
       this.planTodaySlots = [];
       this.screen = 'planToday';
       void this.loadTodaySlots();
     } else if (p.key) {
       this.laterDayKey = p.key;
-      this.showCustomTimeLater = false;
       this.laterSlots = [];
       this.screen = 'freeSlotsLater';
       void this.loadLaterSlots(p.key);
@@ -1046,8 +1056,16 @@ class PlannerStore {
     this.screen = 'triage';
   }
   closeFlow() {
-    this.showCustomTimeToday = false;
     this.screen = 'triage';
+  }
+  /// Jump straight to "Plan later" for another same-day task — the button
+  /// on each task block in DayCalendar (see PlanToday/FreeSlotsLater).
+  /// Noticing an awkwardly-placed task while planning a *different* one
+  /// leads straight to the reason you'd tap it: moving it to another day,
+  /// without a stop at its Triage card in between.
+  openTaskInPlanLater(taskId: string) {
+    this.selectFocus(taskId);
+    this.openPlanLater();
   }
   backToPlanLater() {
     this.screen = 'planLater';
@@ -1213,7 +1231,6 @@ class PlannerStore {
     this.customDateValue = date;
     this.customDayLabel = label;
     this.laterDayKey = 'custom';
-    this.showCustomTimeLater = false;
     this.laterSlots = [];
     this.screen = 'freeSlotsLater';
     void this.loadLaterSlots('custom');
@@ -1307,9 +1324,7 @@ class PlannerStore {
     return new Date(`${date}T${hhmm}:00`).toISOString();
   }
   private slotStart(slot: string): string {
-    // "13:00–13:30" or "Mon 09:00–10:00" -> "13:00"
-    const timePart = slot.includes(' ') ? slot.split(' ')[1] : slot;
-    return timePart.split('–')[0];
+    return slotStartTime(slot);
   }
 
   /// The double-book check against a live Asana re-fetch used to be the
@@ -1317,8 +1332,27 @@ class PlannerStore {
   /// `tasks` a free-slots list was built from instead, so it's instant, at
   /// the cost of trusting client-side data that could in principle be a few
   /// seconds stale (matches how free-slots itself already trusts it).
-  private findConflicts(dueAtIso: string, excludeTaskId: string): ConflictItem[] {
-    return this.tasks.filter((t) => t.id !== excludeTaskId && t.dueAt === dueAtIso).map((t) => ({ name: t.name, hours: t.hours }));
+  ///
+  /// A genuine [start, start+hours) range overlap, not just "is something
+  /// else due at this exact instant" — that exact-match version was fine
+  /// back when the only way to reach this was tapping one of the server's
+  /// own pre-chunked, already-non-overlapping slot buttons (the only real
+  /// conflict a same-instant check could ever catch was a race against
+  /// something committed after that list was fetched). Now that a
+  /// placement can land anywhere via drag or the auto-seeded suggestion,
+  /// a task sitting in the *middle* of the requested range (not exactly at
+  /// its start) needs to be caught too, or it silently gets talked over.
+  private findConflicts(dueAtIso: string, hours: number, excludeTaskId: string): ConflictItem[] {
+    const start = new Date(dueAtIso).getTime();
+    const end = start + hours * 3_600_000;
+    return this.tasks
+      .filter((t) => t.id !== excludeTaskId && t.dueAt)
+      .filter((t) => {
+        const tStart = new Date(t.dueAt!).getTime();
+        const tEnd = tStart + t.hours * 3_600_000;
+        return start < tEnd && tStart < end;
+      })
+      .map((t) => ({ name: t.name, hours: t.hours }));
   }
 
   /// The one place local state changes to reflect a due-date write —
@@ -1468,7 +1502,7 @@ class PlannerStore {
     const task = this.tasks.find((t) => t.id === taskId);
     if (!task) return false;
     const dueAtIso = this.toIsoDateTime(date, hhmm);
-    if (this.findConflicts(dueAtIso, taskId).length) {
+    if (this.findConflicts(dueAtIso, task.hours, taskId).length) {
       this.showToast('That time is already taken');
       return false;
     }
@@ -1504,7 +1538,7 @@ class PlannerStore {
     const date = this.dateFor('today');
     if (!task || !date) return;
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
-    const conflicts = this.findConflicts(dueAtIso, task.id);
+    const conflicts = this.findConflicts(dueAtIso, task.hours, task.id);
     if (conflicts.length) {
       this.conflictItems = conflicts;
       this.pendingSlotPlan = { kind: 'today', slot };
@@ -1512,10 +1546,6 @@ class PlannerStore {
       return;
     }
     this.commitPlanLocally(task, dueAtIso, `Planned "${task.name}" today at ${slot} · syncing to Asana`, 'today');
-  }
-
-  toggleCustomTimeToday() {
-    this.showCustomTimeToday = !this.showCustomTimeToday;
   }
 
   /// Not private — see loadTodaySlots' comment, same reasoning applies to
@@ -1535,6 +1565,30 @@ class PlannerStore {
       this.laterSlotsLoading = false;
     }
   }
+  /// Same reasoning as earliestTodaySlotStart, for FreeSlotsLater's
+  /// DayCalendar.
+  get earliestLaterSlotStart(): string | null {
+    const date = this.chosenDate;
+    const focus = this.focusTaskRaw;
+    const clean = date && focus ? this.firstFreeSlotStart(this.laterSlots, date, focus.hours, focus.id) : null;
+    if (clean) return clean;
+    if (this.laterSlots.length > 0) return slotStartTime(this.laterSlots[0]);
+    return this.laterSlotsLoading ? null : this.prefStartTime;
+  }
+  /// Prefers a slot the client's own findConflicts also agrees is free —
+  /// the slots list is a snapshot from whenever it was fetched, and
+  /// another task's due time can change locally (e.g. a plan committed
+  /// elsewhere in the same session) without anything re-fetching this;
+  /// this catches that instead of confidently auto-placing on top of a
+  /// real conflict. Falls back to the server's own first pick if every
+  /// slot now conflicts, rather than proposing nothing.
+  private firstFreeSlotStart(slots: string[], date: string, hours: number, excludeTaskId: string): string | null {
+    for (const slot of slots) {
+      const start = slotStartTime(slot);
+      if (this.findConflicts(this.toIsoDateTime(date, start), hours, excludeTaskId).length === 0) return start;
+    }
+    return null;
+  }
 
   tryPlanLaterSlot(slot: string) {
     const task = this.focusTaskRaw;
@@ -1542,7 +1596,7 @@ class PlannerStore {
     const date = dayKey ? this.dateFor(dayKey) : null;
     if (!task || !dayKey || !date) return;
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
-    const conflicts = this.findConflicts(dueAtIso, task.id);
+    const conflicts = this.findConflicts(dueAtIso, task.hours, task.id);
     if (conflicts.length) {
       this.conflictItems = conflicts;
       this.pendingSlotPlan = { kind: 'later', dayKey, slot };
@@ -1573,9 +1627,19 @@ class PlannerStore {
       this.screen = 'triage';
       return;
     }
-    if (p.kind === 'today') this.screen = 'planToday';
-    else if (p.kind === 'later') this.screen = 'freeSlotsLater';
-    else if (p.kind === 'break') this.screen = 'breakTime';
+    if (p.kind === 'today') {
+      this.screen = 'planToday';
+      // The picker now auto-seeds a slot instead of waiting for a tap (see
+      // earliestTodaySlotStart) — re-fetch so that re-seed reflects
+      // whatever just caused this conflict, instead of confidently
+      // re-suggesting the exact same slot from a stale list.
+      void this.loadTodaySlots();
+    } else if (p.kind === 'later') {
+      this.screen = 'freeSlotsLater';
+      void this.loadLaterSlots(p.dayKey);
+    } else if (p.kind === 'break') {
+      this.screen = 'breakTime';
+    }
   }
 
   /// Same reasoning as clearOtherTaskDueDate — no due date at all takes a
@@ -1602,13 +1666,9 @@ class PlannerStore {
       return;
     }
     this.laterDayKey = key;
-    this.showCustomTimeLater = false;
     this.laterSlots = [];
     this.screen = 'freeSlotsLater';
     void this.loadLaterSlots(key);
-  }
-  toggleCustomTimeLater() {
-    this.showCustomTimeLater = !this.showCustomTimeLater;
   }
 
   // --- estimate editing (focus card) ---
@@ -1754,7 +1814,7 @@ class PlannerStore {
 
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
     if (!force) {
-      const conflicts = this.findConflicts(dueAtIso, created.gid);
+      const conflicts = this.findConflicts(dueAtIso, dur, created.gid);
       if (conflicts.length) {
         this.conflictItems = conflicts;
         this.pendingSlotPlan = { kind: 'break', slot };
