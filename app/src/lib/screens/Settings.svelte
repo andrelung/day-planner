@@ -68,12 +68,21 @@
       <div class="row__label row__label--danger">Reset today's plan</div>
     </button>
     <label class="row">
-      <div class="row__label">Don't ask again for any day</div>
+      <div class="row__label">Warn me when a day looks full</div>
       <input
         type="checkbox"
         class="toggle"
-        checked={planner.skipDayFullWarning}
-        onchange={(e) => planner.onSkipDayFullWarningChange((e.target as HTMLInputElement).checked)}
+        checked={!planner.skipDayFullWarning}
+        onchange={(e) => planner.onSkipDayFullWarningChange(!(e.target as HTMLInputElement).checked)}
+      />
+    </label>
+    <label class="row">
+      <div class="row__label">Ask for confirmation on double booked calendar slots</div>
+      <input
+        type="checkbox"
+        class="toggle"
+        checked={planner.confirmDoubleBooking}
+        onchange={(e) => planner.onConfirmDoubleBookingChange((e.target as HTMLInputElement).checked)}
       />
     </label>
     <div class="more-to-come">More to come</div>

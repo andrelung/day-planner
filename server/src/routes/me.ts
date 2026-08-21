@@ -32,6 +32,7 @@ meRouter.get('/', requireAuth, async (req, res) => {
       bufferMinutes: settings.bufferMinutes,
       timezone: settings.timezone,
       skipDayFullWarning: settings.skipDayFullWarning,
+      confirmDoubleBooking: settings.confirmDoubleBooking,
     },
   });
 });

@@ -15,7 +15,7 @@ import type {
 } from './types';
 import { api, ApiError } from './api';
 import { fmtHours, slotStartTime } from './format';
-import { GIT_COMMIT } from './version';
+import { BUILD_ID } from './version';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -85,7 +85,14 @@ interface MeResponse {
   outlookConnected: boolean;
   asanaAccountLabel: string | null;
   outlookAccountLabel: string | null;
-  settings: { prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string; skipDayFullWarning: boolean };
+  settings: {
+    prefStartTime: string;
+    prefEndTime: string;
+    bufferMinutes: number;
+    timezone: string;
+    skipDayFullWarning: boolean;
+    confirmDoubleBooking: boolean;
+  };
 }
 
 class PlannerStore {
@@ -178,6 +185,7 @@ class PlannerStore {
   bufferMinutes = $state(10);
   timezone = $state('UTC');
   skipDayFullWarning = $state(false);
+  confirmDoubleBooking = $state(true);
 
   activePanelEventId: string | null = $state(null);
   activePanelMode: 'add' | 'link' | null = $state(null);
@@ -357,23 +365,36 @@ class PlannerStore {
   // A PWA can sit open for days (see schedulePeriodicTaskRefresh's comment
   // on iOS not reliably firing resume events) — long enough to be running
   // noticeably older code than what's actually deployed. /api/version
-  // reports the server's own build commit; a mismatch against this
-  // client's own baked-in GIT_COMMIT means a newer build exists and a
-  // reload would pick it up. `updateAvailableCommit` is null until that's
-  // detected. Runs independent of auth (called from boot(), not
-  // enterTriage()) so it still surfaces on the Login screen.
-  updateAvailableCommit: string | null = $state(null);
-  private dismissedUpdateCommit: string | null = null;
+  // reports the server's own build; a mismatch against this client's own
+  // baked-in BUILD_ID means a newer build exists and a reload would pick
+  // it up. Compares BUILD_ID, not GIT_COMMIT — GIT_COMMIT only changes on
+  // a real `git commit`, so a whole stretch of uncommitted rebuilds (the
+  // normal case while iterating on a feature, which is most of the time)
+  // all share one commit hash and would never register as "different" to
+  // a commit-only check, even though the running JS had genuinely changed
+  // on every one of those rebuilds. BUILD_ID is unique on every single
+  // rebuild.sh invocation regardless of git state (see its own comment).
+  // `updateAvailableBuildId` is null until a mismatch is detected. Runs
+  // independent of auth (called from boot(), not enterTriage()) so it
+  // still surfaces on the Login screen.
+  updateAvailableBuildId: string | null = $state(null);
+  private dismissedUpdateBuildId: string | null = null;
   /// Not private — App.svelte's resume() also calls this directly, on the
   /// same background/foreground transition that triggers refreshTasks().
   async checkForUpdate() {
-    if (GIT_COMMIT === 'dev') return; // no build step to be stale against
+    if (BUILD_ID === 'dev') return; // no build step to be stale against
     try {
-      const res = await fetch('/api/version');
+      // Belt-and-suspenders against the same iOS standalone-PWA caching
+      // quirk reloadForUpdate works around: `cache: 'no-store'` is the
+      // standards-compliant way to bypass HTTP caching for this fetch, and
+      // the timestamp query param is a fallback that works even if that
+      // option itself gets ignored (any cache lookup keyed on the full URL
+      // simply can't have this exact URL from a previous call).
+      const res = await fetch(`/api/version?_=${Date.now()}`, { cache: 'no-store' });
       if (!res.ok) return;
-      const data = (await res.json()) as { commit: string };
-      if (data.commit && data.commit !== GIT_COMMIT && data.commit !== this.dismissedUpdateCommit) {
-        this.updateAvailableCommit = data.commit;
+      const data = (await res.json()) as { buildId: string };
+      if (data.buildId && data.buildId !== BUILD_ID && data.buildId !== this.dismissedUpdateBuildId) {
+        this.updateAvailableBuildId = data.buildId;
       }
     } catch {
       // transient network hiccup — the next periodic check retries
@@ -384,11 +405,24 @@ class PlannerStore {
     setInterval(() => void this.checkForUpdate(), 5 * 60_000);
   }
   dismissUpdateNotice() {
-    this.dismissedUpdateCommit = this.updateAvailableCommit;
-    this.updateAvailableCommit = null;
+    this.dismissedUpdateBuildId = this.updateAvailableBuildId;
+    this.updateAvailableBuildId = null;
   }
+  /// Not a plain reload() — a standalone iOS home-screen PWA is known to
+  /// serve reload() from WebKit's in-memory cache (showing the same stale
+  /// build right back) even though the on-disk cache *does* get refreshed
+  /// in the background, which is exactly why manually closing and
+  /// reopening the app afterward picks up the update: by then the disk
+  /// cache has already caught up, reload() itself just never showed it.
+  /// That memory-cache short-circuit only kicks in for reloading the
+  /// *identical* URL — navigating to a cache-busted one instead (a
+  /// harmless extra query param) makes this a normal fresh navigation
+  /// Safari has no reason to serve from memory, without needing the user
+  /// to leave the app at all.
   reloadForUpdate() {
-    window.location.reload();
+    const url = new URL(window.location.href);
+    url.searchParams.set('_v', Date.now().toString());
+    window.location.href = url.toString();
   }
 
   async boot() {
@@ -404,7 +438,10 @@ class PlannerStore {
     this.maybeShowIosInstallBanner();
     const params = new URLSearchParams(window.location.search);
     const onboarding = params.get('onboarding') === 'secondary';
-    if (onboarding) {
+    // Strips onboarding=secondary once consumed below, and reloadForUpdate's
+    // cache-busting _v param — neither means anything past this point, and
+    // leaving them in the URL bar would persist across a plain refresh.
+    if (window.location.search) {
       window.history.replaceState(null, '', window.location.pathname);
     }
 
@@ -430,6 +467,7 @@ class PlannerStore {
     this.bufferMinutes = me.settings.bufferMinutes;
     this.timezone = me.settings.timezone;
     this.skipDayFullWarning = me.settings.skipDayFullWarning;
+    this.confirmDoubleBooking = me.settings.confirmDoubleBooking;
 
     if (onboarding && (!me.asanaConnected || !me.outlookConnected)) {
       this.screen = 'loginSecondary';
@@ -863,7 +901,14 @@ class PlannerStore {
   }
 
   private async patchSettings(
-    patch: Partial<{ prefStartTime: string; prefEndTime: string; bufferMinutes: number; timezone: string; skipDayFullWarning: boolean }>,
+    patch: Partial<{
+      prefStartTime: string;
+      prefEndTime: string;
+      bufferMinutes: number;
+      timezone: string;
+      skipDayFullWarning: boolean;
+      confirmDoubleBooking: boolean;
+    }>,
   ) {
     try {
       await api.put('/api/settings', patch);
@@ -891,6 +936,10 @@ class PlannerStore {
   onSkipDayFullWarningChange(v: boolean) {
     this.skipDayFullWarning = v;
     void this.patchSettings({ skipDayFullWarning: v });
+  }
+  onConfirmDoubleBookingChange(v: boolean) {
+    this.confirmDoubleBooking = v;
+    void this.patchSettings({ confirmDoubleBooking: v });
   }
 
   /// "Reset today's plan" in Settings — un-schedules every task due today
@@ -1148,15 +1197,33 @@ class PlannerStore {
     this.focusIndex = 0;
     this.screen = 'triage';
   }
+  /// Set by openTaskInPlanLater when it's a detour from a "pick a time"
+  /// screen (arrow icon on a DayCalendar task block) rather than Triage's
+  /// own "Plan later" button — backing out via closeFlow should return to
+  /// that screen, still focused on the *original* task being placed, not
+  /// dump onto Triage's swipe card for whichever task the arrow pointed
+  /// at. A successful commit clears this too (commitPlanLocally) — that's
+  /// a real completion, not a cancel, and lands on Triage same as always;
+  /// only backing out without finishing needs the restore.
+  private returnFromPlanLater: { screen: Screen; focusTaskId: string | null } | null = null;
   closeFlow() {
+    const ret = this.returnFromPlanLater;
+    this.returnFromPlanLater = null;
+    if (ret) {
+      if (ret.focusTaskId) this.selectFocus(ret.focusTaskId);
+      this.screen = ret.screen;
+      return;
+    }
     this.screen = 'triage';
   }
   /// Jump straight to "Plan later" for another same-day task — the button
-  /// on each task block in DayCalendar (see PlanToday/FreeSlotsLater).
-  /// Noticing an awkwardly-placed task while planning a *different* one
-  /// leads straight to the reason you'd tap it: moving it to another day,
-  /// without a stop at its Triage card in between.
+  /// on each task block in DayCalendar (see PlanToday/FreeSlotsLater/
+  /// CalendarView). Noticing an awkwardly-placed task while placing a
+  /// *different* one leads straight to the reason you'd tap it: moving it
+  /// to another day, without a stop at its Triage card in between — and
+  /// see returnFromPlanLater above for finding your way back afterward.
   openTaskInPlanLater(taskId: string) {
+    this.returnFromPlanLater = { screen: this.screen, focusTaskId: this.focusTaskRaw?.id ?? null };
     this.selectFocus(taskId);
     this.openPlanLater();
   }
@@ -1652,6 +1719,11 @@ class PlannerStore {
     this.setTaskDueDateLocally(task.id, dueAtIso);
     if (!this.justPlannedIds.includes(task.id)) this.justPlannedIds = [...this.justPlannedIds, task.id];
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+    // A real completion, not a cancel — lands on Triage same as always
+    // rather than returnFromPlanLater's "go back to where this detour
+    // started" (see openTaskInPlanLater), and clears it so it can't apply
+    // to some later, unrelated close.
+    this.returnFromPlanLater = null;
     this.screen = 'triage';
     this.bumpWorkloadLocally(dayKey, task.hours);
     this.enqueueDueWrite(task.id, dueAtIso);
@@ -1707,7 +1779,7 @@ class PlannerStore {
     if (!task || !date) return;
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
     const conflicts = this.findConflicts(dueAtIso, task.hours, task.id);
-    if (conflicts.length) {
+    if (conflicts.length && this.confirmDoubleBooking) {
       this.conflictItems = conflicts;
       this.pendingSlotPlan = { kind: 'today', slot };
       this.screen = 'slotConflict';
@@ -1785,7 +1857,7 @@ class PlannerStore {
     if (!task || !dayKey || !date) return;
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
     const conflicts = this.findConflicts(dueAtIso, task.hours, task.id);
-    if (conflicts.length) {
+    if (conflicts.length && this.confirmDoubleBooking) {
       this.conflictItems = conflicts;
       this.pendingSlotPlan = { kind: 'later', dayKey, slot };
       this.screen = 'slotConflict';
@@ -2003,7 +2075,7 @@ class PlannerStore {
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
     if (!force) {
       const conflicts = this.findConflicts(dueAtIso, dur, created.gid);
-      if (conflicts.length) {
+      if (conflicts.length && this.confirmDoubleBooking) {
         this.conflictItems = conflicts;
         this.pendingSlotPlan = { kind: 'break', slot };
         this.screen = 'slotConflict';

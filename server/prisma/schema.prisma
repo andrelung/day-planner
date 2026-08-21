@@ -73,12 +73,19 @@ model Settings {
   /// IANA timezone name (e.g. "Europe/Berlin"), used to display due dates
   /// and change-log timestamps in the user's own local time instead of UTC.
   timezone       String   @default("UTC")
-  /// "Don't ask again for any day" from the day-full warning — skips that
-  /// screen entirely regardless of how over capacity a day is. The
-  /// per-day-only version of that dismissal is client-side (localStorage),
-  /// not here — it's a lighter-weight, session-ish preference that doesn't
-  /// need to be a real setting a user manages.
+  /// Skips the day-full warning ("Today already looks full") entirely,
+  /// regardless of how over capacity a day is. The per-day-only version of
+  /// that dismissal is client-side (localStorage), not here — it's a
+  /// lighter-weight, session-ish preference that doesn't need to be a real
+  /// setting a user manages. Distinct from confirmDoubleBooking below —
+  /// this is about total planned *hours* on a day, that's about two things
+  /// landing at the exact same *time*.
   skipDayFullWarning Boolean @default(false)
+  /// Whether to show the "is already booked" screen when a placement
+  /// genuinely conflicts with another task/event at the same instant.
+  /// Defaults true (ask) — turning it off silently double-books instead,
+  /// same as always tapping "Double-book anyway" would.
+  confirmDoubleBooking Boolean @default(true)
   updatedAt      DateTime @updatedAt
 }
 

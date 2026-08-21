@@ -24,6 +24,7 @@ const patchSchema = z.object({
   bufferMinutes: z.number().int().min(0).max(240).optional(),
   timezone: z.string().min(1).refine(isValidTimezone, { message: 'not a valid IANA timezone name' }).optional(),
   skipDayFullWarning: z.boolean().optional(),
+  confirmDoubleBooking: z.boolean().optional(),
 });
 
 settingsRouter.get('/', async (req, res) => {
