@@ -33,21 +33,27 @@
   // below (backgrounding/foregrounding) and the screen-transition effect
   // further down (leaving CalendarView — see its comment).
   //
-  // The revert waits for the next animation frame rather than happening
+  // The revert waits two animation frames rather than happening
   // synchronously right after the offsetHeight read: a layout flush forces
   // layout, not necessarily a compositor paint, so reverting the style in
   // the same synchronous burst can let WebKit coalesce the on/off pair away
-  // entirely — nothing ever actually gets composited in between. Giving it
-  // one real frame boundary before reverting means there's an actual "on"
-  // frame for it to paint. Surfaced by Overview's day-rows leaving the old
-  // screen stuck on-screen (state changed underneath, nothing visible
-  // moved) even though this same function already ran on that transition.
+  // entirely — nothing ever actually gets composited in between. A single
+  // rAF wasn't enough either — confirmed live (SlotConflict's resolve
+  // buttons kept firing on every stale tap, each one logging a "no
+  // pendingSlotPlan" anomaly, while `screen` had already correctly moved to
+  // 'triage' — the state changed, the buttons still worked, nothing visible
+  // ever caught up). The standard fix for "did WebKit actually paint yet" is
+  // two rAFs, not one: the first callback fires before the *next* paint,
+  // the second fires only after that paint has actually happened — that's
+  // the real frame boundary the single-rAF version was missing.
   function forceRepaint() {
     const el = document.documentElement;
     el.style.transform = 'translateZ(0)';
     void el.offsetHeight; // force a synchronous layout flush before reverting
     requestAnimationFrame(() => {
-      el.style.transform = '';
+      requestAnimationFrame(() => {
+        el.style.transform = '';
+      });
     });
   }
 
@@ -130,10 +136,17 @@
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pageshow', onPageShow);
     window.addEventListener('focus', resume);
+    // Fired by store.svelte's logAnomaly — a stale/duplicate invocation of
+    // a guard like resolveConflictAnyway's is exactly the signature a
+    // stuck-frame bug leaves behind (the tap's handler runs fine against
+    // state that already moved on; the screen just never caught up), so a
+    // repaint attempt right there costs nothing and might unstick it.
+    window.addEventListener('day-planner:force-repaint', forceRepaint);
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pageshow', onPageShow);
       window.removeEventListener('focus', resume);
+      window.removeEventListener('day-planner:force-repaint', forceRepaint);
     };
   });
 </script>

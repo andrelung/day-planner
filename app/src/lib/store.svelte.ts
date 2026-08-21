@@ -457,6 +457,16 @@ class PlannerStore {
   /// this exact call site alone, e.g. "resolveConflictAnyway.noPendingPlan".
   private logAnomaly(area: string, message: string, context?: Record<string, unknown>) {
     api.post('/api/diagnostics/anomaly', { area, message, context }).catch(() => {});
+    // A repeated stale/duplicate invocation like this is exactly the
+    // signature a stuck-WKWebView-frame bug leaves behind (see App.svelte's
+    // forceRepaint): the tap's own handler runs fine and finds state that
+    // already moved on, while the screen the user can actually see never
+    // caught up — confirmed live via this exact log (resolveConflictAnyway/
+    // resolveConflictChooseAnother firing on every stale tap of a SlotConflict
+    // screen that had already resolved to Triage underneath). Nudging a
+    // repaint here costs nothing on a genuine one-off double-tap, and gives
+    // a real shot at unsticking the rarer case where it's the whole screen.
+    window.dispatchEvent(new Event('day-planner:force-repaint'));
   }
 
   // --- boot ---
