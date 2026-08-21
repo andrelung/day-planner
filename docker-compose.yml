@@ -28,6 +28,10 @@ services:
       args:
         GIT_COMMIT: ${GIT_COMMIT:-dev}
         GIT_DIRTY: ${GIT_DIRTY:-}
+        # Unique per invocation of rebuild.sh regardless of git state — see
+        # its own comment. This, not GIT_COMMIT, is what the update-notice
+        # actually compares.
+        BUILD_ID: ${BUILD_ID:-dev}
     restart: unless-stopped
     depends_on:
       db:

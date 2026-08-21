@@ -14,8 +14,13 @@ COPY app/ ./
 # (see app/src/lib/version.ts), no extra config needed.
 ARG GIT_COMMIT=dev
 ARG GIT_DIRTY=""
+# Unique per build regardless of git state (see rebuild.sh) — the actual
+# key the update-notice compares, since GIT_COMMIT alone can't tell two
+# uncommitted rebuilds apart.
+ARG BUILD_ID=dev
 ENV VITE_GIT_COMMIT=$GIT_COMMIT
 ENV VITE_GIT_DIRTY=$GIT_DIRTY
+ENV VITE_BUILD_ID=$BUILD_ID
 RUN npm run build
 
 FROM node:22-bookworm-slim AS server-build
@@ -42,8 +47,10 @@ ENV NODE_ENV=production
 # ARG only stays in scope for the stage that declares it.
 ARG GIT_COMMIT=dev
 ARG GIT_DIRTY=""
+ARG BUILD_ID=dev
 ENV GIT_COMMIT=$GIT_COMMIT
 ENV GIT_DIRTY=$GIT_DIRTY
+ENV BUILD_ID=$BUILD_ID
 # Same reason as the server-build stage — needed here too since this is
 # where `prisma migrate deploy` and the running server actually load the
 # query engine.

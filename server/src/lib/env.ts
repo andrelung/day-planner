@@ -45,4 +45,11 @@ export const env = {
   // step to inject these.
   GIT_COMMIT: process.env.GIT_COMMIT || 'dev',
   GIT_DIRTY: process.env.GIT_DIRTY === '1',
+  // Unique per rebuild.sh invocation regardless of git state (see its own
+  // comment) — the actual key /api/version's consumer (checkForUpdate)
+  // compares. GIT_COMMIT alone can't tell two uncommitted rebuilds of the
+  // same commit apart, which is the normal case while iterating on a
+  // feature — every one of those rebuilds used to be invisible to the
+  // update-notice even though the running JS had genuinely changed.
+  BUILD_ID: process.env.BUILD_ID || 'dev',
 };

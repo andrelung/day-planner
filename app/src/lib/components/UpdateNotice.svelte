@@ -2,7 +2,7 @@
   import { planner } from '../store.svelte';
 </script>
 
-{#if planner.updateAvailableCommit}
+{#if planner.updateAvailableBuildId}
   <div class="update-notice">
     <div class="update-notice__msg">A new version is available.</div>
     <div class="update-notice__actions">

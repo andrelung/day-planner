@@ -10,5 +10,11 @@ export const APP_VERSION = __APP_VERSION__;
 /// session — see checkForUpdate.
 export const GIT_COMMIT = import.meta.env.VITE_GIT_COMMIT || 'dev';
 const gitDirty = import.meta.env.VITE_GIT_DIRTY === '1' ? '-dirty' : '';
+/// Unique per rebuild.sh invocation regardless of git state — the actual
+/// key checkForUpdate compares, not GIT_COMMIT: a long stretch of
+/// uncommitted rebuilds (the normal case while iterating on a feature) all
+/// share one commit hash, so GIT_COMMIT alone could never tell a client
+/// running an hour-old rebuild apart from one running the latest.
+export const BUILD_ID = import.meta.env.VITE_BUILD_ID || 'dev';
 
 export const VERSION_LABEL = `v${APP_VERSION} - commit ${GIT_COMMIT}${gitDirty}`;

@@ -39,21 +39,21 @@
     el.style.transform = '';
   }
 
-  // CalendarView is the most visually heavy screen in the app (many
-  // absolutely-positioned/transformed task blocks, a custom scroll-drag
-  // gesture) — on an iOS home-screen PWA specifically, navigating away from
-  // it (e.g. tapping a task's "Plan later" arrow) was reported leaving the
-  // close/back buttons on the screen after it visually unresponsive, the
-  // same class of stuck-WKWebView-frame symptom forceRepaint() already
-  // exists to fix for background/foreground resume. Not reproducible on
-  // desktop (WebKit-specific), so this reuses that same proven fix at the
-  // one additional trigger point rather than guessing at the exact
-  // mechanism.
-  let prevScreen = planner.screen;
+  // On an iOS home-screen PWA specifically, a screen transition can leave
+  // the new screen's buttons visually present but unresponsive to touch —
+  // the same class of stuck-WKWebView-frame symptom forceRepaint() already
+  // exists to fix for background/foreground resume. First noticed leaving
+  // CalendarView specifically (the most visually heavy screen — many
+  // absolutely-positioned/transformed blocks, a custom scroll-drag
+  // gesture), so the fix originally only ran there — but it then recurred
+  // on a plain Settings→close, confirming it isn't calendar-view-specific
+  // at all, just more likely on heavier screens. forceRepaint() is a cheap,
+  // side-effect-free style toggle, so this now runs on every screen
+  // transition rather than trying to guess which ones are "heavy enough"
+  // to need it. Not reproducible on desktop (WebKit-specific).
   $effect(() => {
-    const current = planner.screen;
-    if (prevScreen === 'calendarView' && current !== 'calendarView') forceRepaint();
-    prevScreen = current;
+    void planner.screen;
+    forceRepaint();
   });
 
   onMount(() => {

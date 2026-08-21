@@ -28,7 +28,18 @@ app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 // store.svelte's checkForUpdate) to notice a long-open session is running
 // against an older build than what's actually deployed now, and prompt for
 // a reload. No auth gate needed since a git commit hash isn't sensitive.
-app.get('/api/version', (_req, res) => res.json({ commit: env.GIT_COMMIT, dirty: env.GIT_DIRTY }));
+app.get('/api/version', (_req, res) => {
+  // The one response in this app that must never be cached at any layer —
+  // its entire purpose is telling a long-open client it's stale. Without
+  // this, an iOS standalone PWA in particular is known to serve a GET
+  // response straight from its in-memory cache without even a
+  // revalidation round-trip when no explicit Cache-Control is present,
+  // which would mean the client compares its own commit against a
+  // *cached* answer that always says "you're current" — the update
+  // notice would just never fire, no matter how stale the client gets.
+  res.set('Cache-Control', 'no-store');
+  res.json({ commit: env.GIT_COMMIT, dirty: env.GIT_DIRTY, buildId: env.BUILD_ID });
+});
 
 app.use('/auth', authRouter);
 app.use('/api/me', meRouter);
