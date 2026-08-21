@@ -26,6 +26,7 @@
   import BreakTime from './lib/screens/BreakTime.svelte';
   import BreakDuration from './lib/screens/BreakDuration.svelte';
   import BreakConfirm from './lib/screens/BreakConfirm.svelte';
+  import BacklogExplainer from './lib/screens/BacklogExplainer.svelte';
 
   // WebKit needs *something* to trigger repainting a stuck frame — toggling
   // a style and forcing a synchronous layout flush before reverting it does
@@ -224,6 +225,8 @@
       <BreakDuration />
     {:else if planner.screen === 'breakConfirm'}
       <BreakConfirm />
+    {:else if planner.screen === 'backlogExplainer'}
+      <BacklogExplainer />
     {/if}
     <Toast />
     <UpdateNotice />

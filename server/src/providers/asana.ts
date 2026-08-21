@@ -300,6 +300,32 @@ export async function refreshTasksByGid(accessToken: string, gids: string[]): Pr
   return result;
 }
 
+/// The extra fields shown on Triage's focus card once "Up next" is
+/// collapsed (see Triage.svelte) — description, collaborators, creation
+/// date. Deliberately not part of TASK_OPT_FIELDS/the bulk task list: those
+/// fields are irrelevant to every other view this app has, and asking for
+/// them on every task in a large backlog (recorded elsewhere as ~2000
+/// tasks) would bloat a fetch that's already the dominant cost in this app
+/// for no benefit — fetched here, on demand, for one task at a time.
+export interface TaskDetails {
+  description: string;
+  collaborators: { gid: string; name: string }[];
+  createdAt: string;
+}
+export async function getTaskDetails(accessToken: string, gid: string): Promise<TaskDetails | null> {
+  const res = await fetch(`${API_BASE}/tasks/${gid}?opt_fields=notes,followers.name,created_at`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Asana API /tasks/${gid} failed: ${res.status} ${await res.text()}`);
+  const json = (await res.json()) as { data: { notes: string; followers: { gid: string; name: string }[]; created_at: string } };
+  return {
+    description: json.data.notes ?? '',
+    collaborators: json.data.followers ?? [],
+    createdAt: json.data.created_at,
+  };
+}
+
 // Workspace membership essentially never changes mid-session, but
 // typeahead() (below) used to re-fetch it on every single call — an entire
 // extra sequential Asana round-trip in front of the actual search on every
@@ -538,6 +564,33 @@ export async function createSubtask(accessToken: string, parentTaskGid: string, 
   });
   recordChange({ action: 'Create subtask', taskLink: created.permalink_url, nameAfter: created.name, timezone });
   return created;
+}
+
+/// Re-files an *existing* task into a different project — additive, same
+/// as Asana's own "Add to project": a task can belong to several projects
+/// at once, so this doesn't touch whatever it was already in. See
+/// setTaskParent below for the subtask equivalent. Triage's focus card
+/// offers both, analogous to how an unlinked calendar entry gets filed
+/// (see routes/calendar.ts's add-task), just against a task that already
+/// exists instead of creating a new one.
+export async function addTaskToProject(accessToken: string, taskGid: string, projectGid: string, timezone: string): Promise<void> {
+  const task = await asanaFetch(accessToken, `/tasks/${taskGid}?opt_fields=name,permalink_url`);
+  await asanaFetch(accessToken, `/tasks/${taskGid}/addProject`, {
+    method: 'POST',
+    body: JSON.stringify({ data: { project: projectGid } }),
+  });
+  recordChange({ action: 'Add to project', taskLink: task.permalink_url, nameBefore: task.name, nameAfter: task.name, timezone });
+}
+
+/// Re-parents an *existing* task as a subtask of another — same reasoning
+/// as addTaskToProject above, just Asana's setParent endpoint instead.
+export async function setTaskParent(accessToken: string, taskGid: string, parentGid: string, timezone: string): Promise<void> {
+  const task = await asanaFetch(accessToken, `/tasks/${taskGid}?opt_fields=name,permalink_url`);
+  await asanaFetch(accessToken, `/tasks/${taskGid}/setParent`, {
+    method: 'POST',
+    body: JSON.stringify({ data: { parent: parentGid } }),
+  });
+  recordChange({ action: 'Move to subtask', taskLink: task.permalink_url, nameBefore: task.name, nameAfter: task.name, timezone });
 }
 
 /// The Claude test/diagnostic Asana account (see the project's own memory

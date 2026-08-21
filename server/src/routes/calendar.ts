@@ -25,6 +25,15 @@ function timeLabel(date: Date, now: Date): string {
   return `${relativeDayLabel(date, now)} · ${hhmm}`;
 }
 
+/// A recurring meeting's Outlook occurrences each carry their own
+/// externalEventId, so a plain CalendarEventLink ignore only ever covers
+/// one day's instance — see IgnoredEventTitle. Exact-title match, checked
+/// wherever events are listed.
+async function ignoredTitleSet(userId: string): Promise<Set<string>> {
+  const rows = await prisma.ignoredEventTitle.findMany({ where: { userId } });
+  return new Set(rows.map((r) => r.title));
+}
+
 // GET /api/calendar/events — unlinked (and linked, for display) Outlook
 // events over the next 7 days, for the Overview screen.
 calendarRouter.get('/events', async (req, res) => {
@@ -35,10 +44,11 @@ calendarRouter.get('/events', async (req, res) => {
 
   const links = await prisma.calendarEventLink.findMany({ where: { userId: req.userId! } });
   const linkByExternalId = new Map(links.map((l) => [l.externalEventId, l]));
+  const ignoredTitles = await ignoredTitleSet(req.userId!);
 
   res.json({
     events: events
-      .filter((e) => !linkByExternalId.get(e.id)?.ignored)
+      .filter((e) => !ignoredTitles.has(e.subject) && !linkByExternalId.get(e.id)?.ignored)
       .map((e) => {
         const link = linkByExternalId.get(e.id);
         return {
@@ -119,6 +129,7 @@ calendarRouter.get('/free-slots', async (req, res) => {
     busy.push(...events.map((e) => ({ start: e.start, end: e.end })));
     const links = await prisma.calendarEventLink.findMany({ where: { userId: req.userId!, externalEventId: { in: events.map((e) => e.id) } } });
     const linkByExternalId = new Map(links.map((l) => [l.externalEventId, l]));
+    const ignoredTitles = await ignoredTitleSet(req.userId!);
     outlookEvents = events.map((e) => {
       const link = linkByExternalId.get(e.id);
       return {
@@ -130,7 +141,7 @@ calendarRouter.get('/free-slots', async (req, res) => {
         linkedName: link?.linkedTaskName ?? null,
         linkedTaskGid: link?.linkedAsanaTaskGid ?? null,
         linkedTaskPermalinkUrl: link?.linkedTaskPermalinkUrl ?? null,
-        ignored: link?.ignored ?? false,
+        ignored: ignoredTitles.has(e.subject) || (link?.ignored ?? false),
         webLink: e.webLink,
       };
     });
@@ -227,6 +238,50 @@ calendarRouter.post('/events/:eventId/ignore', async (req, res) => {
 /// Reverses the above — the Undo action on the "Ignored" toast. A no-op if
 /// nothing was ever ignored (nothing to reverse), rather than an error.
 calendarRouter.post('/events/:eventId/unignore', async (req, res) => {
+  await prisma.calendarEventLink.updateMany({
+    where: { userId: req.userId!, externalEventId: req.params.eventId },
+    data: { ignored: false },
+  });
+  res.status(204).end();
+});
+
+const ignoreTitleSchema = z.object({ title: z.string().min(1) });
+
+/// The "ignore every event with this title" option offered alongside a
+/// plain single-instance ignore (see ignoreEvent in store.svelte.ts) — for
+/// a daily recurring meeting whose Outlook occurrences each carry their
+/// own externalEventId, this is what actually keeps it dismissed on every
+/// future day instead of just the one instance tapped. Also ignores this
+/// specific instance via the normal path, purely so the current view
+/// updates immediately rather than waiting on the title filter to apply on
+/// next fetch.
+calendarRouter.post('/events/:eventId/ignore-title', async (req, res) => {
+  const parsed = ignoreTitleSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  await prisma.ignoredEventTitle.upsert({
+    where: { userId_title: { userId: req.userId!, title: parsed.data.title } },
+    create: { userId: req.userId!, title: parsed.data.title },
+    update: {},
+  });
+  await prisma.calendarEventLink.upsert({
+    where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },
+    create: { userId: req.userId!, externalEventId: req.params.eventId, ignored: true },
+    update: { ignored: true, linkedAsanaTaskGid: null, linkedTaskName: null, linkedTaskPermalinkUrl: null },
+  });
+  res.status(204).end();
+});
+
+/// Reverses ignore-title — the Undo action on its own toast.
+calendarRouter.post('/events/:eventId/unignore-title', async (req, res) => {
+  const parsed = ignoreTitleSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  await prisma.ignoredEventTitle.deleteMany({ where: { userId: req.userId!, title: parsed.data.title } });
   await prisma.calendarEventLink.updateMany({
     where: { userId: req.userId!, externalEventId: req.params.eventId },
     data: { ignored: false },

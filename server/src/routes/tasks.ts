@@ -6,7 +6,17 @@ import { deriveQueue } from '../lib/taskQueue.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { enqueueAction } from '../lib/pendingActionQueue.js';
 import { prisma } from '../lib/prisma.js';
-import { createBugReportTask, createSubtask, createTaskInProject, listIncompleteAssignedTasks, refreshTasksByGid, typeahead } from '../providers/asana.js';
+import {
+  addTaskToProject,
+  createBugReportTask,
+  createSubtask,
+  createTaskInProject,
+  getTaskDetails,
+  listIncompleteAssignedTasks,
+  refreshTasksByGid,
+  setTaskParent,
+  typeahead,
+} from '../providers/asana.js';
 import type { DueUpdate } from '../providers/asana.js';
 import type { RemoteTask } from '../providers/types.js';
 import { logTaskLoadFailure } from '../lib/taskLoadLog.js';
@@ -81,6 +91,45 @@ tasksRouter.post('/refresh-by-gid', async (req, res) => {
   const tasks: Record<string, ReturnType<typeof toTaskDto> | null> = {};
   for (const [gid, task] of Object.entries(byGid)) tasks[gid] = task ? toTaskDto(task) : null;
   res.json({ tasks });
+});
+
+/// The extra detail shown on Triage's focus card once "Up next" is
+/// collapsed — description, collaborators, creation date. Fetched on
+/// demand for one task at a time (see getTaskDetails) rather than bundled
+/// into the main task list.
+tasksRouter.get('/:gid/details', async (req, res) => {
+  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const details = await getTaskDetails(accessToken, req.params.gid);
+  if (!details) {
+    res.status(404).json({ error: 'Task not found' });
+    return;
+  }
+  res.json(details);
+});
+
+const refileSchema = z.object({
+  target: z.union([z.object({ projectGid: z.string().min(1) }), z.object({ parentGid: z.string().min(1) })]),
+});
+
+/// Re-files an existing task into a different project, or as a subtask of a
+/// different parent — Triage's focus-card equivalent of the calendar's
+/// add-task target picker (see routes/calendar.ts), just against a task
+/// that already exists instead of creating a new one.
+tasksRouter.post('/:gid/refile', async (req, res) => {
+  const parsed = refileSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const settings = await getOrCreateSettings(req.userId!);
+  const { target } = parsed.data;
+  if ('projectGid' in target) {
+    await addTaskToProject(accessToken, req.params.gid, target.projectGid, settings.timezone);
+  } else {
+    await setTaskParent(accessToken, req.params.gid, target.parentGid, settings.timezone);
+  }
+  res.status(204).end();
 });
 
 const clientLogSchema = z.object({

@@ -10,6 +10,7 @@ import type {
   Provider,
   Screen,
   Task,
+  TaskDetails,
   ToastAction,
   WorkloadDay,
 } from './types';
@@ -203,6 +204,131 @@ class PlannerStore {
 
   editingRestId: string | null = $state(null);
   restHoursDraft = $state(0);
+
+  /// A pure display preference (not synced anywhere) — collapsing "Up next"
+  /// frees up vertical room for the focus card's own expanded details (see
+  /// Triage.svelte), for someone who'd rather see more about the one task
+  /// in front of them than a preview of what's coming after it. Persisted
+  /// so the choice survives a reload rather than resetting to shown every
+  /// time.
+  upNextCollapsed: boolean = $state(localStorage.getItem('upNextCollapsed') === '1');
+  toggleUpNextCollapsed() {
+    this.upNextCollapsed = !this.upNextCollapsed;
+    localStorage.setItem('upNextCollapsed', this.upNextCollapsed ? '1' : '0');
+  }
+
+  /// The extra detail shown alongside taskDetails below — description,
+  /// collaborators, creation date — once "Up next" is collapsed. Fetched on
+  /// demand per task (see loadTaskDetails), not part of the bulk task list.
+  taskDetails: TaskDetails | null = $state(null);
+  taskDetailsLoading = $state(false);
+  private taskDetailsForId: string | null = null;
+  /// Triage.svelte calls this from a $effect keyed on the focus task's id
+  /// (only while upNextCollapsed — no reason to spend the request
+  /// otherwise) rather than this class reacting on its own: a plain class
+  /// field write isn't itself inside any effect's dependency tracking, so
+  /// there'd be nothing to actually notice "the focus task changed" from
+  /// in here.
+  async loadTaskDetails(taskId: string) {
+    if (this.taskDetailsForId === taskId) return; // already have it or already loading it
+    this.taskDetailsForId = taskId;
+    this.taskDetails = null;
+    this.taskDetailsLoading = true;
+    try {
+      const details = await api.get<TaskDetails>(`/api/tasks/${encodeURIComponent(taskId)}/details`);
+      if (this.taskDetailsForId !== taskId) return; // superseded by a newer focus change
+      this.taskDetails = details;
+      this.taskDetailsLoading = false;
+    } catch {
+      // Not worth a toast — the rest of the card still works fine without
+      // this detail, this just leaves that one section blank. Checked
+      // *before* clearing taskDetailsForId below, not after (in a finally)
+      // — clearing it first and then checking it as the "is this still
+      // current" guard made every failure look superseded by itself,
+      // leaving taskDetailsLoading stuck true forever.
+      if (this.taskDetailsForId !== taskId) return;
+      this.taskDetailsForId = null;
+      this.taskDetailsLoading = false;
+    }
+  }
+
+  /// The focus card's "Move to a different project or subtask" panel —
+  /// re-files an *existing* task, analogous to how an unlinked calendar
+  /// entry gets filed under a project/parent (openAddPanel/openLinkPanel
+  /// above), just reusing the same search/typeahead machinery against a
+  /// task id instead of an event id. Pinned at open time rather than read
+  /// fresh from focusTaskRaw at select-time, same reasoning as every other
+  /// pinned-id fix this session — the focus could in principle move on
+  /// while this panel is still open.
+  taskRefileId: string | null = $state(null);
+  openTaskRefilePanel() {
+    const task = this.focusTaskRaw;
+    if (!task) return;
+    this.taskRefileId = task.id;
+    this.searchQuery = '';
+    void this.runTypeahead();
+  }
+  searchResultsForRefile(): { label: string; typeLabel: string; onSelect: () => void }[] {
+    const taskId = this.taskRefileId;
+    if (!taskId) return [];
+    const RESULT_LIMIT = 8;
+    const query = this.searchQuery.trim().toLowerCase();
+    if (this.typeaheadOk) {
+      return this.typeaheadResults
+        .filter((r) => r.gid !== taskId)
+        .map((r) =>
+          r.resourceType === 'project'
+            ? { label: r.name, typeLabel: 'Project', onSelect: () => this.refileTaskToProject(taskId, r.gid, r.name) }
+            : { label: r.name, typeLabel: 'Subtask of', onSelect: () => this.refileTaskAsSubtask(taskId, r.gid, r.name) },
+        )
+        .slice(0, RESULT_LIMIT);
+    }
+    const rest = [
+      ...this.projects
+        .filter((p) => !query || p.name.toLowerCase().includes(query))
+        .map((p) => ({ label: p.name, typeLabel: 'Project', onSelect: () => this.refileTaskToProject(taskId, p.gid, p.name) })),
+      ...this.tasks
+        .filter((t) => t.id !== taskId && (!query || t.name.toLowerCase().includes(query)))
+        .map((t) => ({ label: t.name, typeLabel: 'Subtask of', onSelect: () => this.refileTaskAsSubtask(taskId, t.id, t.name) })),
+    ];
+    return rest.slice(0, RESULT_LIMIT);
+  }
+  private async refreshRefiledTask(taskId: string) {
+    try {
+      const res = await api.post<{ tasks: Record<string, Task | null> }>('/api/tasks/refresh-by-gid', { gids: [taskId] });
+      const updated = res.tasks[taskId];
+      if (!updated) return;
+      if (this.tasks.some((t) => t.id === taskId)) this.tasks = this.tasks.map((t) => (t.id === taskId ? updated : t));
+      if (this.tasksWithoutDueDate.some((t) => t.id === taskId)) {
+        this.tasksWithoutDueDate = this.tasksWithoutDueDate.map((t) => (t.id === taskId ? updated : t));
+      }
+    } catch {
+      // Best-effort — the refile itself already succeeded; the breadcrumb
+      // just won't reflect it until the next full refresh.
+    }
+  }
+  async refileTaskToProject(taskId: string, projectGid: string, projectName: string) {
+    const name = this.tasks.find((t) => t.id === taskId)?.name ?? this.tasksWithoutDueDate.find((t) => t.id === taskId)?.name ?? 'task';
+    try {
+      await api.post(`/api/tasks/${encodeURIComponent(taskId)}/refile`, { target: { projectGid } });
+      this.closeSearchPanel();
+      await this.refreshRefiledTask(taskId);
+      this.showToast(`Added "${name}" to ${projectName} · synced to Asana`);
+    } catch (err) {
+      this.reportError(err, 'Could not move this task in Asana');
+    }
+  }
+  async refileTaskAsSubtask(taskId: string, parentGid: string, parentName: string) {
+    const name = this.tasks.find((t) => t.id === taskId)?.name ?? this.tasksWithoutDueDate.find((t) => t.id === taskId)?.name ?? 'task';
+    try {
+      await api.post(`/api/tasks/${encodeURIComponent(taskId)}/refile`, { target: { parentGid } });
+      this.closeSearchPanel();
+      await this.refreshRefiledTask(taskId);
+      this.showToast(`Moved "${name}" under "${parentName}" · synced to Asana`);
+    } catch (err) {
+      this.reportError(err, 'Could not move this task in Asana');
+    }
+  }
 
   workloadDays: WorkloadDay[] = $state(buildSkeletonWorkloadDays(new Date()));
 
@@ -2194,6 +2320,24 @@ class PlannerStore {
     }
   }
 
+  /// Triage's "Backlog" ghost action goes through here rather than calling
+  /// removeDueDate directly — first use only, shows an explainer screen for
+  /// what's actually about to happen (see backlogExplainer), since "remove
+  /// the due date entirely" isn't obvious from the button's one-word label
+  /// alone. PlanLater's own "Remove due date" button calls removeDueDate
+  /// directly instead — that screen already spells out the consequence in
+  /// its own context, so the same explainer there would be redundant.
+  onBacklogButtonClick() {
+    if (localStorage.getItem('backlogExplainerSeen') === '1') {
+      this.removeDueDate();
+      return;
+    }
+    this.screen = 'backlogExplainer';
+  }
+  confirmBacklogExplainer() {
+    localStorage.setItem('backlogExplainerSeen', '1');
+    this.removeDueDate();
+  }
   /// Same reasoning as clearOtherTaskDueDate — no due date at all takes a
   /// task out of the server's queue entirely, so it moves to
   /// tasksWithoutDueDate locally rather than staying in `tasks`.
@@ -2420,6 +2564,7 @@ class PlannerStore {
     clearTimeout(this.typeaheadTimer);
     this.activePanelEventId = null;
     this.activePanelMode = null;
+    this.taskRefileId = null;
     this.searchQuery = '';
     this.typeaheadResults = [];
     this.typeaheadLoading = false;
@@ -2457,7 +2602,7 @@ class PlannerStore {
   }
   private async runTypeahead() {
     const mode = this.activePanelMode;
-    if (!mode) return;
+    if (!mode && !this.taskRefileId) return;
     const q = this.searchQuery.trim();
     const seq = ++this.typeaheadSeq;
     this.typeaheadLoading = true;
@@ -2628,6 +2773,15 @@ class PlannerStore {
   async ignoreEvent(eventId: string) {
     const title = this.eventTitle(eventId);
     if (!title) return;
+    // A daily recurring meeting (the motivating case: a lunch invite that
+    // repeats every workday) gets a distinct externalEventId per Outlook
+    // occurrence, so a plain single-instance ignore only ever dismisses the
+    // one day tapped — asking here, every time, is what actually lets
+    // someone opt into "every one of these, not just today's."
+    if (confirm(`Ignore any event titled "${title}"?`)) {
+      await this.ignoreEventByTitle(eventId, title);
+      return;
+    }
     const removedFromEvents = this.events.find((e) => e.id === eventId);
     try {
       await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/ignore`, {});
@@ -2643,6 +2797,36 @@ class PlannerStore {
           api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/unignore`, {}).catch((err) => {
             this.reportError(err, 'Could not restore this event');
           });
+        },
+      });
+    } catch (err) {
+      this.reportError(err, 'Could not ignore this event');
+    }
+  }
+  /// "Ignore any event titled ..." — see ignoreEvent's confirm prompt.
+  /// Unlike the single-instance path above, this can remove several
+  /// entries from `events` at once (every future occurrence of the same
+  /// recurring meeting already in the current 7-day window), so it
+  /// refetches rather than patching one id out of the array by hand — the
+  /// same reasoning extends to calendarViewOutlookEvents when that's the
+  /// screen actually showing right now.
+  private async ignoreEventByTitle(eventId: string, title: string) {
+    try {
+      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/ignore-title`, { title });
+      this.closeEventPopup();
+      this.closeEventDetail();
+      await this.refreshEvents();
+      if (this.screen === 'calendarView') await this.loadCalendarViewEvents();
+      this.showToast(`Ignored every "${title}"`, {
+        label: 'Undo',
+        onClick: async () => {
+          try {
+            await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/unignore-title`, { title });
+            await this.refreshEvents();
+            if (this.screen === 'calendarView') await this.loadCalendarViewEvents();
+          } catch (err) {
+            this.reportError(err, 'Could not restore this event');
+          }
         },
       });
     } catch (err) {

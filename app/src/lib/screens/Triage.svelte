@@ -34,6 +34,27 @@
 
   const focusRaw = $derived(planner.focusTaskRaw);
   const hasFocusTask = $derived(planner.hasFocusTask);
+  const focusDueLabel = $derived.by(() => {
+    if (!focusRaw?.dueOn) return null;
+    const day = planner.dayLabelFor(focusRaw.dueOn);
+    return focusRaw.dueHour ? `${day} at ${focusRaw.dueHour}` : day;
+  });
+  const focusCreatedLabel = $derived.by(() => {
+    const iso = planner.taskDetails?.createdAt;
+    if (!iso) return null;
+    return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  });
+  const focusDescriptionPreview = $derived.by(() => {
+    const text = planner.taskDetails?.description;
+    if (!text) return null;
+    const lines = text.split('\n').filter((l) => l.trim().length > 0);
+    if (lines.length === 0) return null;
+    return lines.slice(0, 5);
+  });
+  const focusCollaboratorsLabel = $derived.by(() => {
+    const names = planner.taskDetails?.collaborators.map((c) => c.name);
+    return names && names.length > 0 ? names.join(', ') : null;
+  });
   // focusIndex can point at a task from a different date than the one
   // currently on screen (e.g. the active date was just changed by the
   // date-nav arrows to a day with no task at all) — only treat it as
@@ -153,6 +174,15 @@
     return () => clearInterval(id);
   });
 
+  // Only fetches while the expanded details are actually visible — no
+  // reason to spend the request otherwise. Re-runs whenever the focus
+  // task's id changes (loadTaskDetails itself no-ops on a repeat id), so
+  // stepping through the queue with Up Next collapsed keeps the detail
+  // section in sync with whichever task is actually focused now.
+  $effect(() => {
+    if (planner.upNextCollapsed && focusRaw) void planner.loadTaskDetails(focusRaw.id);
+  });
+
   // dueAt (a real instant), not dueHour — dueHour is null for a genuinely
   // date-only task (no due_at at all), which is exactly the case the
   // end-of-day fallback below exists for. A task with no time at all is
@@ -223,7 +253,14 @@
     </div>
     <div class="up-next-inner" style="transform:translateY({pullY}px); transition:{pulling ? 'none' : 'transform 200ms ease-out'};">
       {#if restTasks.length > 0}
-        <div class="section-label">Up next</div>
+        <button class="section-label section-label--toggle" onclick={() => planner.toggleUpNextCollapsed()}>
+          <span>Up next{planner.upNextCollapsed ? ` (${restTasks.length})` : ''}</span>
+          <span class="section-label__chevron" style="transform:rotate({planner.upNextCollapsed ? 0 : 90}deg);">
+            <Icon name="chevron-right" size={14} color="var(--color-text-muted)" />
+          </span>
+        </button>
+      {/if}
+      {#if restTasks.length > 0 && !planner.upNextCollapsed}
         {#each restItems as item (item.kind === 'header' ? `day:${item.label}` : item.task.id)}
         <div animate:flip={{ duration: 220 }}>
           {#if item.kind === 'header'}
@@ -343,7 +380,7 @@
       </div>
     </div>
   {:else if hasFocusTask && focusRaw && taskMatchesActiveDate}
-    <div class="focus-wrap">
+    <div class="focus-wrap" class:focus-wrap--lifted={planner.upNextCollapsed}>
       <div class="reveal reveal--later" style="opacity:{planLaterRevealOpacity};">
         <div class="reveal__label">Plan later</div>
       </div>
@@ -392,7 +429,73 @@
             </button>
           {/if}
 
-          <div class="focus-card__project">{focusRaw.project}</div>
+          <div class="focus-card__project" class:focus-card__project--full={planner.upNextCollapsed}>{focusRaw.project}</div>
+
+          {#if planner.upNextCollapsed}
+            <div class="focus-details">
+              {#if focusDueLabel}
+                <div class="focus-details__row">
+                  <span class="focus-details__label">Due</span>
+                  <span class="focus-details__value">{focusDueLabel}</span>
+                </div>
+              {/if}
+              {#if planner.taskDetailsLoading}
+                <div class="focus-details__loading">Loading more details…</div>
+              {:else}
+                {#if focusCreatedLabel}
+                  <div class="focus-details__row">
+                    <span class="focus-details__label">Created</span>
+                    <span class="focus-details__value">{focusCreatedLabel}</span>
+                  </div>
+                {/if}
+                {#if focusCollaboratorsLabel}
+                  <div class="focus-details__row">
+                    <span class="focus-details__label">Collaborators</span>
+                    <span class="focus-details__value">{focusCollaboratorsLabel}</span>
+                  </div>
+                {/if}
+                {#if focusDescriptionPreview}
+                  <div class="focus-details__description">
+                    {#each focusDescriptionPreview as line}
+                      <div class="focus-details__description-line">{line}</div>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
+              {#if planner.taskRefileId === focusRaw.id}
+                <div class="search-panel">
+                  <div class="search-panel__top">
+                    <div class="search-panel__title">Move to project or subtask</div>
+                    <button class="search-panel__cancel" onclick={() => planner.closeSearchPanel()}>Cancel</button>
+                  </div>
+                  <Input placeholder="Search projects or tasks…" value={planner.searchQuery} onchange={(v) => planner.onSearchChange(v)} />
+                  {#if planner.typeaheadLoading}
+                    <div class="search-loading">
+                      <div class="search-loading__spinner"></div>
+                      <span>Searching…</span>
+                    </div>
+                  {:else}
+                    <div class="search-results">
+                      {#each planner.searchResultsForRefile() as r}
+                        {@const m = planner.matchSplit(r.label)}
+                        <button class="search-result" onclick={r.onSelect}>
+                          <div class="search-result__label">
+                            {#if m}{m.pre}<mark>{m.match}</mark>{m.post}{:else}{r.label}{/if}
+                          </div>
+                          <div class="search-result__type">{r.typeLabel}</div>
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {:else}
+                <button class="focus-details__refile" onclick={() => planner.openTaskRefilePanel()}>
+                  <Icon name="pencil" size={13} color="var(--color-text-muted)" />
+                  <span>Move to a different project or subtask</span>
+                </button>
+              {/if}
+            </div>
+          {/if}
 
           <div class="focus-card__actions">
             <Button variant="primary" size="md" fullWidth onclick={() => planner.openPlanTodayOrDate()}>{planner.planTodayButtonLabel}</Button>
@@ -401,7 +504,7 @@
           <div class="focus-card__actions focus-card__actions--ghost">
             <Button variant="ghost" size="sm" fullWidth onclick={() => planner.startBreak()}>Split</Button>
             <Button variant="ghost" size="sm" fullWidth onclick={() => planner.skipTask()}>Skip</Button>
-            <Button variant="ghost" size="sm" fullWidth onclick={() => planner.removeDueDate()}>Backlog</Button>
+            <Button variant="ghost" size="sm" fullWidth onclick={() => planner.onBacklogButtonClick()}>Backlog</Button>
           </div>
         </div>
       </div>
@@ -528,6 +631,21 @@
     color: var(--color-text-muted);
     margin-bottom: 8px;
   }
+  .section-label--toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .section-label__chevron {
+    display: inline-flex;
+    transition: transform 150ms ease-out;
+  }
   .day-divider {
     font-family: var(--font-family-base);
     font-size: 11px;
@@ -650,6 +768,17 @@
     position: relative;
     flex-shrink: 0;
   }
+  /* Up Next collapsed leaves .up-next-wrap's flex:1 space almost entirely
+     empty above the card (just the toggle row) — without this the card
+     stays anchored to the bottom edge same as always, so all that freed-up
+     room reads as dead space above it instead of the card actually moving
+     to use it. Pushing the card up with its own bottom margin (rather than
+     centering it some other way) keeps it anchored to the actions below it,
+     which is what your thumb actually reaches for. */
+  .focus-wrap--lifted {
+    margin-bottom: 15vh;
+    margin-bottom: 15dvh;
+  }
   .reveal {
     position: absolute;
     inset: 0;
@@ -711,6 +840,70 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* With Up Next collapsed there's room to spare, and the whole point of
+     collapsing it was to see more about this one task — truncating its
+     breadcrumb down to a few characters would work against that. */
+  .focus-card__project--full {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+  }
+  .focus-details {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: var(--color-bg-page);
+    border-radius: var(--radius-md);
+  }
+  .focus-details__row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-family: var(--font-family-base);
+    font-size: 13px;
+  }
+  .focus-details__label {
+    flex-shrink: 0;
+    width: 84px;
+    color: var(--color-text-muted);
+  }
+  .focus-details__value {
+    color: var(--color-text-primary);
+    font-weight: var(--font-weight-bold);
+  }
+  .focus-details__loading {
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    color: var(--color-text-muted);
+  }
+  .focus-details__description {
+    padding-top: 4px;
+    border-top: 1px solid var(--color-border);
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    color: var(--color-text-primary);
+  }
+  .focus-details__description-line {
+    line-height: 1.4;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .focus-details__refile {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    margin-top: 2px;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-muted);
   }
   /* Right-aligned within the card's own column layout — mirrors Asana's
      convention of putting a task's duration at the end of its name/

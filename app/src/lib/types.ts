@@ -19,7 +19,8 @@ export type Screen =
   | 'breakName'
   | 'breakTime'
   | 'breakDuration'
-  | 'breakConfirm';
+  | 'breakConfirm'
+  | 'backlogExplainer';
 
 export interface Task {
   /// Asana task gid.
@@ -39,6 +40,15 @@ export interface Task {
   /// distinct from dueAt which is null unless a specific time is set too.
   dueOn: string | null;
   permalinkUrl: string;
+}
+
+/// The extra detail shown on Triage's focus card once "Up next" is
+/// collapsed (see Triage.svelte) — fetched on demand per task, not part of
+/// Task above (see server/src/providers/asana.ts's getTaskDetails for why).
+export interface TaskDetails {
+  description: string;
+  collaborators: { gid: string; name: string }[];
+  createdAt: string;
 }
 
 export interface WorkloadDay {

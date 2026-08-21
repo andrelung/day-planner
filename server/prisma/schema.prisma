@@ -32,6 +32,7 @@ model User {
   settings  Settings?
   eventLinks CalendarEventLink[]
   pendingActions PendingAction[]
+  ignoredEventTitles IgnoredEventTitle[]
 }
 
 /// One row per connected provider account (Asana and/or Outlook) for a user.
@@ -139,4 +140,20 @@ model CalendarEventLink {
   createdAt          DateTime @default(now())
 
   @@unique([userId, externalEventId])
+}
+
+/// A standing "always ignore this" rule by exact event title, for a
+/// recurring meeting whose Outlook occurrences each carry their own
+/// externalEventId (so a single CalendarEventLink ignore only covers one
+/// day's instance, not the series — the user has to keep re-ignoring the
+/// same meeting every day otherwise). Checked alongside CalendarEventLink
+/// in routes/calendar.ts wherever events are listed.
+model IgnoredEventTitle {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, title])
 }
