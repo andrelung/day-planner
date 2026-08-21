@@ -241,6 +241,13 @@ class PlannerStore {
     const todayStr = this.todayDateStr;
     return this.tasks.filter((t) => t.dueOn === todayStr);
   }
+  /// Every task whose due date has already passed — the same definition
+  /// navigableDates uses, exposed directly for Overview's "Past days" row
+  /// (see focusPastDays).
+  get overdueTasks(): Task[] {
+    const todayStr = this.todayDateStr;
+    return this.tasks.filter((t): t is Task & { dueOn: string } => !!t.dueOn && t.dueOn < todayStr);
+  }
   /// Every date the queue-nav arrows and Overview's day rows can land on:
   /// each concrete named workload day (today..day5) whether or not it has
   /// any task or event yet (see focusQueueForDay), plus any earlier date
@@ -249,8 +256,7 @@ class PlannerStore {
   /// "Next week" bucket isn't included: it's a 7-day range, not one date.
   private get navigableDates(): string[] {
     const named = this.workloadDays.filter((d): d is WorkloadDay & { date: string } => !!d.date).map((d) => d.date);
-    const todayStr = this.todayDateStr;
-    const overdue = this.tasks.filter((t): t is Task & { dueOn: string } => !!t.dueOn && t.dueOn < todayStr).map((t) => t.dueOn);
+    const overdue = this.overdueTasks.map((t) => t.dueOn);
     return [...new Set([...overdue, ...named])].sort();
   }
   /// Points the Triage screen at a specific date — focusIndex follows along
@@ -727,8 +733,9 @@ class PlannerStore {
     const threshold = 90;
     this.dragX = 0;
     this.dragging = false;
-    // Left = plan today, right = plan later (matches the button order below).
-    if (dx < -threshold) this.openPlanToday();
+    // Left = plan today (or the day on screen), right = plan later (matches
+    // the button order below).
+    if (dx < -threshold) this.openPlanTodayOrDate();
     else if (dx > threshold) this.openPlanLater();
   }
 
@@ -763,6 +770,16 @@ class PlannerStore {
   selectFocus(id: string) {
     this.pinnedEventId = null;
     this.focusIndex = Math.max(0, this.queueTasks.findIndex((t) => t.id === id));
+  }
+
+  /// "Leave as is" — advances past this task without changing anything
+  /// about it, unlike Remove due date (clears it) or Plan today/later
+  /// (sets it). Doesn't touch justPlannedIds either: a skipped task stays
+  /// fully live in the queue, reachable again via the date-nav arrows or
+  /// Up Next, not filtered out the way an actually-handled task is.
+  skipTask() {
+    if (!this.hasFocusTask) return;
+    this.focusIndex = Math.min(this.focusIndex + 1, this.queueTasks.length - 1);
   }
 
   // --- settings ---
@@ -1001,6 +1018,36 @@ class PlannerStore {
   /// flakier the connection, or while boot's task load is still in
   /// flight). loadTodaySlots now runs in the background and the screen
   /// itself shows a loading state (see PlanToday.svelte) until it resolves.
+  /// Triage's primary action button reads "Plan today" while browsing
+  /// today's own queue, but the same button is reachable while browsing a
+  /// future day too (date-nav arrows, Overview's day rows) — labeling it
+  /// "Plan today" there was actively misleading (and see
+  /// openPlanTodayOrDate: it used to *plan for literally today* regardless
+  /// of which day was on screen). Mirrors openPlanTodayOrDate's own lookup
+  /// exactly, rather than just comparing activeDate to today, so the label
+  /// can never promise a day the button doesn't actually plan for — an
+  /// overdue task's activeDate is in the past and matches no workloadDays
+  /// entry, so both this and openPlanTodayOrDate fall through to today,
+  /// the earliest day anything can actually be planned for. Comparing
+  /// dates directly used to show "Plan at Yesterday" for one, since it
+  /// never checked whether that date was one you could actually plan into.
+  get planTodayButtonLabel(): string {
+    const day = this.workloadDays.find((d) => d.date === this.activeDate);
+    return day && day.key !== 'today' ? `Plan at ${day.label}` : 'Plan today';
+  }
+  /// The focus card's primary button — plans for whichever day is actually
+  /// on screen, not always literally today. Today itself keeps its own
+  /// dedicated screen/flow (openPlanToday); a future day reuses the named
+  /// bucket flow (selectLaterDay) it already has a workloadDays entry for,
+  /// including the same "day already looks full" gating. An overdue task's
+  /// activeDate is in the past and matches no workloadDays entry, so this
+  /// falls through to openPlanToday — today is the earliest day anything
+  /// can actually be planned for, matching planTodayButtonLabel above.
+  openPlanTodayOrDate() {
+    const day = this.workloadDays.find((d) => d.date === this.activeDate);
+    if (day && day.key !== 'today') this.selectLaterDay(day.key);
+    else this.openPlanToday();
+  }
   openPlanToday() {
     if (this.isDayFull('today')) {
       this.pendingPlan = { type: 'today' };
@@ -1066,8 +1113,15 @@ class PlannerStore {
     const focus = this.focusTaskRaw;
     const clean = date && focus ? this.firstFreeSlotStart(this.planTodaySlots, date, focus.hours, focus.id) : null;
     if (clean) return clean;
-    if (this.planTodaySlots.length > 0) return slotStartTime(this.planTodaySlots[0]);
-    return this.todaySlotsLoading ? null : this.prefStartTime;
+    if (this.todaySlotsLoading) return null;
+    // Every candidate in the server-fetched list now conflicts (it's a
+    // snapshot — a task can arrive/get planned locally after that fetch,
+    // see scanForFreeStart) — used to fall back to blindly trusting the
+    // list's first entry here, unchecked, which is exactly how a task
+    // ended up proposed on top of a real conflict instead of the day's
+    // actual next free slot.
+    if (date && focus) return this.scanForFreeStart(date, focus.hours, focus.id);
+    return this.prefStartTime;
   }
 
   openPlanLater() {
@@ -1118,6 +1172,46 @@ class PlannerStore {
     this.reviewingBacklog = false;
     this.screen = 'triage';
   }
+
+  // --- standalone calendar view ---
+  // A plain day-at-a-time calendar for browsing/reordering — unlike
+  // PlanToday/FreeSlotsLater, there's no task being placed here (see
+  // DayCalendar's allowPlacement prop), just whatever's already on that
+  // day, draggable to a new time same as everywhere else DayCalendar shows
+  // up.
+  calendarViewDate: string = $state(this.toDateStr(new Date()));
+  calendarViewOutlookEvents: OutlookBlock[] = $state([]);
+  calendarViewLoading = $state(false);
+  get calendarViewDayLabel(): string {
+    return this.dayLabelFor(this.calendarViewDate);
+  }
+  openCalendarView() {
+    this.calendarViewDate = this.activeDate || this.toDateStr(new Date());
+    this.screen = 'calendarView';
+    void this.loadCalendarViewEvents();
+  }
+  closeCalendarView() {
+    this.screen = 'triage';
+  }
+  calendarViewStepDay(dir: -1 | 1) {
+    const d = new Date(`${this.calendarViewDate}T00:00:00`);
+    d.setDate(d.getDate() + dir);
+    this.calendarViewDate = this.toDateStr(d);
+    void this.loadCalendarViewEvents();
+  }
+  /// Reuses free-slots purely for its outlookEvents half (see calendar.ts) —
+  /// hours/busyTasks don't matter here since this view never reads `slots`.
+  async loadCalendarViewEvents() {
+    this.calendarViewLoading = true;
+    try {
+      const res = await api.get<{ slots: string[]; outlookEvents: OutlookBlock[] }>(`/api/calendar/free-slots?date=${this.calendarViewDate}&hours=1`);
+      this.calendarViewOutlookEvents = res.outlookEvents;
+    } catch (err) {
+      this.reportError(err, 'Could not load calendar');
+    } finally {
+      this.calendarViewLoading = false;
+    }
+  }
   /// "Tasks without Due Date" in Overview — opens the exact same Triage
   /// screen/flow, just working through tasksWithoutDueDate instead of the
   /// normal queue (see queueTasks). Leaving to Settings/Overview and back
@@ -1160,6 +1254,17 @@ class PlannerStore {
     this.jumpToDate(matches[0].dueOn!);
   }
 
+  /// Overview's synthetic "Past days" row (not a real workloadDays entry —
+  /// there's no fixed capacity for a range of already-passed days) jumps to
+  /// the single earliest overdue task instead, same as goPrev from today
+  /// already does one task at a time.
+  focusPastDays() {
+    const earliest = [...this.overdueTasks].sort((a, b) => (a.dueOn < b.dueOn ? -1 : 1))[0];
+    if (!earliest) return;
+    this.closeOverview();
+    this.jumpToDate(earliest.dueOn);
+  }
+
   /// Clicking a calendar entry itself (not just its +/› action buttons) in
   /// Overview's "From your calendar" list reopens its card in Triage —
   /// pinning it (see pinnedEventId) so it shows regardless of link status,
@@ -1173,8 +1278,21 @@ class PlannerStore {
     this.pinnedEventId = event.id;
   }
 
+  /// workloadDays, minus the aggregate "Next week" bucket whenever it would
+  /// be pure redundancy: "tomorrow" already skips weekends (see
+  /// buildWorkloadDays), so whenever today is a Friday, "tomorrow" already
+  /// *is* next week's Monday — meaning every day "Next week" would cover is
+  /// already individually listed as tomorrow/day2../day5, and the
+  /// aggregate entry adds nothing but a second, vaguer way to reach the
+  /// same days. Shared by every place that lists the full workloadDays set
+  /// (laterDays below, Overview's day list) rather than each re-deriving it.
+  get workloadDaysForDisplay(): WorkloadDay[] {
+    const tomorrow = this.workloadDays.find((d) => d.key === 'tomorrow');
+    const tomorrowIsMonday = !!tomorrow?.date && new Date(`${tomorrow.date}T00:00:00`).getDay() === 1;
+    return tomorrowIsMonday ? this.workloadDays.filter((d) => d.key !== 'nextweek') : this.workloadDays;
+  }
   get laterDays() {
-    return this.workloadDays
+    return this.workloadDaysForDisplay
       .filter((d) => d.key !== 'today')
       .map((d) => ({
         key: d.key,
@@ -1227,19 +1345,37 @@ class PlannerStore {
     return { planned, capacity, ratio: capacity > 0 ? planned / capacity : 0 };
   }
 
+  /// "d.m." with no leading zeros (e.g. "31.8.") — matches how the range in
+  /// weekDeferOptions' labels is meant to read.
+  private fmtDayMonth(d: Date): string {
+    return `${d.getDate()}.${d.getMonth() + 1}.`;
+  }
   /// "Further in the future, I'll plan it later" quick actions — unlike
   /// laterDays, these don't lead to a time-slot picker; they just push the
   /// due date out to a future week's Monday with no due time (see
-  /// deferToWeek). Still shows the same booked/fullness badge as
-  /// everywhere else, even though nothing gets scheduled at a specific
-  /// time here.
+  /// deferToWeek). The badge is the *whole* work week's fullness (Mon-Fri),
+  /// not just Monday's — a single day's 9h capacity read as "how full is
+  /// the week" made every one of these look nearly empty regardless of
+  /// what was actually already planned that week. The label spells out the
+  /// week's actual date range since "in 2/3/4 weeks" alone doesn't say
+  /// which days that is without doing the math yourself.
   get weekDeferOptions(): { key: string; label: string; date: string; badgeLabel: string; tone: 'correct' | 'wrong' }[] {
     return [2, 3, 4].map((n) => {
       const monday = new Date(this.thisWeekMonday);
       monday.setDate(monday.getDate() + n * 7);
       const date = this.toDateStr(monday);
-      const { planned, capacity, ratio } = this.fullnessFor(date);
-      return { key: `week+${n}`, label: `Plan in ${n} weeks`, date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
+      const weekDates = [0, 1, 2, 3, 4].map((i) => {
+        const d = new Date(monday);
+        d.setDate(d.getDate() + i);
+        return this.toDateStr(d);
+      });
+      const planned = weekDates.reduce((sum, d) => sum + this.plannedHoursFor(d), 0);
+      const capacity = this.dailyCapacityHours * weekDates.length;
+      const ratio = capacity > 0 ? planned / capacity : 0;
+      const friday = new Date(monday);
+      friday.setDate(friday.getDate() + 4);
+      const range = `${this.fmtDayMonth(monday)} - ${this.fmtDayMonth(friday)}`;
+      return { key: `week+${n}`, label: `Plan in ${n} weeks (${range})`, date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
     });
   }
 
@@ -1604,22 +1740,42 @@ class PlannerStore {
     const focus = this.focusTaskRaw;
     const clean = date && focus ? this.firstFreeSlotStart(this.laterSlots, date, focus.hours, focus.id) : null;
     if (clean) return clean;
-    if (this.laterSlots.length > 0) return slotStartTime(this.laterSlots[0]);
-    return this.laterSlotsLoading ? null : this.prefStartTime;
+    if (this.laterSlotsLoading) return null;
+    // See earliestTodaySlotStart's comment — same reasoning.
+    if (date && focus) return this.scanForFreeStart(date, focus.hours, focus.id);
+    return this.prefStartTime;
   }
   /// Prefers a slot the client's own findConflicts also agrees is free —
   /// the slots list is a snapshot from whenever it was fetched, and
   /// another task's due time can change locally (e.g. a plan committed
   /// elsewhere in the same session) without anything re-fetching this;
   /// this catches that instead of confidently auto-placing on top of a
-  /// real conflict. Falls back to the server's own first pick if every
-  /// slot now conflicts, rather than proposing nothing.
+  /// real conflict. Returns null if every slot now conflicts — the caller
+  /// falls back to scanForFreeStart rather than trusting the list blindly.
   private firstFreeSlotStart(slots: string[], date: string, hours: number, excludeTaskId: string): string | null {
     for (const slot of slots) {
       const start = slotStartTime(slot);
       if (this.findConflicts(this.toIsoDateTime(date, start), hours, excludeTaskId).length === 0) return start;
     }
     return null;
+  }
+  /// Live fallback for when every candidate in the (possibly stale,
+  /// server-fetched) slots list now conflicts — scans the working day in
+  /// SNAP_MIN steps against the *current* task list (not the snapshot the
+  /// server computed slots from), so a task that arrived or got planned
+  /// locally after that fetch can't cause this to land on a slot it would
+  /// immediately flag as double-booked. Only reaches prefStartTime
+  /// unchecked if truly nothing in the whole working day is free.
+  private scanForFreeStart(date: string, hours: number, excludeTaskId: string): string {
+    const SNAP_MIN = 15;
+    const [sh, sm] = this.prefStartTime.split(':').map(Number);
+    const [eh, em] = this.prefEndTime.split(':').map(Number);
+    const dayEndMin = eh * 60 + em;
+    for (let mins = sh * 60 + sm; mins + hours * 60 <= dayEndMin; mins += SNAP_MIN) {
+      const hhmm = `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+      if (this.findConflicts(this.toIsoDateTime(date, hhmm), hours, excludeTaskId).length === 0) return hhmm;
+    }
+    return this.prefStartTime;
   }
 
   tryPlanLaterSlot(slot: string) {

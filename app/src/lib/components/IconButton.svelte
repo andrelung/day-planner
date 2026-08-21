@@ -2,7 +2,7 @@
   import Icon from './Icon.svelte';
 
   interface Props {
-    icon: 'menu' | 'grid' | 'chevron-right' | 'chevron-left' | 'external-link' | 'close' | 'settings' | 'plus';
+    icon: 'menu' | 'grid' | 'chevron-right' | 'chevron-left' | 'external-link' | 'close' | 'settings' | 'plus' | 'calendar';
     title: string;
     size?: number;
     iconSize?: number;

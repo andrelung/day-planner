@@ -25,8 +25,8 @@
       {/each}
     </div>
     <div class="actions">
-      <Button variant="primary" size="md" fullWidth onclick={() => planner.resolveConflictChooseAnother()}>Choose another time</Button>
-      <Button variant="ghost" size="md" fullWidth onclick={() => planner.resolveConflictAnyway()}>Double-book anyway</Button>
+      <Button variant="ghost" size="md" fullWidth onclick={() => planner.resolveConflictChooseAnother()}>Choose another time</Button>
+      <Button variant="primary" size="md" fullWidth onclick={() => planner.resolveConflictAnyway()}>Double-book anyway</Button>
     </div>
   </div>
 </div>

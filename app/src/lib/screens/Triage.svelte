@@ -66,6 +66,83 @@
     return items;
   });
 
+  // --- pull to refresh, on the Up Next list ---
+  // Only engages when the list is already scrolled to its very top (so it
+  // never fights normal scrolling once you're mid-list) — dragging down
+  // from there re-syncs tasks/workload from Asana, the same thing the
+  // periodic background refresh and resume-from-background already do,
+  // just on demand.
+  const PULL_THRESHOLD = 100;
+  const PULL_MAX = 160;
+  let pullY = $state(0);
+  let pulling = $state(false);
+  let refreshing = $state(false);
+  let pullStartY = 0;
+
+  function onPullPointerDown(e: PointerEvent, el: HTMLElement) {
+    pulling = el.scrollTop === 0;
+    pullStartY = e.clientY;
+  }
+  function onPullPointerMove(e: PointerEvent) {
+    if (!pulling) return;
+    pullY = Math.max(0, Math.min(PULL_MAX, e.clientY - pullStartY));
+  }
+  async function onPullPointerUp() {
+    if (!pulling) return;
+    pulling = false;
+    if (pullY > PULL_THRESHOLD && !refreshing) {
+      refreshing = true;
+      pullY = 50;
+      planner.showToast('Refreshing…');
+      await Promise.all([planner.refreshTasks(), planner.refreshWorkload()]);
+      refreshing = false;
+      planner.showToast('Up to date');
+    }
+    pullY = 0;
+  }
+  function onPullPointerCancel() {
+    pulling = false;
+    pullY = 0;
+  }
+  /// iOS directionally-locks into its own native pan/scroll after just a
+  /// few px of movement and cancels the pointer sequence handed to
+  /// onPullPointerCancel above, unless told otherwise — touch-action/
+  /// overscroll-behavior CSS alone don't stop that, and pointermove's own
+  /// preventDefault() isn't reliably honored by Safari for this purpose.
+  /// A non-passive touchmove listener calling preventDefault() *is* the
+  /// mechanism Safari respects for "no, I'm handling this gesture myself"
+  /// — this fires alongside the pointer handlers above (same underlying
+  /// touch), so pullY/pulling logic stays exactly as it was; this only
+  /// stops iOS from taking the gesture away mid-pull.
+  ///
+  /// Gated on the finger actually moving *downward* (dy > 0), not just on
+  /// `pulling` — `pulling` only means "this touch started at scrollTop 0",
+  /// true for both a downward pull *and* an upward swipe-to-scroll-down
+  /// starting from the very top of the list. Gating on `pulling` alone
+  /// (an earlier version of this fix) blocked that upward swipe's default
+  /// action too, since preventDefault() doesn't care which way the finger
+  /// actually went — which broke scrolling down through the list entirely
+  /// whenever it started scrolled to the top.
+  ///
+  /// Attached by hand with an explicit {passive:false} rather than via a
+  /// plain ontouchmove attribute — Svelte/the browser can default touch
+  /// listeners to passive for scroll-perf reasons, which would make
+  /// preventDefault() here a silent no-op, exactly undoing this fix
+  /// without any error to show for it. Confirmed fixed against a real
+  /// device — a plain pointermove-only version reliably got canceled by
+  /// iOS around 10-30px of movement, aggressive drag or not.
+  let wrapEl: HTMLElement | undefined = $state();
+  $effect(() => {
+    if (!wrapEl) return;
+    const handler = (e: TouchEvent) => {
+      if (!pulling) return;
+      const dy = e.touches[0].clientY - pullStartY;
+      if (dy > 0) e.preventDefault();
+    };
+    wrapEl.addEventListener('touchmove', handler, { passive: false });
+    return () => wrapEl?.removeEventListener('touchmove', handler);
+  });
+
   // Ticks once a minute so "Overdue since Xh" stays roughly accurate without
   // needing some other reactive dependency to happen to re-render this card.
   let now: Date = $state(new Date());
@@ -114,15 +191,40 @@
   <div class="header">
     <IconButton icon="settings" title="Settings" onclick={() => planner.openSettings()} />
     <div class="title">Plan your day</div>
-    <IconButton icon="menu" title="Overview" onclick={() => planner.openOverview()} />
+    <div class="header-actions">
+      <IconButton icon="calendar" title="Calendar view" onclick={() => planner.openCalendarView()} />
+      <IconButton icon="menu" title="Overview" onclick={() => planner.openOverview()} />
+    </div>
   </div>
 
   <InstallBanner />
 
-  <div class="up-next-wrap">
-    {#if restTasks.length > 0}
-      <div class="section-label">Up next</div>
-      {#each restItems as item (item.kind === 'header' ? `day:${item.label}` : item.task.id)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="up-next-wrap"
+    bind:this={wrapEl}
+    onpointerdown={(e) => onPullPointerDown(e, e.currentTarget as HTMLElement)}
+    onpointermove={onPullPointerMove}
+    onpointerup={onPullPointerUp}
+    onpointercancel={onPullPointerCancel}
+  >
+    <div class="pull-indicator" style="opacity:{refreshing ? 1 : Math.min(1, pullY / 24)};">
+      <div class="pull-indicator__pill">
+        {#if refreshing}
+          <div class="pull-indicator__spinner"></div>
+          <span>Refreshing…</span>
+        {:else}
+          <div class="pull-indicator__arrow" style="transform:rotate({90 + Math.min(1, pullY / PULL_THRESHOLD) * 180}deg);">
+            <Icon name="arrow-right" size={14} color="var(--color-brand-primary)" />
+          </div>
+          <span>{pullY > PULL_THRESHOLD ? 'Release to refresh' : 'Pull to refresh'}</span>
+        {/if}
+      </div>
+    </div>
+    <div class="up-next-inner" style="transform:translateY({pullY}px); transition:{pulling ? 'none' : 'transform 200ms ease-out'};">
+      {#if restTasks.length > 0}
+        <div class="section-label">Up next</div>
+        {#each restItems as item (item.kind === 'header' ? `day:${item.label}` : item.task.id)}
         <div animate:flip={{ duration: 220 }}>
           {#if item.kind === 'header'}
             <div class="day-divider">{item.label}</div>
@@ -136,11 +238,11 @@
                 onclick={() => planner.selectFocus(t.id)}
                 onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && planner.selectFocus(t.id)}
               >
-                <div class="dot" style="background:{t.dueHour ? 'var(--color-feedback-wrong)' : 'var(--color-border-strong)'};"></div>
                 <div class="up-next-row__text">
                   <div class="up-next-row__name">{t.name}</div>
                   <div class="up-next-row__project">{t.project}</div>
                 </div>
+                <div class="time-dot" style="--pct:{Math.min(100, (t.hours / 8) * 100)}%;" title="{fmtHours(t.hours)}"></div>
                 {#if planner.editingRestId !== t.id}
                   <button
                     class="hour-edit"
@@ -169,7 +271,8 @@
           {/if}
         </div>
       {/each}
-    {/if}
+      {/if}
+    </div>
   </div>
 
   <div class="queue-row">
@@ -245,7 +348,7 @@
         <div class="reveal__label">Plan later</div>
       </div>
       <div class="reveal reveal--today" style="opacity:{planTodayRevealOpacity};">
-        <div class="reveal__label">Plan today</div>
+        <div class="reveal__label">{planner.planTodayButtonLabel}</div>
       </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
@@ -291,11 +394,12 @@
           {/if}
 
           <div class="focus-card__actions">
-            <Button variant="primary" size="md" fullWidth onclick={() => planner.openPlanToday()}>Plan today</Button>
+            <Button variant="primary" size="md" fullWidth onclick={() => planner.openPlanTodayOrDate()}>{planner.planTodayButtonLabel}</Button>
             <Button variant="secondary" size="md" fullWidth onclick={() => planner.openPlanLater()}>Plan later</Button>
           </div>
           <div class="focus-card__actions focus-card__actions--ghost">
             <Button variant="ghost" size="sm" fullWidth onclick={() => planner.startBreak()}>Split into a part</Button>
+            <Button variant="ghost" size="sm" fullWidth onclick={() => planner.skipTask()}>Skip</Button>
             <Button variant="ghost" size="sm" fullWidth onclick={() => planner.removeDueDate()}>Remove due date</Button>
           </div>
         </div>
@@ -342,6 +446,11 @@
     padding: 18px 20px 4px;
     flex-shrink: 0;
   }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .title {
     font-family: var(--font-family-base);
     font-weight: var(--font-weight-bold);
@@ -349,10 +458,65 @@
     color: var(--color-text-primary);
   }
   .up-next-wrap {
-    padding: 16px 20px 8px;
+    position: relative;
     flex: 1;
     overflow-y: auto;
     min-height: 0;
+    touch-action: pan-y;
+    /* Without this, iOS Safari's own native rubber-band bounce takes over
+       the instant you drag past scrollTop 0 — it both visually fights the
+       custom translateY() pull animation and can swallow the touchmove
+       events our pointermove handler needs, which is why the indicator
+       never appeared on a real device despite working in every synthetic
+       (desktop, dispatched-PointerEvent) test. This keeps the overscroll
+       gesture contained to our own handler instead of also chaining to the
+       browser's native bounce/scroll-parent behavior. */
+    overscroll-behavior-y: contain;
+  }
+  .up-next-inner {
+    padding: 16px 20px 8px;
+  }
+  .pull-indicator {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .pull-indicator__pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    box-shadow: var(--shadow-overlay-sm);
+    font-family: var(--font-family-base);
+    font-size: 12px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-primary);
+  }
+  .pull-indicator__arrow {
+    display: flex;
+    transition: transform 80ms linear;
+  }
+  .pull-indicator__spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-brand-primary);
+    border-radius: 50%;
+    animation: pull-indicator-spin 0.7s linear infinite;
+  }
+  @keyframes pull-indicator-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .section-label {
     font-family: var(--font-family-base);
@@ -388,11 +552,16 @@
     cursor: pointer;
     width: 100%;
   }
-  .dot {
-    width: 8px;
-    height: 8px;
+  /* A pie-fill circle showing how much of an 8h day this task's estimate
+     takes — full at 8h, half at 4h, and so on (capped at 100% past 8h).
+     Replaced a plain overdue/not-overdue dot that wasn't pulling its
+     weight once the badge above already covers overdue status. */
+  .time-dot {
+    width: 16px;
+    height: 16px;
     border-radius: 999px;
     flex-shrink: 0;
+    background: conic-gradient(var(--color-brand-primary) var(--pct), var(--color-border) 0);
   }
   .up-next-row__text {
     flex: 1;

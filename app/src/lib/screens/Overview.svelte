@@ -13,7 +13,7 @@
   }
 
   const overviewDays = $derived<DayRow[]>(
-    planner.workloadDays.map((d) => {
+    planner.workloadDaysForDisplay.map((d) => {
       if (!d.loaded) {
         return {
           label: d.label,
@@ -50,8 +50,19 @@
 
   <div class="content">
     <div class="section-label">Workload by day</div>
+    {#if planner.overdueTasks.length > 0}
+      <button class="day-row" onclick={() => planner.focusPastDays()}>
+        <div class="day-row__top">
+          <div class="day-row__label">Past days</div>
+          <div class="day-row__hours" style="color:var(--color-feedback-wrong);">0h</div>
+        </div>
+        <div class="day-row__track">
+          <div class="day-row__fill" style="width:100%; background:var(--color-feedback-wrong);"></div>
+        </div>
+      </button>
+    {/if}
     {#each overviewDays as d, i}
-      <button class="day-row" class:day-row--active={d.active} onclick={() => planner.focusQueueForDay(planner.workloadDays[i])}>
+      <button class="day-row" class:day-row--active={d.active} onclick={() => planner.focusQueueForDay(planner.workloadDaysForDisplay[i])}>
         <div class="day-row__top">
           <div class="day-row__label">{d.label}</div>
           <div class="day-row__hours" style="color:{d.textColor};">{d.hoursLabel}</div>

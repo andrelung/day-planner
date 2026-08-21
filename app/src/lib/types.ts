@@ -7,6 +7,7 @@ export type Screen =
   | 'integrations'
   | 'pendingActions'
   | 'overview'
+  | 'calendarView'
   | 'planToday'
   | 'planLater'
   | 'nextWeekDays'

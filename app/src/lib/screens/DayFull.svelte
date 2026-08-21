@@ -23,12 +23,12 @@
     <div class="heading">{dayFullLabel} already looks full</div>
     <div class="detail">{dayFullDetail}</div>
     <div class="actions">
-      <Button variant="primary" size="md" fullWidth onclick={() => planner.onPlanAnyway()}>Plan for this day anyway</Button>
       <Button variant="ghost" size="md" fullWidth onclick={() => planner.onReviewOtherTasks()}>Review other tasks on this day</Button>
+      <Button variant="primary" size="md" fullWidth onclick={() => planner.onPlanAnyway()}>Plan for this day anyway</Button>
     </div>
     <div class="dismiss-actions">
-      <button class="dismiss-link" onclick={() => planner.dontAskDayFullToday()}>Don't ask again for this day</button>
-      <button class="dismiss-link" onclick={() => planner.dontAskDayFullEver()}>Don't ask again for any day</button>
+      <button class="dismiss-link" onclick={() => planner.dontAskDayFullToday()}>Don't warn me about {dayFullLabel} again</button>
+      <button class="dismiss-link" onclick={() => planner.dontAskDayFullEver()}>Never warn me about a full day</button>
     </div>
   </div>
 </div>

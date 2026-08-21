@@ -13,6 +13,7 @@
   import Integrations from './lib/screens/Integrations.svelte';
   import PendingActions from './lib/screens/PendingActions.svelte';
   import Overview from './lib/screens/Overview.svelte';
+  import CalendarView from './lib/screens/CalendarView.svelte';
   import PlanToday from './lib/screens/PlanToday.svelte';
   import PlanLater from './lib/screens/PlanLater.svelte';
   import NextWeekDays from './lib/screens/NextWeekDays.svelte';
@@ -25,6 +26,35 @@
   import BreakTime from './lib/screens/BreakTime.svelte';
   import BreakDuration from './lib/screens/BreakDuration.svelte';
   import BreakConfirm from './lib/screens/BreakConfirm.svelte';
+
+  // WebKit needs *something* to trigger repainting a stuck frame — toggling
+  // a style and forcing a synchronous layout flush before reverting it does
+  // that without depending on any network round-trip. Shared by resume()
+  // below (backgrounding/foregrounding) and the screen-transition effect
+  // further down (leaving CalendarView — see its comment).
+  function forceRepaint() {
+    const el = document.documentElement;
+    el.style.transform = 'translateZ(0)';
+    void el.offsetHeight; // force a synchronous layout flush before reverting
+    el.style.transform = '';
+  }
+
+  // CalendarView is the most visually heavy screen in the app (many
+  // absolutely-positioned/transformed task blocks, a custom scroll-drag
+  // gesture) — on an iOS home-screen PWA specifically, navigating away from
+  // it (e.g. tapping a task's "Plan later" arrow) was reported leaving the
+  // close/back buttons on the screen after it visually unresponsive, the
+  // same class of stuck-WKWebView-frame symptom forceRepaint() already
+  // exists to fix for background/foreground resume. Not reproducible on
+  // desktop (WebKit-specific), so this reuses that same proven fix at the
+  // one additional trigger point rather than guessing at the exact
+  // mechanism.
+  let prevScreen = planner.screen;
+  $effect(() => {
+    const current = planner.screen;
+    if (prevScreen === 'calendarView' && current !== 'calendarView') forceRepaint();
+    prevScreen = current;
+  });
 
   onMount(() => {
     void planner.boot();
@@ -58,12 +88,6 @@
     //    reliable than one plain fetch, which made the *data* half of this
     //    fix flaky again once boot() started streaming.
     let lastResumeAt = 0;
-    function forceRepaint() {
-      const el = document.documentElement;
-      el.style.transform = 'translateZ(0)';
-      void el.offsetHeight; // force a synchronous layout flush before reverting
-      el.style.transform = '';
-    }
     function resume() {
       if (planner.screen === 'loading') return;
       // The three listeners below can all fire for the same real resume
@@ -130,6 +154,8 @@
       <PendingActions />
     {:else if planner.screen === 'overview'}
       <Overview />
+    {:else if planner.screen === 'calendarView'}
+      <CalendarView />
     {:else if planner.screen === 'planToday'}
       <PlanToday />
     {:else if planner.screen === 'planLater'}

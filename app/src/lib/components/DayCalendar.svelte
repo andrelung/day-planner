@@ -15,16 +15,29 @@
     /// app doesn't own them.
     outlookEvents: OutlookBlock[];
     /// Fires once the user confirms a tentative placement (see the pending
-    /// block below) — not on the first tap.
-    onPickTime: (hhmm: string) => void;
+    /// block below) — not on the first tap. Unused when allowPlacement is
+    /// false.
+    onPickTime?: (hhmm: string) => void;
     /// "HH:MM" to seed the pending block's initial placement with, instead
     /// of requiring a first tap on the track — PlanToday passes the
     /// earliest free slot so opening it lands the task on a sensible time
     /// immediately; omitted callers (FreeSlotsLater) keep the old
     /// tap-to-place behavior.
     suggestedStartTime?: string | null;
+    /// False for the standalone calendar view (CalendarView.svelte) — there's
+    /// no task being placed there, just existing tasks to look at and drag
+    /// around, so tapping the track shouldn't conjure a pending block with
+    /// no task behind it. Every other caller is mid-placing a real task and
+    /// wants the normal tap-to-place/pending-block behavior.
+    allowPlacement?: boolean;
+    /// True for the standalone calendar view — shows the whole 0:00-24:00
+    /// day instead of the working-hours-plus-slack window every other
+    /// caller wants (see startMin/endMin). A pure browsing view has no
+    /// reason to hide the early-morning/late-night hours the way a
+    /// planning flow does.
+    fullDay?: boolean;
   }
-  let { date, excludeTaskId, outlookEvents, onPickTime, suggestedStartTime = null }: Props = $props();
+  let { date, excludeTaskId, outlookEvents, onPickTime, suggestedStartTime = null, allowPlacement = true, fullDay = false }: Props = $props();
 
   const PX_PER_MIN = 1.4;
   const SNAP_MIN = 15;
@@ -72,12 +85,14 @@
   /// against an 09:00-18:00 window used to render below the calendar card
   /// entirely). Rounded to the hour so the hour-mark ruler stays clean.
   const startMin = $derived.by(() => {
+    if (fullDay) return 0;
     const base = toMinutes(planner.prefStartTime) - 120;
     const earliestTask = otherTasks.reduce((min, t) => Math.min(min, isoStartMinutes(t.dueAt!)), base);
     const earliest = outlookEvents.reduce((min, e) => Math.min(min, isoStartMinutes(e.start)), earliestTask);
     return Math.max(0, Math.floor(earliest / 60) * 60);
   });
   const endMin = $derived.by(() => {
+    if (fullDay) return 24 * 60;
     const base = toMinutes(planner.prefEndTime) + 120;
     const latestTask = otherTasks.reduce((max, t) => Math.max(max, isoStartMinutes(t.dueAt!) + t.hours * 60), base);
     const latest = outlookEvents.reduce((max, e) => Math.max(max, isoStartMinutes(e.start) + isoDurationMinutes(e.start, e.end)), latestTask);
@@ -255,6 +270,18 @@
     pendingEl?.scrollIntoView({ block: 'center' });
   });
 
+  /// fullDay's 0:00-24:00 range would otherwise always open scrolled to
+  /// midnight — scrolls to roughly "now" (today) or the preferred start
+  /// time (any other day) once per date shown, same idea as the pending
+  /// block's own auto-scroll above.
+  let scrollAnchorEl: HTMLElement | undefined = $state();
+  const scrollAnchorMin = $derived(clampMin(localDateStr(now) === date ? nowMin - 60 : toMinutes(planner.prefStartTime) - 30));
+  $effect(() => {
+    if (!fullDay) return;
+    void date; // re-fires when cycling to a different day
+    scrollAnchorEl?.scrollIntoView({ block: 'start' });
+  });
+
   // --- drag-to-move, shared by already-placed tasks and the pending block ---
   type DragTarget = { kind: 'other'; taskId: string } | { kind: 'pending' };
   let dragTarget: DragTarget | null = $state(null);
@@ -293,13 +320,13 @@
   }
 
   function onTrackClick(e: MouseEvent, trackEl: HTMLElement) {
-    if (dragTarget) return;
+    if (!allowPlacement || dragTarget) return;
     const y = e.clientY - trackEl.getBoundingClientRect().top;
     pendingMin = clampMin(snap(startMin + y / PX_PER_MIN));
   }
   function confirmPending() {
     if (pendingMin === null) return;
-    onPickTime(toHHMM(pendingMin));
+    onPickTime?.(toHHMM(pendingMin));
   }
   function removePending() {
     pendingMin = null;
@@ -315,6 +342,9 @@
     {/each}
     {#if showNowLine}
       <div class="now-line" style="top:{nowLineTop}px;"></div>
+    {/if}
+    {#if fullDay}
+      <div bind:this={scrollAnchorEl} class="scroll-anchor" style="top:{(scrollAnchorMin - startMin) * PX_PER_MIN}px;"></div>
     {/if}
     {#each blocks as b (b.task.id)}
       <div
@@ -376,7 +406,7 @@
         </div>
       </div>
     {/each}
-    {#if pendingMin !== null}
+    {#if allowPlacement && pendingMin !== null}
       <div
         class="pending-block"
         class:pending-block--dragging={dragTarget?.kind === 'pending'}
@@ -419,7 +449,9 @@
     {/if}
   </div>
   <div class="hint">
-    {#if pendingMin !== null}
+    {#if !allowPlacement}
+      Drag a task to move it
+    {:else if pendingMin !== null}
       Drag to adjust the time, then confirm
     {:else}
       Tap an open time to plan here · drag a task to move it
@@ -461,6 +493,13 @@
     font-family: var(--font-family-base);
     font-size: 11px;
     color: var(--color-text-muted);
+  }
+  .scroll-anchor {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    pointer-events: none;
   }
   .now-line {
     position: absolute;
