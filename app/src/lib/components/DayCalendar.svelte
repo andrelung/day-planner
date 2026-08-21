@@ -202,6 +202,13 @@
   const columned = $derived(assignColumns([...rawBlocks, ...rawOutlookBlocks]));
   const blocks = $derived(columned.filter((b) => b.kind === 'task') as ((CalItem & { kind: 'task' }) & Columned)[]);
   const outlookBlocks = $derived(columned.filter((b) => b.kind === 'outlook') as ((CalItem & { kind: 'outlook' }) & Columned)[]);
+  /// The wrap-up/context-switch buffer findConflicts/computeFreeSlots
+  /// already treat as unavailable after anything on the calendar (see
+  /// freeSlots.ts) — drawn here too so it's visible *why* the next slot
+  /// isn't offered right at a block's own end time, not just enforced
+  /// invisibly server-side. Same buffer after both a task and an Outlook
+  /// event, matching how the busy-time computation itself treats them.
+  const bufferPx = $derived(planner.bufferMinutes * PX_PER_MIN);
 
   const hourMarks = $derived.by(() => {
     const marks: { label: string; top: number }[] = [];
@@ -391,6 +398,9 @@
           </div>
         </div>
       </div>
+      {#if bufferPx > 0}
+        <div class="buffer-segment" style="{colStyle(b.col, b.cols, b.stackDepth)} top:{b.top + b.overlapHeight}px; height:{bufferPx}px;"></div>
+      {/if}
     {/each}
     {#each outlookBlocks as o (o.event.id)}
       <div
@@ -405,6 +415,9 @@
           <div class="outlook-block__time">{toHHMM(isoStartMinutes(o.event.start))}–{toHHMM(isoStartMinutes(o.event.end))}</div>
         </div>
       </div>
+      {#if bufferPx > 0}
+        <div class="buffer-segment" style="{colStyle(o.col, o.cols, o.stackDepth)} top:{o.top + o.overlapHeight}px; height:{bufferPx}px;"></div>
+      {/if}
     {/each}
     {#if allowPlacement && pendingMin !== null}
       <div
@@ -533,6 +546,19 @@
     cursor: grab;
     touch-action: none;
     overflow: hidden;
+  }
+  /* The wrap-up buffer after a block — same diagonal-hatch language as the
+     pending block's own padding-vs-real-time marker, so "hatched = not
+     actually free, but not a real event either" reads consistently across
+     the calendar. Sits behind real blocks (z-index 0) and never captures
+     input — purely informational. */
+  .buffer-segment {
+    position: absolute;
+    box-sizing: border-box;
+    background: repeating-linear-gradient(45deg, var(--color-border) 0, var(--color-border) 5px, transparent 5px, transparent 10px);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+    z-index: 0;
   }
   /* Name gets the block's full width on its own line — the action buttons
      share the line below with the time instead of squeezing the name's
