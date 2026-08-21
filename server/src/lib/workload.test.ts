@@ -50,6 +50,19 @@ void test('starting from a Friday, the "tomorrow" bucket skips the weekend too a
   assert.equal(ymd(days[3].date), '2026-08-26');
 });
 
+void test('the "tomorrow" bucket is labeled "Tomorrow" only when it\'s literally the next calendar day', () => {
+  // Thursday: tomorrow (Friday) is a real weekday, no skip involved.
+  const thursday = buildWorkloadDays(new Date('2026-08-20T08:00:00'));
+  assert.equal(thursday[1].label, 'Tomorrow');
+
+  // Friday: the weekend-skip lands "tomorrow" on Monday — labeling that
+  // "Tomorrow" reads as flatly wrong (Monday isn't tomorrow from a
+  // Friday), so it should read "Monday" instead, same as day2..day5 use
+  // real weekday names.
+  const friday = buildWorkloadDays(new Date('2026-08-21T08:00:00'));
+  assert.equal(friday[1].label, 'Monday');
+});
+
 void test('dailyCapacityHours computes decimal hours between preferred start/end time', () => {
   assert.equal(dailyCapacityHours('09:00', '18:00'), 9);
   assert.equal(dailyCapacityHours('09:00', '17:30'), 8.5);

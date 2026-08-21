@@ -47,9 +47,15 @@ export function buildWorkloadDays(now: Date): WorkloadDay[] {
 
   const [d0, d1, d2, d3, d4, d5] = namedDates;
   const named = (key: string, label: string, date: Date): WorkloadDay => ({ key, label, date, rangeStart: null, rangeEnd: null });
+  // "Tomorrow" only actually means tomorrow when today isn't a Friday — the
+  // weekend-skip above otherwise lands this bucket on Monday while still
+  // calling it "Tomorrow", which reads as flatly wrong (Monday isn't
+  // tomorrow from a Friday, whatever this bucket's own reasoning is).
+  // Falls back to the real weekday name, same as day2..day5 below.
+  const tomorrowLabel = toLocalDateStr(d1) === toLocalDateStr(addDays(d0, 1)) ? 'Tomorrow' : d1.toLocaleDateString('en-US', { weekday: 'long' });
   const days: WorkloadDay[] = [
     named('today', 'Today', d0),
-    named('tomorrow', 'Tomorrow', d1),
+    named('tomorrow', tomorrowLabel, d1),
     named('day2', d2.toLocaleDateString('en-US', { weekday: 'long' }), d2),
     named('day3', d3.toLocaleDateString('en-US', { weekday: 'long' }), d3),
     named('day4', d4.toLocaleDateString('en-US', { weekday: 'long' }), d4),

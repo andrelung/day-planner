@@ -398,9 +398,9 @@
             <Button variant="secondary" size="md" fullWidth onclick={() => planner.openPlanLater()}>Plan later</Button>
           </div>
           <div class="focus-card__actions focus-card__actions--ghost">
-            <Button variant="ghost" size="sm" fullWidth onclick={() => planner.startBreak()}>Split into a part</Button>
+            <Button variant="ghost" size="sm" fullWidth onclick={() => planner.startBreak()}>Split</Button>
             <Button variant="ghost" size="sm" fullWidth onclick={() => planner.skipTask()}>Skip</Button>
-            <Button variant="ghost" size="sm" fullWidth onclick={() => planner.removeDueDate()}>Remove due date</Button>
+            <Button variant="ghost" size="sm" fullWidth onclick={() => planner.removeDueDate()}>Backlog</Button>
           </div>
         </div>
       </div>
@@ -532,14 +532,22 @@
     font-size: 11px;
     font-weight: var(--font-weight-bold);
     color: var(--color-text-muted);
-    padding-top: 10px;
-    margin-top: 2px;
+    padding-top: 6px;
+    margin-top: 4px;
     border-top: 1px solid var(--color-border);
   }
   .day-divider:first-child {
     padding-top: 0;
     margin-top: 0;
     border-top: none;
+  }
+  /* Each item (header or task) gets its own animate:flip wrapper div, so
+     the divider's actual next sibling is that wrapper, not .up-next-row
+     itself — :has() reaches through it. Cuts the gap between a day header
+     and its first row so together they read as one compact unit instead
+     of two separately-spaced rows. */
+  div:has(> .day-divider) + div > .up-next-row {
+    padding-top: 6px;
   }
   .up-next-row {
     padding: 12px 4px;
@@ -845,7 +853,11 @@
   .capacity-badge {
     position: absolute;
     right: 20px;
-    bottom: 20px;
+    /* High enough to clear the focus card's ghost action row (Split/Skip/
+       Backlog) — it used to sit right on top of "Backlog" whenever the Up
+       Next list was short enough for the card to land near the bottom of
+       the screen. */
+    bottom: 90px;
     width: 56px;
     height: 56px;
     border-radius: 999px;
