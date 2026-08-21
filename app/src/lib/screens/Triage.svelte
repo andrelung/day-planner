@@ -373,7 +373,6 @@
           </div>
 
           <div class="focus-card__name">{focusRaw.name}</div>
-          <div class="focus-card__project">{focusRaw.project}</div>
 
           {#if planner.editingHours}
             <div class="inline-editor inline-editor--card">
@@ -387,11 +386,13 @@
             </div>
           {:else}
             <button class="estimate-row" onclick={() => planner.onEditHours()}>
-              <div class="estimate-row__label">Estimate</div>
+              <div class="estimate-row__label">Time estimate</div>
               <div class="estimate-row__value">{fmtHours(focusRaw.hours)}</div>
               <Icon name="pencil" size={13} color="var(--color-text-muted)" />
             </button>
           {/if}
+
+          <div class="focus-card__project">{focusRaw.project}</div>
 
           <div class="focus-card__actions">
             <Button variant="primary" size="md" fullWidth onclick={() => planner.openPlanTodayOrDate()}>{planner.planTodayButtonLabel}</Button>
@@ -711,7 +712,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* Right-aligned within the card's own column layout — mirrors Asana's
+     convention of putting a task's duration at the end of its name/
+     breadcrumb line, and puts the estimate within easy thumb reach instead
+     of needing a second tap target further down. */
   .estimate-row {
+    align-self: flex-end;
     display: inline-flex;
     align-items: center;
     gap: 6px;
