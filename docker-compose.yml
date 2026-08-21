@@ -32,6 +32,8 @@ services:
         # its own comment. This, not GIT_COMMIT, is what the update-notice
         # actually compares.
         BUILD_ID: ${BUILD_ID:-dev}
+        # Human-written "what's uncommitted right now" note — see rebuild.sh.
+        DEV_NOTE: ${DEV_NOTE:-}
     restart: unless-stopped
     depends_on:
       db:

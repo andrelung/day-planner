@@ -262,6 +262,44 @@ async function resolveBreadcrumbs(
   );
 }
 
+/// A single task by gid, or null if it's gone — deleted, or a 404 for any
+/// other reason. Deliberately narrower than asanaFetch's generic
+/// throw-on-!ok: a 404 here is a meaningful, expected result (the task is
+/// gone), not a failure, and needs to be told apart from a transient
+/// network/auth error, which should still throw rather than be silently
+/// read as "deleted" too.
+async function fetchTaskOrNull(accessToken: string, gid: string): Promise<AsanaTaskDto | null> {
+  const res = await fetch(`${API_BASE}/tasks/${gid}?opt_fields=${TASK_OPT_FIELDS}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Asana API /tasks/${gid} failed: ${res.status} ${await res.text()}`);
+  const json = (await res.json()) as { data: AsanaTaskDto };
+  return json.data;
+}
+
+/// Direct per-task lookups for exactly the gids a caller already knows
+/// about and cares about right now — the Triage screen's focused card plus
+/// its next few "Up Next" entries, on resume. Unlike
+/// listIncompleteAssignedTasks, this never touches the near-term search
+/// pass (Asana's eventually-consistent Search API) or even the plain list
+/// endpoint's pagination — it goes straight to Asana's single-task
+/// endpoint per gid, in parallel, which reads the task directly rather
+/// than through any index. Meant as a fast, targeted top-up alongside (not
+/// instead of) a fuller refresh, which still matters for tasks not
+/// currently on screen — a newly assigned or newly-due task this endpoint
+/// was never told to look for.
+export async function refreshTasksByGid(accessToken: string, gids: string[]): Promise<Record<string, (RemoteTask & { projectGid: string | null }) | null>> {
+  const fetched = await Promise.all(gids.map(async (gid) => ({ gid, dto: await fetchTaskOrNull(accessToken, gid) })));
+  const alive = fetched.filter((f): f is { gid: string; dto: AsanaTaskDto } => !!f.dto && !f.dto.completed);
+  const entries = alive.map((f) => ({ dto: f.dto, task: toRemoteTask(f.dto) }));
+  await resolveBreadcrumbs(accessToken, entries);
+  const result: Record<string, (RemoteTask & { projectGid: string | null }) | null> = {};
+  for (const gid of gids) result[gid] = null;
+  for (const e of entries) result[e.dto.gid] = e.task;
+  return result;
+}
+
 // Workspace membership essentially never changes mid-session, but
 // typeahead() (below) used to re-fetch it on every single call — an entire
 // extra sequential Asana round-trip in front of the actual search on every
@@ -366,8 +404,25 @@ export async function listIncompleteAssignedTasks(
   },
 ): Promise<(RemoteTask & { projectGid: string | null })[]> {
   const workspaces = await listWorkspaces(accessToken);
-  const entries: { dto: AsanaTaskDto; task: RemoteTask & { projectGid: string | null } }[] = [];
-  const seen = new Set<string>();
+  // Keyed by gid rather than a plain array so the full-fetch pass below can
+  // *overwrite* a search-sourced entry, not just skip re-adding it — Asana's
+  // Search API is only eventually consistent (see searchNearTermTasks), so
+  // an entry seeded from it can carry a stale name/due date/completion
+  // state even for a task that still legitimately exists. Whichever dto for
+  // a given gid arrives from the full-fetch pass — the actual source of
+  // truth, no date filter, covers the caller's entire assignment — always
+  // wins over whatever the search pass guessed first.
+  const byGid = new Map<string, { dto: AsanaTaskDto; task: RemoteTask & { projectGid: string | null } }>();
+  // Gids added only from the near-term search pass below, not yet confirmed
+  // by the full-fetch pass — a task deleted moments ago can still surface
+  // in search for a while after the task itself is gone. Every gid gets
+  // removed from this set the instant the full-fetch pass sees it (whether
+  // it keeps or drops the entry); whatever's still marked pending after
+  // both passes finish never got confirmed at all and is dropped rather
+  // than trusted. Without this, a stale search hit would resurface on every
+  // subsequent refresh too, since each call reruns the search fresh and
+  // nothing else was ever pruning it.
+  const pendingSearchOnly = new Set<string>();
 
   options?.onPhase?.('Looking for upcoming tasks…');
   const cutoff = new Date();
@@ -380,14 +435,14 @@ export async function listIncompleteAssignedTasks(
       // completed=false, but its index can lag behind a task's real
       // completion state (see TASK_OPT_FIELDS) — checked again here rather
       // than trusting that filter alone.
-      if (dto.completed || seen.has(dto.gid)) continue;
-      seen.add(dto.gid);
-      entries.push({ dto, task: toRemoteTask(dto) });
+      if (dto.completed || byGid.has(dto.gid)) continue;
+      byGid.set(dto.gid, { dto, task: toRemoteTask(dto) });
+      pendingSearchOnly.add(dto.gid);
     }
     if (nearTerm.length) {
       options?.onBatch?.(
-        entries.map((e) => e.task),
-        entries.length,
+        [...byGid.values()].map((e) => e.task),
+        byGid.size,
       );
     }
   }
@@ -397,21 +452,30 @@ export async function listIncompleteAssignedTasks(
     const path = `/tasks?assignee=me&workspace=${ws.gid}&completed_since=now&opt_fields=${TASK_OPT_FIELDS}`;
     await asanaFetchAllPages(accessToken, path, (page: AsanaTaskDto[]) => {
       for (const dto of page) {
-        if (dto.completed || seen.has(dto.gid)) continue;
-        seen.add(dto.gid);
-        entries.push({ dto, task: toRemoteTask(dto) });
+        pendingSearchOnly.delete(dto.gid);
+        // Authoritative either way: drops a stale not-completed search hit
+        // that's actually done now, and otherwise always takes this dto —
+        // fresher than whatever the search pass may have seeded — over any
+        // existing entry for the same gid.
+        if (dto.completed) byGid.delete(dto.gid);
+        else byGid.set(dto.gid, { dto, task: toRemoteTask(dto) });
       }
       options?.onBatch?.(
-        entries.map((e) => e.task),
-        entries.length,
+        [...byGid.values()].filter((e) => !pendingSearchOnly.has(e.dto.gid)).map((e) => e.task),
+        byGid.size,
       );
     });
   }
+  // Anything the search pass added but the full, source-of-truth fetch
+  // never confirmed (across every workspace, now that both passes are
+  // done) is a stale search hit — drop it.
+  for (const gid of pendingSearchOnly) byGid.delete(gid);
+  const reconciled = [...byGid.values()];
   if (options?.withBreadcrumbs) {
     options?.onPhase?.('Organizing your tasks…');
-    await resolveBreadcrumbs(accessToken, entries);
+    await resolveBreadcrumbs(accessToken, reconciled);
   }
-  return entries.map((e) => e.task);
+  return reconciled.map((e) => e.task);
 }
 
 /// Asana's due_at (a full instant) and due_on (a bare date) are independent
@@ -473,5 +537,71 @@ export async function createSubtask(accessToken: string, parentTaskGid: string, 
     body: JSON.stringify({ data: { name } }),
   });
   recordChange({ action: 'Create subtask', taskLink: created.permalink_url, nameAfter: created.name, timezone });
+  return created;
+}
+
+/// The Claude test/diagnostic Asana account (see the project's own memory
+/// notes) — added as a follower on every bug report, best-effort, so a
+/// future debugging session has a direct line to whatever got filed
+/// in-app. Almost certainly a different workspace than whichever real
+/// Asana account is connected, which is exactly why this is attempted
+/// separately from task creation and never allowed to fail the report
+/// itself (see the loop below).
+const CLAUDE_TEST_ACCOUNT_GID = '1217636214552610';
+
+/// The app owner's own Asana gid — bug reports always go to this person
+/// specifically, regardless of which connected account actually files them
+/// (see `submitterGid`, added as a follower instead). Hardcoded rather than
+/// derived from the request because there's only ever one intended owner,
+/// unlike the assignee, which used to be a bare 'me' shorthand resolving to
+/// whoever's access token created the task.
+const OWNER_GID = '1114484163652874';
+
+/// Renders "today + 7 days" as an Asana due_on date string (YYYY-MM-DD) in
+/// the given IANA timezone — mirrors changeLog.ts's formatInZone approach
+/// rather than using the server's own local Date getters, which would drift
+/// against the acting user's actual calendar day near a timezone boundary.
+function dueInSevenDays(timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(
+    new Date(),
+  );
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? '0');
+  const due = new Date(get('year'), get('month') - 1, get('day'));
+  due.setDate(due.getDate() + 7);
+  return `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`;
+}
+
+/// In-app "Report a bug" — creates a plain task (no project; it's meant to
+/// land straight in the owner's own My Tasks) always assigned to the owner
+/// (see OWNER_GID), due in a week. `submitterGid` and the Claude test
+/// account above are added as followers afterward, in their own
+/// best-effort calls each — assignee alone is enough for the report to
+/// exist and be seen, so a follower add failing (e.g. the test account's
+/// workspace not matching the real one) never loses the report itself.
+export async function createBugReportTask(accessToken: string, description: string, submitterGid: string | null, timezone: string): Promise<AsanaTaskDto> {
+  const workspaces = await listWorkspaces(accessToken);
+  const workspace = workspaces[0];
+  if (!workspace) throw new Error('No Asana workspace found to file the report in');
+  const firstLine = description.split('\n')[0].trim().slice(0, 100) || 'Bug report';
+  const created = await asanaFetch(accessToken, '/tasks?opt_fields=name,permalink_url', {
+    method: 'POST',
+    body: JSON.stringify({
+      data: { name: `Bug report: ${firstLine}`, notes: description, workspace: workspace.gid, assignee: OWNER_GID, due_on: dueInSevenDays(timezone) },
+    }),
+  });
+  recordChange({ action: 'Report a bug', taskLink: created.permalink_url, nameAfter: created.name, timezone });
+
+  const followerGids = [submitterGid, CLAUDE_TEST_ACCOUNT_GID].filter((gid): gid is string => !!gid);
+  for (const gid of followerGids) {
+    try {
+      await asanaFetch(accessToken, `/tasks/${created.gid}/addFollowers`, {
+        method: 'POST',
+        body: JSON.stringify({ data: { followers: [gid] } }),
+      });
+    } catch {
+      // Cross-workspace or otherwise invalid follower — the report itself
+      // is already filed and assigned regardless.
+    }
+  }
   return created;
 }

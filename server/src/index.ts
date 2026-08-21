@@ -24,20 +24,28 @@ app.use(cookieParser());
 app.use(attachSession);
 
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+
+// Every /api/* response is a live read (tasks, calendar, workload, ...) that
+// must reflect what actually changed server-side since the last call — none
+// of it is meant to be cached at any layer. Without this, an iOS standalone
+// PWA in particular is known to serve a GET response straight from
+// WKWebView's in-memory cache with no real network round-trip when nothing
+// tells it not to, which previously meant e.g. a task deleted in Asana
+// while the app was backgrounded (to open the task there) could still show
+// its stale Triage card after coming back — refreshTasks()'s GET /api/tasks
+// would silently return the same pre-deletion snapshot. Set once here for
+// every API route rather than per-route, matching the client's blanket
+// `cache: 'no-store'` in api.ts.
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 // Unauthenticated and cheap on purpose — the client polls this (see
 // store.svelte's checkForUpdate) to notice a long-open session is running
 // against an older build than what's actually deployed now, and prompt for
 // a reload. No auth gate needed since a git commit hash isn't sensitive.
 app.get('/api/version', (_req, res) => {
-  // The one response in this app that must never be cached at any layer —
-  // its entire purpose is telling a long-open client it's stale. Without
-  // this, an iOS standalone PWA in particular is known to serve a GET
-  // response straight from its in-memory cache without even a
-  // revalidation round-trip when no explicit Cache-Control is present,
-  // which would mean the client compares its own commit against a
-  // *cached* answer that always says "you're current" — the update
-  // notice would just never fire, no matter how stale the client gets.
-  res.set('Cache-Control', 'no-store');
   res.json({ commit: env.GIT_COMMIT, dirty: env.GIT_DIRTY, buildId: env.BUILD_ID });
 });
 

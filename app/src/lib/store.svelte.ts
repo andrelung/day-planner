@@ -598,10 +598,35 @@ class PlannerStore {
     }
   }
 
+  /// EventSource's own onerror only fires when the connection genuinely
+  /// drops — a connection that stays technically open but simply stops
+  /// receiving events (the server-side Asana call hanging, or a proxy in
+  /// between silently buffering/stalling the stream — ngrok's free tier is
+  /// known to do this to long-lived SSE responses) never triggers it, so
+  /// without a watchdog this sat on whatever bootStatus phase it last saw
+  /// forever, with no error and no way out short of force-closing the app.
+  /// STALL_TIMEOUT_MS is measured from the last event actually received,
+  /// not from connection start, so a slow-but-genuinely-progressing fetch
+  /// (many pages, breadcrumb resolution) isn't cut off — only a real stall
+  /// is.
   private streamTasks(): Promise<void> {
+    const STALL_TIMEOUT_MS = 20_000;
     return new Promise((resolve, reject) => {
       const es = new EventSource('/api/tasks/stream');
+      let settled = false;
+      let lastActivity = Date.now();
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastActivity > STALL_TIMEOUT_MS) settle(() => reject(new Error('Timed out loading tasks — check your connection and retry')));
+      }, 5_000);
+      const settle = (action: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(watchdog);
+        es.close();
+        action();
+      };
       es.addEventListener('phase', (e) => {
+        lastActivity = Date.now();
         try {
           this.bootStatus = JSON.parse((e as MessageEvent).data).label;
         } catch {
@@ -609,6 +634,7 @@ class PlannerStore {
         }
       });
       es.addEventListener('progress', (e) => {
+        lastActivity = Date.now();
         try {
           const data = JSON.parse((e as MessageEvent).data);
           this.loadingTasksCount = data.count;
@@ -618,7 +644,6 @@ class PlannerStore {
         }
       });
       es.addEventListener('failed', (e) => {
-        es.close();
         const msg = (() => {
           try {
             return JSON.parse((e as MessageEvent).data).error;
@@ -626,20 +651,20 @@ class PlannerStore {
             return undefined;
           }
         })();
-        reject(new Error(msg || 'Failed to load tasks'));
+        settle(() => reject(new Error(msg || 'Failed to load tasks')));
       });
       es.addEventListener('done', (e) => {
-        es.close();
-        try {
-          this.applyTaskBatch(JSON.parse((e as MessageEvent).data));
-          resolve();
-        } catch (err) {
-          reject(err as Error);
-        }
+        settle(() => {
+          try {
+            this.applyTaskBatch(JSON.parse((e as MessageEvent).data));
+            resolve();
+          } catch (err) {
+            reject(err as Error);
+          }
+        });
       });
       es.onerror = () => {
-        es.close();
-        reject(new Error('Lost connection to the server while loading tasks'));
+        settle(() => reject(new Error('Lost connection to the server while loading tasks')));
       };
     });
   }
@@ -713,6 +738,38 @@ class PlannerStore {
       if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     } catch (err) {
       this.reportError(err, 'Could not load tasks from Asana', { label: 'Retry', onClick: () => void this.refreshTasks() });
+    }
+  }
+
+  /// Fast, targeted top-up for exactly what's rendered on the Triage screen
+  /// right now — the focused card plus its next few "Up Next" entries —
+  /// meant to run alongside refreshTasks() on resume, not instead of it.
+  /// refreshTasks() still goes through Asana's near-term search pass as
+  /// part of covering the caller's *entire* assignment (needed to ever
+  /// surface a newly due/assigned task), which is eventually consistent
+  /// and can lag; this instead asks the server for exactly these gids by
+  /// direct lookup (see refreshTasksByGid on the server), so it's both
+  /// quicker (a handful of direct calls instead of a full paginated fetch)
+  /// and immune to that same lag for whatever's actually on screen.
+  async refreshVisibleTasks() {
+    if (!this.asanaConnected) return;
+    const visible = [this.focusTaskRaw, ...this.queueTasks.slice(this.focusIndex + 1, this.focusIndex + 6)].filter(
+      (t): t is Task => t !== null,
+    );
+    if (visible.length === 0) return;
+    const gids = visible.map((t) => t.id);
+    try {
+      const res = await api.post<{ tasks: Record<string, Task | null> }>('/api/tasks/refresh-by-gid', { gids });
+      const focusId = this.focusTaskRaw?.id ?? null;
+      const apply = (list: Task[]) => list.map((t) => (gids.includes(t.id) ? (res.tasks[t.id] ?? null) : t)).filter((t): t is Task => t !== null);
+      if (this.reviewingBacklog) this.tasksWithoutDueDate = apply(this.tasksWithoutDueDate);
+      else this.tasks = apply(this.tasks);
+      if (focusId) this.selectFocus(focusId);
+      if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
+    } catch {
+      // Best-effort top-up — refreshTasks() alongside this one already has
+      // its own error toast + Retry, so a failure here is silently left to
+      // that rather than doubling up on error UI.
     }
   }
 
@@ -940,6 +997,30 @@ class PlannerStore {
   onConfirmDoubleBookingChange(v: boolean) {
     this.confirmDoubleBooking = v;
     void this.patchSettings({ confirmDoubleBooking: v });
+  }
+
+  // --- report a bug ---
+  bugReportOpen = $state(false);
+  bugReportDraft = $state('');
+  bugReportSubmitting = $state(false);
+  toggleBugReportOpen() {
+    this.bugReportOpen = !this.bugReportOpen;
+    if (!this.bugReportOpen) this.bugReportDraft = '';
+  }
+  async submitBugReport() {
+    const description = this.bugReportDraft.trim();
+    if (!description || this.bugReportSubmitting) return;
+    this.bugReportSubmitting = true;
+    try {
+      await api.post('/api/tasks/bug-report', { description });
+      this.bugReportOpen = false;
+      this.bugReportDraft = '';
+      this.showToast('Bug report filed in Asana');
+    } catch (err) {
+      this.reportError(err, 'Could not file the bug report');
+    } finally {
+      this.bugReportSubmitting = false;
+    }
   }
 
   /// "Reset today's plan" in Settings — un-schedules every task due today

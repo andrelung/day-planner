@@ -8,7 +8,7 @@ process.env.TOKEN_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString('base64');
 process.env.SESSION_JWT_SECRET ??= 'test-secret';
 process.env.PUBLIC_APP_URL ??= 'http://localhost:3000';
 
-const { listIncompleteAssignedTasks, listWorkspaces } = await import('./asana.js');
+const { listIncompleteAssignedTasks, listWorkspaces, refreshTasksByGid } = await import('./asana.js');
 
 interface Call {
   url: string;
@@ -318,6 +318,234 @@ void test('listIncompleteAssignedTasks drops a near-term search result that is a
   try {
     const tasks = await listIncompleteAssignedTasks('fake-token-stale-completed');
     assert.deepEqual(tasks, []);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// Regression test for a real bug: a task deleted (or completed) in Asana
+/// right before a refresh could still show up in the triage queue, and keep
+/// showing up on every later refresh too, not just once. Root cause: the
+/// near-term search pass is Asana's eventually-consistent Search API — its
+/// index can still list a task as open for a while after the task itself is
+/// gone — and the merge logic used to be purely additive, so a stale search
+/// hit was never reconciled against the authoritative full-fetch pass that
+/// follows (no date filter, covers the whole assignment) even when that
+/// pass came back without it entirely (as a real deletion looks, vs. a
+/// completed:true flag flip, which the other stale-search test above
+/// already covered).
+void test('listIncompleteAssignedTasks drops a near-term search result the full fetch never confirms (deleted mid-refresh)', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) {
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    }
+    if (u.includes('/tasks/search')) {
+      return jsonResponse({
+        data: [
+          {
+            gid: 'stale-deleted',
+            name: 'Deleted moments ago',
+            due_on: '2026-08-07',
+            due_at: null,
+            completed: false,
+            permalink_url: 'https://x/deleted',
+            projects: [],
+            parent: null,
+          },
+          {
+            gid: 'still-here',
+            name: 'Genuinely still open',
+            due_on: '2026-08-08',
+            due_at: null,
+            completed: false,
+            permalink_url: 'https://x/still-here',
+            projects: [],
+            parent: null,
+          },
+        ],
+      });
+    }
+    if (u.includes('/tasks?assignee=me')) {
+      // The authoritative full fetch never mentions 'stale-deleted' at
+      // all — exactly how a real deletion looks, as opposed to a
+      // completed:true flag on an otherwise-present task.
+      return jsonResponse({
+        data: [
+          {
+            gid: 'still-here',
+            name: 'Genuinely still open',
+            due_on: '2026-08-08',
+            due_at: null,
+            completed: false,
+            permalink_url: 'https://x/still-here',
+            projects: [],
+            parent: null,
+          },
+        ],
+        next_page: null,
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const tasks = await listIncompleteAssignedTasks('fake-token-stale-deleted');
+    assert.deepEqual(
+      tasks.map((t) => t.gid),
+      ['still-here'],
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// Companion to the deletion test above: a task that still legitimately
+/// exists, but whose due date and name were edited in Asana right before a
+/// refresh, must show the edit — not the stale snapshot the (eventually
+/// consistent) search pass happened to seed first. Before this fix, the
+/// merge kept whichever dto for a gid it saw *first* and just skipped
+/// re-adding it on the full-fetch pass, so a search-sourced entry's fields
+/// could never be refreshed by the pass that's supposed to be the source of
+/// truth.
+void test('listIncompleteAssignedTasks prefers the full fetch\'s due date/name over a stale search hit for the same task', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) {
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    }
+    if (u.includes('/tasks/search')) {
+      return jsonResponse({
+        data: [
+          {
+            gid: 'edited',
+            name: 'Old name [2]',
+            due_on: '2026-08-07',
+            due_at: null,
+            completed: false,
+            permalink_url: 'https://x/edited',
+            projects: [],
+            parent: null,
+          },
+        ],
+      });
+    }
+    if (u.includes('/tasks?assignee=me')) {
+      return jsonResponse({
+        data: [
+          {
+            gid: 'edited',
+            name: 'New name [4]',
+            due_on: '2026-08-09',
+            due_at: null,
+            completed: false,
+            permalink_url: 'https://x/edited',
+            projects: [],
+            parent: null,
+          },
+        ],
+        next_page: null,
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const tasks = await listIncompleteAssignedTasks('fake-token-edited');
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].name, 'New name');
+    assert.equal(tasks[0].hours, 4);
+    assert.equal(tasks[0].dueOn, '2026-08-09');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// Companion to the "actually completed" stale-search test above: that one
+/// covers the search pass itself returning completed:true. This covers the
+/// case where search still says completed:false (stale) but the task was
+/// completed by the time the authoritative full fetch ran — the full fetch
+/// must be able to retract an entry the search pass already added, not just
+/// skip re-adding it.
+void test('listIncompleteAssignedTasks retracts a search-added task the full fetch now reports completed', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) {
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    }
+    if (u.includes('/tasks/search')) {
+      return jsonResponse({
+        data: [
+          {
+            gid: 'just-completed',
+            name: 'Finished right after search indexed it',
+            due_on: '2026-08-07',
+            due_at: null,
+            completed: false,
+            permalink_url: 'https://x/just-completed',
+            projects: [],
+            parent: null,
+          },
+        ],
+      });
+    }
+    if (u.includes('/tasks?assignee=me')) {
+      // completed_since=now means Asana itself won't even return a task
+      // completed before this call — simulated here by simply omitting it,
+      // same as the deletion test, since a completed task and a deleted one
+      // look identical from this endpoint's point of view.
+      return jsonResponse({ data: [], next_page: null });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const tasks = await listIncompleteAssignedTasks('fake-token-just-completed');
+    assert.deepEqual(tasks, []);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// refreshTasksByGid is the fast, direct-lookup counterpart to
+/// listIncompleteAssignedTasks used for the Triage screen's "on resume,
+/// top up exactly what's visible" path — no search pass, no pagination,
+/// just one GET per gid. Covers its three outcomes: a live edit shows
+/// through, a 404 (deleted) comes back as null rather than throwing, and a
+/// task that's now completed also comes back as null even though the
+/// fetch itself succeeded.
+void test('refreshTasksByGid fetches each gid directly: edits show through, deleted and completed both come back null', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/tasks/edited')) {
+      return jsonResponse({
+        data: { gid: 'edited', name: 'Fresh name [2]', due_on: '2026-08-09', due_at: null, completed: false, permalink_url: 'https://x/edited', projects: [], parent: null },
+      });
+    }
+    if (u.includes('/tasks/deleted')) {
+      return new Response('{}', { status: 404 });
+    }
+    if (u.includes('/tasks/completed')) {
+      return jsonResponse({
+        data: { gid: 'completed', name: 'Done now', due_on: '2026-08-09', due_at: null, completed: true, permalink_url: 'https://x/completed', projects: [], parent: null },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await refreshTasksByGid('fake-token', ['edited', 'deleted', 'completed']);
+    assert.equal(result.edited?.name, 'Fresh name');
+    assert.equal(result.deleted, null);
+    assert.equal(result.completed, null);
   } finally {
     global.fetch = originalFetch;
   }

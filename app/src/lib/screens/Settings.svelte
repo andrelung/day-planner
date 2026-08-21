@@ -3,7 +3,7 @@
   import { planner } from '../store.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Input from '../components/Input.svelte';
-  import { VERSION_LABEL } from '../version';
+  import { DEV_NOTE, VERSION_LABEL } from '../version';
 
   // Intl.supportedValuesOf isn't in every older browser (Safari added it in
   // 15.4) — fall back to just the current value plus UTC so the picker still
@@ -32,6 +32,24 @@
       value={String(planner.bufferMinutes)}
       onchange={(v) => planner.onBufferChange(v)}
     />
+    <label class="row">
+      <div class="row__label">Warn me when a day looks full</div>
+      <input
+        type="checkbox"
+        class="toggle"
+        checked={!planner.skipDayFullWarning}
+        onchange={(e) => planner.onSkipDayFullWarningChange(!(e.target as HTMLInputElement).checked)}
+      />
+    </label>
+    <label class="row">
+      <div class="row__label">Ask for confirmation on double booked calendar slots</div>
+      <input
+        type="checkbox"
+        class="toggle"
+        checked={planner.confirmDoubleBooking}
+        onchange={(e) => planner.onConfirmDoubleBookingChange((e.target as HTMLInputElement).checked)}
+      />
+    </label>
     <label class="ds-select">
       <span class="ds-select__label">Timezone</span>
       <div class="ds-select__field">
@@ -43,7 +61,7 @@
       </div>
     </label>
     <button class="row" onclick={() => planner.openIntegrations()}>
-      <div class="row__label">Asana &amp; Outlook</div>
+      <div class="row__label">Connections (Tasks &amp; Calendar)</div>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
         ><polyline points="9 18 15 12 9 6"></polyline></svg
       >
@@ -67,26 +85,46 @@
     >
       <div class="row__label row__label--danger">Reset today's plan</div>
     </button>
-    <label class="row">
-      <div class="row__label">Warn me when a day looks full</div>
-      <input
-        type="checkbox"
-        class="toggle"
-        checked={!planner.skipDayFullWarning}
-        onchange={(e) => planner.onSkipDayFullWarningChange(!(e.target as HTMLInputElement).checked)}
-      />
-    </label>
-    <label class="row">
-      <div class="row__label">Ask for confirmation on double booked calendar slots</div>
-      <input
-        type="checkbox"
-        class="toggle"
-        checked={planner.confirmDoubleBooking}
-        onchange={(e) => planner.onConfirmDoubleBookingChange((e.target as HTMLInputElement).checked)}
-      />
-    </label>
-    <div class="more-to-come">More to come</div>
+    <button class="row" onclick={() => planner.toggleBugReportOpen()}>
+      <div class="row__label">Report a bug</div>
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="var(--color-text-muted)"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        style="transform:rotate({planner.bugReportOpen ? 90 : 0}deg); transition:transform 150ms ease-out;"
+        ><polyline points="9 18 15 12 9 6"></polyline></svg
+      >
+    </button>
+    {#if planner.bugReportOpen}
+      <div class="bug-report">
+        <textarea
+          class="bug-report__input"
+          placeholder="What went wrong, what do you want changed?"
+          bind:value={planner.bugReportDraft}
+          disabled={planner.bugReportSubmitting}
+        ></textarea>
+        <div class="bug-report__hint">Files an Asana task assigned to you, so it doesn't get lost.</div>
+        <button
+          class="bug-report__submit"
+          disabled={!planner.bugReportDraft.trim() || planner.bugReportSubmitting}
+          onclick={() => planner.submitBugReport()}
+        >
+          {planner.bugReportSubmitting ? 'Filing…' : 'Submit'}
+        </button>
+      </div>
+    {/if}
     <div class="version">{VERSION_LABEL}</div>
+    {#if DEV_NOTE}
+      <div class="dev-note">
+        <span class="dev-note__label">Currently developing:</span>
+        <span class="dev-note__text">{DEV_NOTE}</span>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -203,13 +241,49 @@
     accent-color: var(--color-brand-primary);
     flex-shrink: 0;
   }
-  .more-to-come {
+  .bug-report {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 4px 4px 14px;
+  }
+  .bug-report__input {
+    width: 100%;
+    min-height: 84px;
+    padding: 10px 12px;
     font-family: var(--font-family-base);
-    font-size: 13px;
-    font-style: italic;
+    font-size: 14px;
+    color: var(--color-text-primary);
+    background: var(--true-white);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+    outline: none;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .bug-report__input:focus {
+    border-color: var(--color-brand-primary);
+  }
+  .bug-report__hint {
+    font-family: var(--font-family-base);
+    font-size: 12px;
     color: var(--color-text-muted);
-    padding-top: 8px;
-    border-top: 1px solid var(--color-border);
+  }
+  .bug-report__submit {
+    align-self: flex-start;
+    padding: 8px 18px;
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 14px;
+    color: var(--color-text-inverse);
+    background: var(--color-brand-primary);
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+  }
+  .bug-report__submit:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .version {
     font-family: var(--font-family-base);
@@ -218,5 +292,23 @@
     color: var(--color-text-muted);
     opacity: 0.6;
     text-align: center;
+  }
+  .dev-note {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    column-gap: 4px;
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    color: var(--color-text-muted);
+    opacity: 0.6;
+    text-align: center;
+    margin-top: -12px;
+  }
+  .dev-note__label {
+    white-space: nowrap;
+  }
+  .dev-note__text {
+    min-width: 0;
   }
 </style>

@@ -23,5 +23,13 @@ else
   export GIT_DIRTY="1"
 fi
 export BUILD_ID="$(date +%s)-$RANDOM"
+# A short, human-written description of whatever's currently uncommitted —
+# shown as its own "Currently developing: ..." line (see version.ts)
+# instead of a bare "-dirty" suffix, so a tester can tell at a glance what
+# a given build is actually for. Set by the caller, e.g.:
+#   DEV_NOTE="Report-a-bug feature" bash scripts/rebuild.sh
+# Empty (the line just doesn't show) if not set — a plain, unset rebuild
+# still works fine.
+export DEV_NOTE="${DEV_NOTE:-}"
 
 docker compose up --build -d "$@"

@@ -5,12 +5,26 @@ import { getValidAccessToken } from '../lib/tokens.js';
 import { deriveQueue } from '../lib/taskQueue.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { enqueueAction } from '../lib/pendingActionQueue.js';
-import { createSubtask, createTaskInProject, listIncompleteAssignedTasks, typeahead } from '../providers/asana.js';
+import { prisma } from '../lib/prisma.js';
+import { createBugReportTask, createSubtask, createTaskInProject, listIncompleteAssignedTasks, refreshTasksByGid, typeahead } from '../providers/asana.js';
 import type { DueUpdate } from '../providers/asana.js';
 import type { RemoteTask } from '../providers/types.js';
 
 export const tasksRouter = Router();
 tasksRouter.use(requireAuth);
+
+function toTaskDto(t: RemoteTask) {
+  return {
+    id: t.gid,
+    name: t.name,
+    project: t.project,
+    hours: t.hours,
+    dueHour: t.dueHour,
+    dueAt: t.dueAt,
+    dueOn: t.dueOn,
+    permalinkUrl: t.permalinkUrl,
+  };
+}
 
 function buildTasksPayload(raw: (RemoteTask & { projectGid: string | null })[]) {
   // Tasks with no due date at all don't belong in the swipeable triage
@@ -22,16 +36,6 @@ function buildTasksPayload(raw: (RemoteTask & { projectGid: string | null })[]) 
   for (const t of raw) {
     if (t.projectGid) projects.set(t.projectGid, t.project);
   }
-  const toTaskDto = (t: RemoteTask) => ({
-    id: t.gid,
-    name: t.name,
-    project: t.project,
-    hours: t.hours,
-    dueHour: t.dueHour,
-    dueAt: t.dueAt,
-    dueOn: t.dueOn,
-    permalinkUrl: t.permalinkUrl,
-  });
   return {
     tasks: queued.map(toTaskDto),
     tasksWithoutDueDate: withoutDueDate.map(toTaskDto),
@@ -43,6 +47,29 @@ tasksRouter.get('/', async (req, res) => {
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
   const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true });
   res.json(buildTasksPayload(raw));
+});
+
+const refreshByGidSchema = z.object({ gids: z.array(z.string()).min(1).max(20) });
+
+/// Fast, targeted top-up for exactly what's on screen — the Triage card
+/// currently focused plus its next few "Up Next" entries — called on
+/// resume instead of waiting on the fuller GET / above to notice an edit or
+/// deletion. See refreshTasksByGid: goes straight to Asana's single-task
+/// endpoint per gid rather than the near-term search pass or the plain
+/// list's pagination, so it isn't subject to Asana's search-index lag at
+/// all. A gid missing from the response body's `tasks` map (rather than
+/// present with a value) is gone — deleted, or completed elsewhere.
+tasksRouter.post('/refresh-by-gid', async (req, res) => {
+  const parsed = refreshByGidSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const byGid = await refreshTasksByGid(accessToken, parsed.data.gids);
+  const tasks: Record<string, ReturnType<typeof toTaskDto> | null> = {};
+  for (const [gid, task] of Object.entries(byGid)) tasks[gid] = task ? toTaskDto(task) : null;
+  res.json({ tasks });
 });
 
 /// Same result as GET / (used for the initial boot fetch specifically), but
@@ -205,4 +232,21 @@ tasksRouter.post('/', async (req, res) => {
       ? await createTaskInProject(accessToken, parsed.data.projectGid, parsed.data.name, settings.timezone)
       : await createSubtask(accessToken, parsed.data.parentGid, parsed.data.name, settings.timezone);
   res.status(201).json({ gid: created.gid, name: created.name });
+});
+
+const bugReportSchema = z.object({ description: z.string().trim().min(1).max(5000) });
+
+/// Settings' "Report a bug" — see createBugReportTask for what actually
+/// gets created (a followers-added-best-effort My Tasks entry, no project).
+tasksRouter.post('/bug-report', async (req, res) => {
+  const parsed = bugReportSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const settings = await getOrCreateSettings(req.userId!);
+  const account = await prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId: req.userId!, provider: 'ASANA' } } });
+  const created = await createBugReportTask(accessToken, parsed.data.description, account?.externalAccountId ?? null, settings.timezone);
+  res.status(201).json({ gid: created.gid, permalinkUrl: created.permalink_url });
 });

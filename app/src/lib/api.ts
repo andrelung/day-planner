@@ -8,9 +8,28 @@ export class ApiError extends Error {
   }
 }
 
+/// Every request here goes through `cache: 'no-store'` plus (for GETs) a
+/// cache-busting timestamp query param — the same belt-and-suspenders pair
+/// already proven against /api/version's staleness bug (see
+/// store.svelte's checkForUpdate). An iOS standalone PWA is known to serve
+/// a GET response straight from WKWebView's in-memory cache with no real
+/// network round-trip when nothing tells it not to, which is exactly how a
+/// task deleted in Asana could still show its card after backgrounding the
+/// app to delete it and coming back: refreshTasks()'s GET /api/tasks would
+/// silently return the same pre-deletion snapshot. `cache: 'no-store'` is
+/// the standards-compliant fix; the timestamp param is a fallback that
+/// still works even if that option itself gets ignored, since a cache
+/// lookup keyed on the full URL can't have this exact URL cached already.
+function bustCache(path: string): string {
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}_=${Date.now()}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const res = await fetch(method === 'GET' ? bustCache(path) : path, {
     ...init,
+    cache: 'no-store',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   });

@@ -17,7 +17,7 @@
     position: absolute;
     left: 16px;
     right: 16px;
-    bottom: 16px;
+    top: 16px;
     display: flex;
     align-items: center;
     justify-content: space-between;

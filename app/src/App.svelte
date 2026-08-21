@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { planner } from './lib/store.svelte';
-  import { VERSION_LABEL } from './lib/version';
+  import { DEV_NOTE, VERSION_LABEL } from './lib/version';
   import Toast from './lib/components/Toast.svelte';
   import UpdateNotice from './lib/components/UpdateNotice.svelte';
   import Celebration from './lib/components/Celebration.svelte';
@@ -97,6 +97,11 @@
       if (now - lastResumeAt < 1500) return;
       lastResumeAt = now;
       forceRepaint();
+      // Fast, targeted top-up for exactly what's on screen (see its own
+      // comment) fired alongside the fuller refresh below rather than
+      // instead of it — refreshTasks() is still what surfaces a task
+      // that's newly due/assigned and wasn't already visible.
+      void planner.refreshVisibleTasks();
       void planner.refreshTasks();
       void planner.refreshWorkload();
       void planner.checkForUpdate();
@@ -138,7 +143,15 @@
             <p class="loading__progress">{planner.loadingProgressLabel}</p>
           {/if}
         {/if}
-        <p class="loading__version">{VERSION_LABEL}</p>
+        <div class="loading__footer">
+          <p class="loading__version">{VERSION_LABEL}</p>
+          {#if DEV_NOTE}
+            <p class="loading__dev-note">
+              <span class="loading__dev-note-label">Currently developing:</span>
+              <span class="loading__dev-note-text">{DEV_NOTE}</span>
+            </p>
+          {/if}
+        </div>
       </div>
     {:else if planner.screen === 'login'}
       <Login />
@@ -252,15 +265,38 @@
     font-variant-numeric: tabular-nums;
     opacity: 0.75;
   }
-  .loading__version {
+  .loading__footer {
     position: absolute;
     left: 0;
     right: 0;
     bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 0 24px;
+  }
+  .loading__version {
     font-size: 11px;
     font-weight: var(--font-weight-normal);
     font-variant-numeric: tabular-nums;
     opacity: 0.5;
+  }
+  .loading__dev-note {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    column-gap: 4px;
+    font-size: 11px;
+    font-weight: var(--font-weight-normal);
+    opacity: 0.5;
+    text-align: center;
+  }
+  .loading__dev-note-label {
+    white-space: nowrap;
+  }
+  .loading__dev-note-text {
+    min-width: 0;
   }
   @keyframes loading-spin {
     to {

@@ -18,9 +18,14 @@ ARG GIT_DIRTY=""
 # key the update-notice compares, since GIT_COMMIT alone can't tell two
 # uncommitted rebuilds apart.
 ARG BUILD_ID=dev
+# Human-written "what's uncommitted right now" note — see rebuild.sh and
+# version.ts. Purely a display concern, so this is frontend-only; no
+# runtime/server equivalent needed.
+ARG DEV_NOTE=""
 ENV VITE_GIT_COMMIT=$GIT_COMMIT
 ENV VITE_GIT_DIRTY=$GIT_DIRTY
 ENV VITE_BUILD_ID=$BUILD_ID
+ENV VITE_DEV_NOTE=$DEV_NOTE
 RUN npm run build
 
 FROM node:22-bookworm-slim AS server-build
