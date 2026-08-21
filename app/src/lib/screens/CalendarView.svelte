@@ -2,6 +2,40 @@
   import { planner } from '../store.svelte';
   import IconButton from '../components/IconButton.svelte';
   import DayCalendar from '../components/DayCalendar.svelte';
+
+  // A swipe left/right steps the day, same as the chevron buttons — touch
+  // events rather than pointer events specifically, since DayCalendar's own
+  // task-block dragging uses pointer capture (see beginDrag there); touch
+  // listeners fire independently alongside that without fighting over the
+  // same event stream, and since this never calls preventDefault it can't
+  // interfere with the block drag or the page's own vertical scroll either.
+  const SWIPE_THRESHOLD_PX = 60;
+  // A swipe is rarely perfectly horizontal — allow some vertical drift, but
+  // require horizontal to still clearly dominate, so an intentional vertical
+  // scroll (or a block drag) doesn't get misread as a day change.
+  const SWIPE_MAX_OFF_AXIS_RATIO = 0.6;
+  let touchStartX = 0;
+  let touchStartY = 0;
+  // A swipe starting on an existing block should move/expand that block,
+  // not change the day — skip day-swipe tracking entirely for those.
+  let touchStartOnBlock = false;
+  function onContentTouchStart(e: TouchEvent) {
+    if (e.touches.length !== 1) return;
+    const target = e.target as HTMLElement;
+    touchStartOnBlock = !!target.closest('.task-block, .outlook-block, .pending-block');
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }
+  function onContentTouchEnd(e: TouchEvent) {
+    if (touchStartOnBlock) return;
+    const touch = e.changedTouches[0];
+    if (!touch) return;
+    const dx = touch.clientX - touchStartX;
+    const dy = touch.clientY - touchStartY;
+    if (Math.abs(dx) < SWIPE_THRESHOLD_PX) return;
+    if (Math.abs(dy) > Math.abs(dx) * SWIPE_MAX_OFF_AXIS_RATIO) return;
+    planner.calendarViewStepDay(dx < 0 ? 1 : -1);
+  }
 </script>
 
 <div class="screen">
@@ -14,7 +48,7 @@
     </div>
     <div class="header-spacer"></div>
   </div>
-  <div class="content">
+  <div class="content" ontouchstart={onContentTouchStart} ontouchend={onContentTouchEnd}>
     {#if planner.calendarViewLoading}
       <div class="loading">
         <div class="loading__spinner"></div>
@@ -60,7 +94,11 @@
     text-align: center;
   }
   .content {
-    padding: 16px 20px;
+    /* Kept modest — DayCalendar's own card already adds its own 10px
+       padding (see .calendar in DayCalendar.svelte), so anything more here
+       just stacks a second layer of padding on top of that, eating into
+       space the actual day-grid could use for its columns. */
+    padding: 16px 8px;
     flex: 1;
     overflow-y: auto;
     min-height: 0;

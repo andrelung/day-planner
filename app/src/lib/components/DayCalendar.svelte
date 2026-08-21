@@ -93,11 +93,18 @@
     return Math.max(0, Math.floor(earliest / 60) * 60);
   });
   const endMin = $derived.by(() => {
-    if (fullDay) return 24 * 60;
-    const base = toMinutes(planner.prefEndTime) + 120;
+    const base = fullDay ? 24 * 60 : toMinutes(planner.prefEndTime) + 120;
     const latestTask = otherTasks.reduce((max, t) => Math.max(max, isoStartMinutes(t.dueAt!) + t.hours * 60), base);
     const latest = outlookEvents.reduce((max, e) => Math.max(max, isoStartMinutes(e.start) + isoDurationMinutes(e.start, e.end)), latestTask);
-    return Math.min(24 * 60, Math.ceil(latest / 60) * 60);
+    const rounded = Math.ceil(latest / 60) * 60;
+    // fullDay deliberately doesn't cap at 24:00 the way the bounded
+    // planning window below does — a task starting late enough to run past
+    // midnight (isoStartMinutes + duration naturally lands past 1440 with
+    // no date-rollover awareness needed, same as the working-hours case
+    // above) needs the extra rows to actually render instead of being cut
+    // off at the day boundary with no visual sign there was more. See
+    // hourMarks for how those extra hours get labeled.
+    return fullDay ? rounded : Math.min(24 * 60, rounded);
   });
   const totalHeight = $derived(Math.max(1, endMin - startMin) * PX_PER_MIN);
 
@@ -212,9 +219,15 @@
   const bufferPx = $derived(planner.bufferMinutes * PX_PER_MIN);
 
   const hourMarks = $derived.by(() => {
-    const marks: { label: string; top: number }[] = [];
+    const marks: { hour: number; label: string; top: number }[] = [];
     for (let h = Math.ceil(startMin / 60); h <= Math.floor(endMin / 60); h++) {
-      marks.push({ label: `${String(h).padStart(2, '0')}:00`, top: (h * 60 - startMin) * PX_PER_MIN });
+      // h can run past 24 here (see endMin's fullDay overflow buffer) — a
+      // literal "25:00" isn't a real clock time, so wrap it back to the
+      // next day's own "01:00" the way a clock actually would. Keyed by the
+      // unwrapped hour, not the wrapped label: hour 0 and hour 24 both
+      // display "00:00", so keying by label collided and crashed the
+      // each-block (Svelte's each_key_duplicate).
+      marks.push({ hour: h, label: `${String(h % 24).padStart(2, '0')}:00`, top: (h * 60 - startMin) * PX_PER_MIN });
     }
     return marks;
   });
@@ -358,7 +371,7 @@
 
 <div class="calendar">
   <div class="track" style="height:{totalHeight}px;" onclick={(e) => onTrackClick(e, e.currentTarget as HTMLElement)}>
-    {#each hourMarks as m (m.label)}
+    {#each hourMarks as m (m.hour)}
       <div class="hour-line" style="top:{m.top}px;">
         <span class="hour-label">{m.label}</span>
       </div>

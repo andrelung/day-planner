@@ -1583,9 +1583,18 @@ class PlannerStore {
     const tomorrowIsMonday = !!tomorrow?.date && new Date(`${tomorrow.date}T00:00:00`).getDay() === 1;
     return tomorrowIsMonday ? this.workloadDays.filter((d) => d.key !== 'nextweek') : this.workloadDays;
   }
+  /// "Today" is normally excluded — this flow's whole purpose is choosing
+  /// some *other* day. But it's also reached via a task block's "Plan
+  /// later" arrow (openTaskInPlanLater — DayCalendar, reachable from any
+  /// day's view, not just today's), which can land here for a task that
+  /// isn't due today at all. For that task, "Today" is a genuine, useful
+  /// target — pulling it in — not a redundant option, so it's only left
+  /// out when the task actually is already due today.
   get laterDays() {
+    const focusDueOn = this.focusTaskRaw?.dueOn ?? null;
+    const alreadyToday = focusDueOn === this.todayDateStr;
     return this.workloadDaysForDisplay
-      .filter((d) => d.key !== 'today')
+      .filter((d) => d.key !== 'today' || !alreadyToday)
       .map((d) => ({
         key: d.key,
         label: d.label,
