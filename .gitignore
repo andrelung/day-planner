@@ -5,3 +5,6 @@ dist
 .DS_Store
 change-log.xlsx
 ~$change-log.xlsx
+match-log.xlsx
+~$match-log.xlsx
+.dev-notes.local.json

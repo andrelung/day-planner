@@ -114,6 +114,10 @@ export interface GraphEvent {
   start: Date;
   end: Date;
   isAllDay: boolean;
+  /// Opens the event in Outlook on the web — surfaced so a calendar-entry
+  /// detail panel can open it externally without this app owning any of
+  /// the event's real content.
+  webLink: string;
 }
 
 function parseGraphUtcDateTime(dateTime: string): Date {
@@ -128,7 +132,7 @@ export async function listEvents(accessToken: string, from: Date, to: Date): Pro
   const path =
     `/me/calendarview?startDateTime=${encodeURIComponent(from.toISOString())}` +
     `&endDateTime=${encodeURIComponent(to.toISOString())}` +
-    `&$select=id,subject,start,end,isAllDay&$orderby=start/dateTime&$top=100`;
+    `&$select=id,subject,start,end,isAllDay,webLink&$orderby=start/dateTime&$top=100`;
   const json = await graphFetch(accessToken, path);
   return (json.value ?? [])
     .filter((e: any) => !e.isAllDay)
@@ -138,5 +142,6 @@ export async function listEvents(accessToken: string, from: Date, to: Date): Pro
       start: parseGraphUtcDateTime(e.start.dateTime),
       end: parseGraphUtcDateTime(e.end.dateTime),
       isAllDay: false,
+      webLink: e.webLink,
     }));
 }

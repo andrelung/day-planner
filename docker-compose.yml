@@ -32,8 +32,9 @@ services:
         # its own comment. This, not GIT_COMMIT, is what the update-notice
         # actually compares.
         BUILD_ID: ${BUILD_ID:-dev}
-        # Human-written "what's uncommitted right now" note — see rebuild.sh.
-        DEV_NOTE: ${DEV_NOTE:-}
+        # Accumulated "what's uncommitted right now" notes, as a JSON array
+        # string — see rebuild.sh.
+        DEV_NOTES_JSON: ${DEV_NOTES_JSON:-[]}
     restart: unless-stopped
     depends_on:
       db:
@@ -57,6 +58,7 @@ services:
       MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
       MS_TENANT_ID: ${MS_TENANT_ID:-common}
       CHANGE_LOG_PATH: /host-root/change-log.xlsx
+      MATCH_LOG_PATH: /host-root/match-log.xlsx
       TZ: ${TZ:-UTC}
       NODE_ENV: production
 

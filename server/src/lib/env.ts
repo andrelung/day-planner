@@ -31,6 +31,9 @@ export const env = {
   // volume path, since the container's own filesystem isn't visible on
   // the host. See changeLog.ts and docker-compose.yml.
   CHANGE_LOG_PATH: process.env.CHANGE_LOG_PATH || null,
+  // Where the calendar-event/task match-log workbook lives — same idea and
+  // same fallback behavior as CHANGE_LOG_PATH above. See matchLog.ts.
+  MATCH_LOG_PATH: process.env.MATCH_LOG_PATH || null,
   // Sets this process's system timezone (Node/ICU respect TZ natively —
   // fixes "Today"/"Tomorrow" day-bucketing to use this zone's day boundary
   // instead of the container's default UTC) and seeds the default for a

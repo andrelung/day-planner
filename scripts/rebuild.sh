@@ -23,13 +23,36 @@ else
   export GIT_DIRTY="1"
 fi
 export BUILD_ID="$(date +%s)-$RANDOM"
-# A short, human-written description of whatever's currently uncommitted —
-# shown as its own "Currently developing: ..." line (see version.ts)
-# instead of a bare "-dirty" suffix, so a tester can tell at a glance what
-# a given build is actually for. Set by the caller, e.g.:
+
+# Every uncommitted thing being tested right now — shown as a "Currently in
+# development:" list (see version.ts) instead of a bare "-dirty" suffix, so
+# a tester can tell at a glance what a given build actually contains. A
+# single DEV_NOTE env var isn't enough on its own: a testing session
+# usually spans several rebuilds for several different fixes before
+# anything gets committed, and each rebuild only knows about *its own*
+# DEV_NOTE — without accumulating them, every new rebuild's note would
+# silently overwrite the previous one on screen, even though the earlier
+# uncommitted work is still sitting there right alongside it. Persisted to
+# an untracked file (see .gitignore) rather than kept in-memory since each
+# invocation of this script is a fresh process; reset back to empty the
+# moment the working tree is clean, since a note describing now-committed
+# work isn't "in development" anymore. Set the caller's own note with e.g.:
 #   DEV_NOTE="Report-a-bug feature" bash scripts/rebuild.sh
-# Empty (the line just doesn't show) if not set — a plain, unset rebuild
-# still works fine.
-export DEV_NOTE="${DEV_NOTE:-}"
+NOTES_FILE="$(pwd)/.dev-notes.local.json"
+if [ -z "$(git status --porcelain)" ]; then
+  rm -f "$NOTES_FILE"
+fi
+if [ -n "${DEV_NOTE:-}" ]; then
+  DEV_NOTE="$DEV_NOTE" NOTES_FILE="$NOTES_FILE" node -e '
+    const fs = require("fs");
+    const path = process.env.NOTES_FILE;
+    const note = process.env.DEV_NOTE;
+    let notes = [];
+    try { notes = JSON.parse(fs.readFileSync(path, "utf8")); } catch {}
+    if (notes[notes.length - 1] !== note) notes.push(note);
+    fs.writeFileSync(path, JSON.stringify(notes));
+  '
+fi
+export DEV_NOTES_JSON="$(cat "$NOTES_FILE" 2>/dev/null || echo '[]')"
 
 docker compose up --build -d "$@"

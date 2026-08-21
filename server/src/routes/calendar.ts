@@ -7,6 +7,7 @@ import { computeFreeSlots } from '../lib/freeSlots.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { listEvents } from '../providers/outlook.js';
 import { createSubtask, createTaskInProject } from '../providers/asana.js';
+import { recordMatch } from '../lib/matchLog.js';
 
 export const calendarRouter = Router();
 calendarRouter.use(requireAuth);
@@ -49,6 +50,8 @@ calendarRouter.get('/events', async (req, res) => {
           linked: !!link?.linkedAsanaTaskGid,
           linkedName: link?.linkedTaskName ?? null,
           linkedTaskGid: link?.linkedAsanaTaskGid ?? null,
+          linkedTaskPermalinkUrl: link?.linkedTaskPermalinkUrl ?? null,
+          webLink: e.webLink,
         };
       }),
   });
@@ -93,15 +96,44 @@ calendarRouter.get('/free-slots', async (req, res) => {
   // Returned alongside `slots` so the client's day-calendar view can draw
   // these as blocks too — it previously only ever showed Asana tasks, even
   // though an Outlook meeting is exactly as much a reason a slot isn't
-  // really free.
-  let outlookEvents: { id: string; title: string; start: string; end: string }[] = [];
+  // really free. Carries the same link/ignore/webLink state as GET /events
+  // (not just title/time) so the day-calendar's blocks can be clicked open
+  // into a detail panel instead of being purely decorative.
+  let outlookEvents: {
+    id: string;
+    title: string;
+    start: string;
+    end: string;
+    linked: boolean;
+    linkedName: string | null;
+    linkedTaskGid: string | null;
+    linkedTaskPermalinkUrl: string | null;
+    ignored: boolean;
+    webLink: string;
+  }[] = [];
 
   const outlookAccount = await prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId: req.userId!, provider: 'OUTLOOK' } } });
   if (outlookAccount) {
     const accessToken = await getValidAccessToken(req.userId!, 'OUTLOOK');
     const events = await listEvents(accessToken, day, dayEnd);
     busy.push(...events.map((e) => ({ start: e.start, end: e.end })));
-    outlookEvents = events.map((e) => ({ id: e.id, title: e.subject, start: e.start.toISOString(), end: e.end.toISOString() }));
+    const links = await prisma.calendarEventLink.findMany({ where: { userId: req.userId!, externalEventId: { in: events.map((e) => e.id) } } });
+    const linkByExternalId = new Map(links.map((l) => [l.externalEventId, l]));
+    outlookEvents = events.map((e) => {
+      const link = linkByExternalId.get(e.id);
+      return {
+        id: e.id,
+        title: e.subject,
+        start: e.start.toISOString(),
+        end: e.end.toISOString(),
+        linked: !!link?.linkedAsanaTaskGid,
+        linkedName: link?.linkedTaskName ?? null,
+        linkedTaskGid: link?.linkedAsanaTaskGid ?? null,
+        linkedTaskPermalinkUrl: link?.linkedTaskPermalinkUrl ?? null,
+        ignored: link?.ignored ?? false,
+        webLink: e.webLink,
+      };
+    });
   }
 
   if (busyTasks) {
@@ -123,7 +155,20 @@ calendarRouter.get('/free-slots', async (req, res) => {
   res.json({ slots, outlookEvents });
 });
 
-const linkSchema = z.object({ taskGid: z.string().min(1), taskName: z.string().min(1) });
+const linkSchema = z.object({
+  taskGid: z.string().min(1),
+  taskName: z.string().min(1),
+  permalinkUrl: z.string().min(1).optional(),
+  // Purely for matchLog.ts — the client already computed its own matcher's
+  // score/rank for this pick (see store.svelte.ts's commitEventLink) while
+  // building the link/add search panel, and re-deriving that server-side
+  // would mean re-fetching the same same-day task list a second time for
+  // no functional reason. Optional since the schema shouldn't reject a
+  // link over a logging-only field failing to arrive.
+  matchLog: z
+    .object({ eventTitle: z.string().min(1), matchScore: z.number(), matchRank: z.number().nullable(), candidateCount: z.number() })
+    .optional(),
+});
 
 calendarRouter.post('/events/:eventId/link', async (req, res) => {
   const parsed = linkSchema.safeParse(req.body);
@@ -131,15 +176,38 @@ calendarRouter.post('/events/:eventId/link', async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const { taskGid, taskName, permalinkUrl, matchLog } = parsed.data;
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },
     create: {
       userId: req.userId!,
       externalEventId: req.params.eventId,
-      linkedAsanaTaskGid: parsed.data.taskGid,
-      linkedTaskName: parsed.data.taskName,
+      linkedAsanaTaskGid: taskGid,
+      linkedTaskName: taskName,
+      linkedTaskPermalinkUrl: permalinkUrl ?? null,
     },
-    update: { linkedAsanaTaskGid: parsed.data.taskGid, linkedTaskName: parsed.data.taskName, ignored: false },
+    update: { linkedAsanaTaskGid: taskGid, linkedTaskName: taskName, linkedTaskPermalinkUrl: permalinkUrl ?? null, ignored: false },
+  });
+  if (matchLog) {
+    recordMatch({
+      eventTitle: matchLog.eventTitle,
+      taskName,
+      matchScore: matchLog.matchScore,
+      matchRank: matchLog.matchRank,
+      candidateCount: matchLog.candidateCount,
+    });
+  }
+  res.status(204).end();
+});
+
+/// Distinct from /ignore: clears the link and returns the event to a plain
+/// undecided state (still eligible for gating/relinking), rather than also
+/// marking it ignored. See the calendar-entry detail panel's "Remove
+/// linked task" action.
+calendarRouter.post('/events/:eventId/unlink', async (req, res) => {
+  await prisma.calendarEventLink.updateMany({
+    where: { userId: req.userId!, externalEventId: req.params.eventId },
+    data: { linkedAsanaTaskGid: null, linkedTaskName: null, linkedTaskPermalinkUrl: null },
   });
   res.status(204).end();
 });
@@ -151,7 +219,7 @@ calendarRouter.post('/events/:eventId/ignore', async (req, res) => {
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },
     create: { userId: req.userId!, externalEventId: req.params.eventId, ignored: true },
-    update: { ignored: true, linkedAsanaTaskGid: null, linkedTaskName: null },
+    update: { ignored: true, linkedAsanaTaskGid: null, linkedTaskName: null, linkedTaskPermalinkUrl: null },
   });
   res.status(204).end();
 });
@@ -187,8 +255,14 @@ calendarRouter.post('/events/:eventId/add-task', async (req, res) => {
 
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },
-    create: { userId: req.userId!, externalEventId: req.params.eventId, linkedAsanaTaskGid: created.gid, linkedTaskName: created.name },
-    update: { linkedAsanaTaskGid: created.gid, linkedTaskName: created.name, ignored: false },
+    create: {
+      userId: req.userId!,
+      externalEventId: req.params.eventId,
+      linkedAsanaTaskGid: created.gid,
+      linkedTaskName: created.name,
+      linkedTaskPermalinkUrl: created.permalink_url,
+    },
+    update: { linkedAsanaTaskGid: created.gid, linkedTaskName: created.name, linkedTaskPermalinkUrl: created.permalink_url, ignored: false },
   });
-  res.status(201).json({ gid: created.gid, name: created.name });
+  res.status(201).json({ gid: created.gid, name: created.name, permalinkUrl: created.permalink_url });
 });

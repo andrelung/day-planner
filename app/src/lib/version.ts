@@ -15,11 +15,20 @@ export const GIT_COMMIT = import.meta.env.VITE_GIT_COMMIT || 'dev';
 /// share one commit hash, so GIT_COMMIT alone could never tell a client
 /// running an hour-old rebuild apart from one running the latest.
 export const BUILD_ID = import.meta.env.VITE_BUILD_ID || 'dev';
-/// A short, human-written description of whatever's currently uncommitted
-/// (set via `DEV_NOTE=... bash scripts/rebuild.sh`) — shown as its own
-/// "Currently developing: ..." line wherever VERSION_LABEL appears,
-/// instead of a bare, meaningless "-dirty" suffix that never said *what*
-/// was uncommitted. Empty string (nothing shown) when unset.
-export const DEV_NOTE = import.meta.env.VITE_DEV_NOTE || '';
+/// Every short, human-written note describing what's currently uncommitted
+/// (each set via `DEV_NOTE=... bash scripts/rebuild.sh`, one per rebuild —
+/// see rebuild.sh's own comment for why these accumulate instead of each
+/// rebuild's note replacing the last) — shown as a "Currently in
+/// development:" list wherever VERSION_LABEL appears, instead of a bare,
+/// meaningless "-dirty" suffix that never said *what* was uncommitted.
+/// Empty array (nothing shown) once the tree is clean again.
+export const DEV_NOTES: string[] = (() => {
+  try {
+    const parsed = JSON.parse(import.meta.env.VITE_DEV_NOTES_JSON || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+})();
 
-export const VERSION_LABEL = `v${APP_VERSION} - commit ${GIT_COMMIT}`;
+export const VERSION_LABEL = `v${APP_VERSION} · commit ${GIT_COMMIT}`;

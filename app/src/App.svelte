@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { planner } from './lib/store.svelte';
-  import { DEV_NOTE, VERSION_LABEL } from './lib/version';
+  import { DEV_NOTES, VERSION_LABEL } from './lib/version';
   import Toast from './lib/components/Toast.svelte';
   import UpdateNotice from './lib/components/UpdateNotice.svelte';
   import Celebration from './lib/components/Celebration.svelte';
@@ -144,12 +144,16 @@
           {/if}
         {/if}
         <div class="loading__footer">
-          <p class="loading__version">{VERSION_LABEL}</p>
-          {#if DEV_NOTE}
-            <p class="loading__dev-note">
-              <span class="loading__dev-note-label">Currently developing:</span>
-              <span class="loading__dev-note-text">{DEV_NOTE}</span>
-            </p>
+          <p class="loading__version">{VERSION_LABEL} {#if DEV_NOTES.length > 0}· currently in development:{/if}</p>
+          {#if DEV_NOTES.length > 0}
+            <div class="loading__dev-notes">
+              {#each DEV_NOTES as note (note)}
+                <div class="loading__dev-notes-item">
+                  <span class="loading__dev-notes-bullet">•</span>
+                  <span>{note}</span>
+                </div>
+              {/each}
+            </div>
           {/if}
         </div>
       </div>
@@ -269,7 +273,15 @@
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 16px;
+    bottom: 28px;
+    /* The dev-notes list accumulates across every uncommitted rebuild (see
+       version.ts) with no upper bound — during a long testing session it
+       can grow tall enough that, anchored purely by `bottom`, its top edge
+       creeps up into the vertically-centered spinner/status block above
+       it. Capping the height and scrolling internally keeps the footer's
+       footprint predictable regardless of how many notes have piled up. */
+    max-height: 40vh;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -277,26 +289,43 @@
     padding: 0 24px;
   }
   .loading__version {
+    margin: 0;
     font-size: 11px;
     font-weight: var(--font-weight-normal);
     font-variant-numeric: tabular-nums;
     opacity: 0.5;
   }
-  .loading__dev-note {
+  .loading__dev-notes {
+    /* Explicit width rather than left to flexbox's own shrink-to-fit —
+       .loading__footer centers its children by default, which left this
+       block auto-sized to some content-derived width instead of the
+       footer's actual available width, so wrapping happened at an
+       unpredictable boundary and the hanging indent (see
+       loading__dev-notes-item below) never lined up against where text
+       actually wrapped. */
+    width: 100%;
+    box-sizing: border-box;
     display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    column-gap: 4px;
+    flex-direction: column;
+    gap: 5px;
     font-size: 11px;
     font-weight: var(--font-weight-normal);
     opacity: 0.5;
-    text-align: center;
   }
-  .loading__dev-note-label {
-    white-space: nowrap;
+  /* A real flex column for the bullet instead of text-indent/::before —
+     that approach measured the hanging indent in px against a bullet
+     glyph of unknown rendered width, so the wrapped line never quite
+     lined up under the first line's actual text. A dedicated bullet
+     column of its own width means the text span's left edge is exactly
+     the same position on every line, wrapped or not. */
+  .loading__dev-notes-item {
+    display: flex;
+    gap: 4px;
+    text-align: left;
+    line-height: 1.3;
   }
-  .loading__dev-note-text {
-    min-width: 0;
+  .loading__dev-notes-bullet {
+    flex-shrink: 0;
   }
   @keyframes loading-spin {
     to {

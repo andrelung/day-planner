@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { planner } from '../store.svelte';
   import Icon from './Icon.svelte';
+  import Input from './Input.svelte';
   import type { OutlookBlock, Task } from '../types';
 
   interface Props {
@@ -297,6 +298,16 @@
   let dragOrigTop = 0;
   let dragHeight = 0;
 
+  /// A task block squeezed into a narrow side-by-side column (see
+  /// assignColumns) truncates its own name to an unreadable "Teilnah…" —
+  /// tapping it (a genuine tap, not a drag — see endDrag's "didn't really
+  /// move" branch below) expands it to the track's full width and lets its
+  /// name wrap instead of clipping, so reading it doesn't require dragging
+  /// it out of its column first. Only one at a time; tapping the same
+  /// block again, tapping a different one, or tapping open track space all
+  /// collapse/replace it (see onTrackClick).
+  let expandedBlockId: string | null = $state(null);
+
   function beginDrag(e: PointerEvent, target: DragTarget, origTop: number, height: number) {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragTarget = target;
@@ -320,13 +331,18 @@
       pendingMin = clampMin(snap(startMin + finalTop / PX_PER_MIN));
       return;
     }
-    // A tap that never really moved shouldn't count as a "move" attempt.
-    if (Math.abs(finalTop - draggedFrom) < SNAP_MIN * PX_PER_MIN * 0.5) return;
+    // A tap that never really moved shouldn't count as a "move" attempt —
+    // toggle its expanded/readable state instead.
+    if (Math.abs(finalTop - draggedFrom) < SNAP_MIN * PX_PER_MIN * 0.5) {
+      expandedBlockId = expandedBlockId === target.taskId ? null : target.taskId;
+      return;
+    }
     const hhmm = toHHMM(clampMin(snap(startMin + finalTop / PX_PER_MIN)));
     await planner.moveOtherTask(target.taskId, date, hhmm);
   }
 
   function onTrackClick(e: MouseEvent, trackEl: HTMLElement) {
+    expandedBlockId = null;
     if (!allowPlacement || dragTarget) return;
     const y = e.clientY - trackEl.getBoundingClientRect().top;
     pendingMin = clampMin(snap(startMin + y / PX_PER_MIN));
@@ -354,13 +370,16 @@
       <div bind:this={scrollAnchorEl} class="scroll-anchor" style="top:{(scrollAnchorMin - startMin) * PX_PER_MIN}px;"></div>
     {/if}
     {#each blocks as b (b.task.id)}
+      {@const expanded = b.task.id === expandedBlockId}
+      {@const dragging = dragTarget?.kind === 'other' && dragTarget.taskId === b.task.id}
       <div
         class="task-block"
         class:task-block--stacked={b.stackDepth > 0}
-        class:task-block--dragging={dragTarget?.kind === 'other' && dragTarget.taskId === b.task.id}
-        style="{colStyle(b.col, b.cols, b.stackDepth)} top:{dragTarget?.kind === 'other' && dragTarget.taskId === b.task.id
+        class:task-block--dragging={dragging}
+        class:task-block--expanded={expanded}
+        style="{expanded ? 'left:6px; right:6px;' : colStyle(b.col, b.cols, b.stackDepth)} top:{dragging
           ? dragTop
-          : b.top}px; height:{b.height}px; z-index:{dragTarget?.kind === 'other' && dragTarget.taskId === b.task.id ? 5 : 1 + b.stackDepth};"
+          : b.top}px; height:{expanded ? 'auto' : `${b.height}px`}; min-height:{b.height}px; z-index:{expanded ? 15 : dragging ? 5 : 1 + b.stackDepth};"
         onpointerdown={(e) => beginDrag(e, { kind: 'other', taskId: b.task.id }, b.top, b.height)}
         onpointermove={onDragMove}
         onpointerup={endDrag}
@@ -406,10 +425,23 @@
       <div
         class="outlook-block"
         class:outlook-block--stacked={o.stackDepth > 0}
+        class:outlook-block--linked={o.event.linked}
+        class:outlook-block--ignored={o.event.ignored}
+        class:outlook-block--clickable={!allowPlacement}
         style="{colStyle(o.col, o.cols, o.stackDepth)} top:{o.top}px; height:{o.height}px; z-index:{1 + o.stackDepth};"
-        onclick={(e) => e.stopPropagation()}
+        onclick={(e) => {
+          e.stopPropagation();
+          expandedBlockId = null;
+          if (!allowPlacement) planner.openEventDetail(o.event.id);
+        }}
       >
-        <Icon name="calendar" size={12} color="var(--color-text-muted)" />
+        {#if o.event.linked}
+          <Icon name="link" size={12} color="var(--color-feedback-correct)" />
+        {:else if o.event.ignored}
+          <Icon name="link-off" size={12} color="var(--color-text-muted)" />
+        {:else}
+          <Icon name="calendar" size={12} color="var(--color-text-muted)" />
+        {/if}
         <div class="outlook-block__text">
           <div class="outlook-block__name">{o.event.title}</div>
           <div class="outlook-block__time">{toHHMM(isoStartMinutes(o.event.start))}–{toHHMM(isoStartMinutes(o.event.end))}</div>
@@ -471,6 +503,74 @@
     {/if}
   </div>
 </div>
+
+{#if !allowPlacement && planner.detailPanelEvent}
+  {@const de = planner.detailPanelEvent}
+  {@const mode = planner.activePanelEventId === de.id ? planner.activePanelMode : null}
+  <div class="detail-backdrop" onclick={() => planner.closeEventDetail()}>
+    <div class="detail-sheet" onclick={(e) => e.stopPropagation()}>
+      <div class="detail-sheet__title">{de.title}</div>
+      <div class="detail-sheet__subtitle">{toHHMM(isoStartMinutes(de.start))}–{toHHMM(isoStartMinutes(de.end))}</div>
+
+      {#if de.linked}
+        <div class="detail-sheet__status detail-sheet__status--linked">
+          <Icon name="link" size={14} color="var(--color-feedback-correct)" />
+          Linked to "{de.linkedName}"
+        </div>
+      {:else if de.ignored}
+        <div class="detail-sheet__status">
+          <Icon name="link-off" size={14} color="var(--color-text-muted)" />
+          Ignored for task-linking
+        </div>
+      {:else}
+        <div class="detail-sheet__status">Not linked to a task yet</div>
+      {/if}
+
+      {#if mode}
+        <div class="search-panel">
+          <div class="search-panel__top">
+            <div class="search-panel__title">{mode === 'add' ? 'Add to project or subtask' : 'Link to a task or project'}</div>
+            <button class="search-panel__cancel" onclick={() => planner.closeSearchPanel()}>Cancel</button>
+          </div>
+          <Input placeholder="Search projects or tasks…" value={planner.searchQuery} onchange={(v) => planner.onSearchChange(v)} />
+          {#if planner.typeaheadLoading}
+            <div class="search-loading">
+              <div class="search-loading__spinner"></div>
+              <span>Searching…</span>
+            </div>
+          {:else}
+            <div class="search-results">
+              {#each planner.searchResultsFor(de.id, mode) as r}
+                {@const m = planner.matchSplit(r.label)}
+                <button class="search-result" onclick={r.onSelect}>
+                  <div class="search-result__label">
+                    {#if m}{m.pre}<mark>{m.match}</mark>{m.post}{:else}{r.label}{/if}
+                  </div>
+                  <div class="search-result__type">{r.typeLabel}</div>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {:else}
+        {#if de.linked}
+          {#if de.linkedTaskPermalinkUrl}
+            <a class="detail-sheet__action" href={de.linkedTaskPermalinkUrl} target="_blank" rel="noopener noreferrer">See linked task</a>
+          {/if}
+          <button class="detail-sheet__action detail-sheet__action--danger" onclick={() => planner.unlinkEvent(de.id)}>Remove linked task</button>
+        {:else if de.ignored}
+          <button class="detail-sheet__action" onclick={() => planner.unignoreEvent(de.id)}>Un-ignore</button>
+        {:else}
+          <button class="detail-sheet__action" onclick={() => planner.openAddPanel(de.id)}>Add as new subtask</button>
+          <button class="detail-sheet__action" onclick={() => planner.openLinkPanel(de.id)}>Link existing task</button>
+          <button class="detail-sheet__action detail-sheet__action--danger" onclick={() => planner.ignoreEvent(de.id)}>Ignore this event</button>
+        {/if}
+        <a class="detail-sheet__action" href={de.webLink} target="_blank" rel="noopener noreferrer">Open externally</a>
+        <button class="detail-sheet__cancel" onclick={() => planner.closeEventDetail()}>Close</button>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
   .calendar {
@@ -581,6 +681,21 @@
   .task-block--stacked {
     box-shadow: -2px 0 4px rgba(22, 32, 60, 0.12);
   }
+  /* A tap (not a drag — see endDrag) on a block squeezed into a narrow
+     column expands it to the track's full width so its truncated name can
+     wrap and actually be read, instead of requiring a drag out of the
+     column first. Above every other block's z-index (including a
+     stacked/dragging one) but under the pending block's, which stays the
+     one thing actively being placed. */
+  .task-block--expanded {
+    box-shadow: var(--shadow-overlay-sm);
+    border-color: var(--color-brand-primary);
+  }
+  .task-block--expanded .task-block__name {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+  }
   .task-block__name {
     min-width: 0;
     font-family: var(--font-family-base);
@@ -623,10 +738,13 @@
     cursor: pointer;
     touch-action: none;
   }
-  /* Read-only — no drag, no reset button — this app doesn't own Outlook
-     events, it's just showing why a time might not really be free. Striped
-     background instead of a solid fill to read as "not a task" at a
-     glance, distinct from .task-block. */
+  /* Not draggable/clearable — this app doesn't own Outlook events, it's
+     just showing why a time might not really be free — but clickable (see
+     outlook-block--clickable) to inspect/resolve its task-linking state.
+     Striped background instead of a solid fill is this block's *default*,
+     unresolved look — neither linked nor ignored yet, i.e. still needs a
+     decision — distinct from a plain .task-block and from the resolved
+     states below. */
   .outlook-block {
     position: absolute;
     background: repeating-linear-gradient(135deg, var(--color-bg-page), var(--color-bg-page) 6px, var(--color-border) 6px, var(--color-border) 12px);
@@ -641,6 +759,24 @@
   }
   .outlook-block--stacked {
     box-shadow: -2px 0 4px rgba(22, 32, 60, 0.12);
+  }
+  /* Resolved: linked to a task — solid fill instead of the "needs a
+     decision" stripe, with a feedback-correct border so it reads as done
+     at a glance against the still-striped unresolved blocks around it. */
+  .outlook-block--linked {
+    background: var(--color-bg-page);
+    border-color: var(--color-feedback-correct);
+  }
+  /* Also resolved, just the other direction — deliberately not going to
+     link this one. Muted rather than the striped "still needs a decision"
+     look, dashed border to distinguish it from --linked's solid one. */
+  .outlook-block--ignored {
+    background: var(--color-bg-page);
+    border-style: dashed;
+    opacity: 0.55;
+  }
+  .outlook-block--clickable {
+    cursor: pointer;
   }
   .outlook-block__text {
     min-width: 0;
@@ -754,5 +890,179 @@
   .pending-block__btn--remove {
     background: var(--color-feedback-wrong);
     color: var(--color-text-inverse);
+  }
+  /* Fixed rather than absolute (unlike Overview's equivalent popup) since
+     DayCalendar can be nested anywhere — a fixed backdrop always covers the
+     full viewport regardless of which screen embeds it. */
+  .detail-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(22, 32, 60, 0.4);
+    display: flex;
+    align-items: flex-end;
+    z-index: 70;
+  }
+  .detail-sheet {
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+    background: var(--color-bg-surface);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    padding: 20px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+  }
+  .detail-sheet__title {
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-extrabold);
+    font-size: 17px;
+    color: var(--color-text-primary);
+  }
+  .detail-sheet__subtitle {
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    color: var(--color-text-muted);
+    margin-top: 4px;
+  }
+  .detail-sheet__status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 12px;
+    margin-bottom: 16px;
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-muted);
+  }
+  .detail-sheet__status--linked {
+    color: var(--color-feedback-correct);
+  }
+  .detail-sheet__action {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: var(--color-bg-page);
+    border: none;
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 15px;
+    color: var(--color-text-primary);
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+  .detail-sheet__action--danger {
+    color: var(--color-feedback-wrong);
+  }
+  .detail-sheet__cancel {
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: none;
+    border: none;
+    padding: 12px;
+    margin-top: 4px;
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 14px;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+  /* Same shape/classes as Overview's inline add/link panel — kept visually
+     identical on purpose (see Overview.svelte's own note on this). */
+  .search-panel {
+    margin-top: 10px;
+    background: var(--color-bg-page);
+    border-radius: var(--radius-md);
+    padding: 10px;
+  }
+  .search-panel__top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .search-panel__title {
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    font-weight: var(--font-weight-bold);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+  }
+  .search-panel__cancel {
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+  .search-results {
+    max-height: 160px;
+    overflow-y: auto;
+    margin-top: 8px;
+  }
+  .search-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 16px 0;
+    font-family: var(--font-family-base);
+    font-size: 12px;
+    color: var(--color-text-muted);
+  }
+  .search-loading__spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-brand-primary);
+    border-radius: 50%;
+    animation: search-loading-spin 0.7s linear infinite;
+  }
+  @keyframes search-loading-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .search-result {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 6px;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    width: 100%;
+    background: none;
+    border: none;
+    text-align: left;
+  }
+  .search-result:hover {
+    background: var(--color-bg-page);
+  }
+  .search-result__label {
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .search-result__type {
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+  .search-result__label mark {
+    background: none;
+    color: var(--color-brand-primary);
+    font-weight: var(--font-weight-bold);
   }
 </style>

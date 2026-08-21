@@ -3,7 +3,7 @@
   import { planner } from '../store.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Input from '../components/Input.svelte';
-  import { DEV_NOTE, VERSION_LABEL } from '../version';
+  import { DEV_NOTES, VERSION_LABEL } from '../version';
 
   // Intl.supportedValuesOf isn't in every older browser (Safari added it in
   // 15.4) — fall back to just the current value plus UTC so the picker still
@@ -118,11 +118,15 @@
         </button>
       </div>
     {/if}
-    <div class="version">{VERSION_LABEL}</div>
-    {#if DEV_NOTE}
-      <div class="dev-note">
-        <span class="dev-note__label">Currently developing:</span>
-        <span class="dev-note__text">{DEV_NOTE}</span>
+    <div class="version">{VERSION_LABEL} {#if DEV_NOTES.length > 0}· currently in development:{/if}</div>
+    {#if DEV_NOTES.length > 0}
+      <div class="dev-notes">
+        {#each DEV_NOTES as note (note)}
+          <div class="dev-notes__item">
+            <span class="dev-notes__bullet">•</span>
+            <span>{note}</span>
+          </div>
+        {/each}
       </div>
     {/if}
   </div>
@@ -293,22 +297,30 @@
     opacity: 0.6;
     text-align: center;
   }
-  .dev-note {
+  .dev-notes {
+    width: 100%;
+    box-sizing: border-box;
     display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    column-gap: 4px;
+    flex-direction: column;
+    gap: 5px;
     font-family: var(--font-family-base);
     font-size: 11px;
     color: var(--color-text-muted);
     opacity: 0.6;
-    text-align: center;
     margin-top: -12px;
   }
-  .dev-note__label {
-    white-space: nowrap;
+  /* A real flex column for the bullet — see App.svelte's identical
+     loading-screen version for why this replaced text-indent/::before:
+     that measured the hanging indent against a bullet glyph of unknown
+     rendered width, so a wrapped line never quite lined up under the
+     first line's actual text. */
+  .dev-notes__item {
+    display: flex;
+    gap: 4px;
+    text-align: left;
+    line-height: 1.3;
   }
-  .dev-note__text {
-    min-width: 0;
+  .dev-notes__bullet {
+    flex-shrink: 0;
   }
 </style>

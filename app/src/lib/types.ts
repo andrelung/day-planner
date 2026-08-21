@@ -73,16 +73,32 @@ export interface CalendarEvent {
   /// Overview list jump straight to that task's own card (see
   /// openEventInTriage) instead of just landing on the event's date.
   linkedTaskGid: string | null;
+  /// The linked task's own Asana permalink, or null — lets a detail panel
+  /// open the linked task directly instead of only naming it.
+  linkedTaskPermalinkUrl: string | null;
+  /// Opens the event in Outlook on the web.
+  webLink: string;
 }
 
 /// An Outlook event for one specific day, as returned alongside free-slots
 /// — drawn read-only on DayCalendar so a meeting is visibly a reason a
-/// time isn't free, same as an Asana task block.
+/// time isn't free, same as an Asana task block. Carries the same
+/// link/ignore state as CalendarEvent (unlike CalendarEvent, ignored events
+/// aren't filtered out here — see calendar.ts's /free-slots route — since
+/// an ignored event is still real busy time on the day, just one the user
+/// has already decided not to link) so DayCalendar's blocks can be opened
+/// into a detail panel instead of being purely decorative.
 export interface OutlookBlock {
   id: string;
   title: string;
   start: string;
   end: string;
+  linked: boolean;
+  linkedName: string | null;
+  linkedTaskGid: string | null;
+  linkedTaskPermalinkUrl: string | null;
+  ignored: boolean;
+  webLink: string;
 }
 
 export interface Project {
@@ -120,10 +136,11 @@ export interface PendingEventLink {
   /// Title of the *other* event this task is already linked to, purely for
   /// the confirmation screen's copy.
   conflictingEventTitle: string;
-  /// Screen the link attempt started from — Overview's inline panel or
-  /// Triage's event card both reach linkEventToTask, so "choose a
-  /// different task" needs to know which one to go back to.
-  returnScreen: 'triage' | 'overview';
+  /// Screen the link attempt started from — Overview's inline panel,
+  /// Triage's event card, and the calendar view's detail panel all reach
+  /// linkEventToTask, so "choose a different task" needs to know which one
+  /// to go back to.
+  returnScreen: 'triage' | 'overview' | 'calendarView';
 }
 
 /// An optional action shown alongside a toast — "Retry" on a load failure,

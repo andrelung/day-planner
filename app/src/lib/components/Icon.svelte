@@ -14,7 +14,9 @@
       | 'warning-triangle'
       | 'arrow-right'
       | 'settings'
-      | 'calendar';
+      | 'calendar'
+      | 'link'
+      | 'link-off';
     size?: number;
     color?: string;
   }
@@ -79,5 +81,12 @@
     <line x1="16" y1="2" x2="16" y2="6"></line>
     <line x1="8" y1="2" x2="8" y2="6"></line>
     <line x1="3" y1="10" x2="21" y2="10"></line>
+  {:else if name === 'link'}
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+  {:else if name === 'link-off'}
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+    <line x1="3" y1="21" x2="21" y2="3"></line>
   {/if}
 </svg>

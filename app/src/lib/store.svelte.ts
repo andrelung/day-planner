@@ -16,8 +16,49 @@ import type {
 import { api, ApiError } from './api';
 import { fmtHours, slotStartTime } from './format';
 import { BUILD_ID } from './version';
+import { stringSimilarity } from 'string-similarity-js';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+let toastRetryInterval: ReturnType<typeof setInterval> | undefined;
+
+/// Lowercased, diacritic- and punctuation-stripped, whitespace-collapsed —
+/// normalizes e.g. "Kick-off: Q3-Planung" and "kickoff q3 planung" to
+/// directly comparable forms before scoring similarity or picking a search
+/// seed word (see nameSimilarity and searchSeedFor below).
+function normalizeForMatch(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+/// A 0..1 name-similarity score for ranking suggestedTaskMatches —
+/// Dice's coefficient over character bigrams (string-similarity-js),
+/// not a whole-word match. Word-overlap matching would score a calendar
+/// event titled "Kundengespräch Telekom" against a task named "Kunde
+/// Termin Telekom" as barely related ("Kundengespräch" and "Kunde"/
+/// "Termin" don't literally match as tokens) — German's compounding
+/// especially breaks that assumption often enough that character-level
+/// comparison is the more reliable default, and it degrades gracefully
+/// for typos/abbreviations instead of just returning zero once there's no
+/// exact word in common.
+function nameSimilarity(a: string, b: string): number {
+  return stringSimilarity(normalizeForMatch(a), normalizeForMatch(b));
+}
+/// Picks the single most distinctive word from a title to seed the add
+/// panel's search box with (see openAddPanel) — a calendar event's first
+/// word is very often a generic meeting-type prefix ("Abstimmung", "Sync",
+/// "Kickoff"...), not anything that'd actually narrow down Asana's own
+/// typeahead, so picking blindly by position doesn't work well. The
+/// longest word left after dropping short connectors is a much better bet
+/// for "distinctive" without needing a maintained stopword list — filler
+/// words rarely end up being the single longest word in a real title.
+function searchSeedFor(title: string): string {
+  const words = title.trim().split(/\s+/).filter((w) => normalizeForMatch(w).length > 2);
+  return words.length === 0 ? '' : words.reduce((best, w) => (w.length > best.length ? w : best));
+}
 
 /// Non-linear duration steps for every hours stepper in the app (estimate
 /// editing, split-into-a-part duration) — fine-grained near zero where the
@@ -327,27 +368,64 @@ class PlannerStore {
 
   // --- toast ---
   toastAction: ToastAction | null = $state(null);
+  toastRetry: { secondsLeft: number; onRetry: () => void } | null = $state(null);
   /// `action` gets its own longer window (5s vs 2.6s) since it takes a
   /// moment to notice there's something to tap, on top of reading the
   /// message itself.
   showToast(msg: string, action?: ToastAction) {
     clearTimeout(toastTimer);
+    clearInterval(toastRetryInterval);
     this.toastMsg = msg;
     this.toastAction = action ?? null;
+    this.toastRetry = null;
     toastTimer = setTimeout(() => {
       this.toastMsg = null;
       this.toastAction = null;
     }, action ? 5000 : 2600);
   }
+  /// An error toast that counts down and retries on its own unless the user
+  /// steps in — "Abort" cancels for good, "Retry now" skips the wait. Used
+  /// for failures worth self-healing from without requiring the user to
+  /// notice and tap a plain "Retry" button, most importantly the boot-time
+  /// task load: staying broken there means an empty Triage screen until
+  /// someone happens to tap Retry.
+  showRetryToast(msg: string, onRetry: () => void, seconds = 3) {
+    clearTimeout(toastTimer);
+    clearInterval(toastRetryInterval);
+    this.toastMsg = msg;
+    this.toastAction = null;
+    this.toastRetry = { secondsLeft: seconds, onRetry };
+    toastRetryInterval = setInterval(() => {
+      if (!this.toastRetry) return;
+      if (this.toastRetry.secondsLeft <= 1) this.retryNow();
+      else this.toastRetry = { ...this.toastRetry, secondsLeft: this.toastRetry.secondsLeft - 1 };
+    }, 1000);
+  }
+  retryNow() {
+    const retry = this.toastRetry;
+    this.dismissToast();
+    retry?.onRetry();
+  }
+  abortRetry() {
+    this.dismissToast();
+  }
   dismissToast() {
     clearTimeout(toastTimer);
+    clearInterval(toastRetryInterval);
     this.toastMsg = null;
     this.toastAction = null;
+    this.toastRetry = null;
   }
 
   private reportError(err: unknown, fallback: string, action?: ToastAction) {
     const msg = err instanceof ApiError ? err.message : fallback;
     this.showToast(msg, action);
+  }
+  /// Same idea as reportError, but for failures that should self-heal via
+  /// showRetryToast above instead of a plain single "Retry" action.
+  private reportRetryableError(err: unknown, fallback: string, onRetry: () => void) {
+    const msg = err instanceof ApiError ? err.message : fallback;
+    this.showRetryToast(msg, onRetry);
   }
 
   // --- boot ---
@@ -564,7 +642,7 @@ class PlannerStore {
       await this.streamTasks();
       localStorage.setItem('lastTaskCount', String(this.tasks.length));
     } catch (err) {
-      this.reportError(err, 'Could not load tasks from Asana', { label: 'Retry', onClick: () => void this.bootRefreshTasks() });
+      this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.bootRefreshTasks());
       // Land on Triage with whatever (possibly nothing) came in rather than
       // leaving the user stuck on the loading screen after a failure.
       if (this.screen === 'loading') this.screen = 'triage';
@@ -737,7 +815,7 @@ class PlannerStore {
       if (focusId) this.selectFocus(focusId);
       if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     } catch (err) {
-      this.reportError(err, 'Could not load tasks from Asana', { label: 'Retry', onClick: () => void this.refreshTasks() });
+      this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.refreshTasks());
     }
   }
 
@@ -2192,24 +2270,18 @@ class PlannerStore {
   openAddPanel(eventId: string) {
     this.activePanelEventId = eventId;
     this.activePanelMode = 'add';
-    this.searchQuery = this.firstWordOfEventTitle(eventId);
+    this.searchQuery = searchSeedFor(this.eventInfo(eventId)?.title ?? '');
     void this.runTypeahead();
   }
+  /// Unlike openAddPanel, doesn't seed a typeahead search — suggestedTaskMatches
+  /// (see searchResultsFor) already surfaces the best same-day, name-similar
+  /// candidates the moment the panel opens, which is a stronger starting
+  /// point than a single keyword handed to Asana's own typeahead. Typing
+  /// anything still falls through to that regular search as normal.
   openLinkPanel(eventId: string) {
     this.activePanelEventId = eventId;
     this.activePanelMode = 'link';
-    this.searchQuery = this.firstWordOfEventTitle(eventId);
-    void this.runTypeahead();
-  }
-  /// Seeds the search box with a head start instead of opening empty — the
-  /// event's own title is usually the best hint for which task/project it
-  /// belongs to. Just the first word, not the whole title: Asana's
-  /// typeahead is a substring/relevance match, and a full multi-word
-  /// title (e.g. one with a date or ticket number tacked on) is more
-  /// likely to under-match than a single common word is to over-match.
-  private firstWordOfEventTitle(eventId: string): string {
-    const title = this.events.find((e) => e.id === eventId)?.title.trim();
-    return title ? title.split(/\s+/)[0] : '';
+    this.searchQuery = '';
   }
   closeSearchPanel() {
     clearTimeout(this.typeaheadTimer);
@@ -2291,11 +2363,20 @@ class PlannerStore {
     return { pre: label.slice(0, idx), match: label.slice(idx, idx + query.length), post: label.slice(idx + query.length) };
   }
   /// Backs the search-result list in both the add/link panels' project or
-  /// subtask/task search — shared by Overview.svelte and Triage.svelte's
-  /// event-triage card. Asana's own typeahead endpoint (runTypeahead) is
-  /// the primary source; falls back to filtering the client's already-loaded
-  /// projects/tasks if that failed (e.g. the connected account predates the
-  /// workspaces.typeahead:read scope and hasn't been reconnected yet).
+  /// subtask/task search — shared by Overview.svelte, Triage.svelte's
+  /// event-triage card, and DayCalendar's calendar-view detail panel.
+  /// Asana's own typeahead endpoint (runTypeahead) is the primary source
+  /// once the user's typed something; falls back to filtering the client's
+  /// already-loaded projects/tasks if that failed (e.g. the connected
+  /// account predates the workspaces.typeahead:read scope and hasn't been
+  /// reconnected yet).
+  ///
+  /// In "link" mode specifically, an empty query (i.e. the panel's just
+  /// been opened, see openLinkPanel) shows suggestedTaskMatches first
+  /// instead of nothing — same-day tasks ranked by name similarity to the
+  /// event, which is a much stronger starting point than an unseeded
+  /// typeahead search. Deduped against whatever else is about to be listed
+  /// so a genuinely good match doesn't show up twice.
   ///
   /// Both panels show the same project results — selecting one always
   /// creates a new task for this event under it, "link" mode included,
@@ -2311,23 +2392,34 @@ class PlannerStore {
       mode === 'add'
         ? (gid: string, name: string, permalinkUrl: string) => this.addEventAsSubtask(eventId, gid, name, permalinkUrl)
         : (gid: string, name: string, permalinkUrl: string) => this.linkEventToTask(eventId, gid, name, permalinkUrl);
+
+    const suggested = mode === 'link' && !query ? this.suggestedTaskMatches(eventId) : [];
+    const suggestedGids = new Set(suggested.map((m) => m.gid));
+    const suggestedResults = suggested.map((m) => ({
+      label: m.name,
+      typeLabel: 'Suggested · same day',
+      onSelect: () => taskAction(m.gid, m.name, m.permalinkUrl),
+    }));
+
     if (this.typeaheadOk) {
-      return this.typeaheadResults
+      const rest = this.typeaheadResults
+        .filter((r) => r.resourceType === 'project' || !suggestedGids.has(r.gid))
         .map((r) =>
           r.resourceType === 'project'
             ? { label: r.name, typeLabel: 'Project', onSelect: () => this.addEventAsTaskWithProject(eventId, r.gid, r.name) }
             : { label: r.name, typeLabel: taskTypeLabel, onSelect: () => taskAction(r.gid, r.name, r.permalinkUrl) },
-        )
-        .slice(0, RESULT_LIMIT);
+        );
+      return [...suggestedResults, ...rest].slice(0, RESULT_LIMIT);
     }
-    return [
+    const rest = [
       ...this.projects
         .filter((p) => !query || p.name.toLowerCase().includes(query))
         .map((p) => ({ label: p.name, typeLabel: 'Project', onSelect: () => this.addEventAsTaskWithProject(eventId, p.gid, p.name) })),
       ...this.tasks
-        .filter((t) => !query || t.name.toLowerCase().includes(query))
+        .filter((t) => (!query || t.name.toLowerCase().includes(query)) && !suggestedGids.has(t.id))
         .map((t) => ({ label: t.name, typeLabel: taskTypeLabel, onSelect: () => taskAction(t.id, t.name, t.permalinkUrl) })),
-    ].slice(0, RESULT_LIMIT);
+    ];
+    return [...suggestedResults, ...rest].slice(0, RESULT_LIMIT);
   }
 
   // --- overview: per-event popup ("›") — Link to task / Ignore. "Add as
@@ -2339,20 +2431,82 @@ class PlannerStore {
   closeEventPopup() {
     this.activeEventPopupId = null;
   }
+
+  // --- calendar view: click-to-open entry detail panel (see DayCalendar's
+  // outlook-block onclick) — a second, independent entry point into the
+  // same link/add/ignore actions as Overview's popup above, driven by
+  // calendarViewOutlookEvents instead of `events` (the two lists overlap
+  // but neither is a subset of the other — see eventTitle/
+  // patchCalendarViewEvent below for how the shared actions stay correct
+  // regardless of which list actually has the event loaded).
+  detailPanelEventId: string | null = $state(null);
+  openEventDetail(eventId: string) {
+    this.detailPanelEventId = eventId;
+  }
+  closeEventDetail() {
+    this.detailPanelEventId = null;
+    this.closeSearchPanel();
+  }
+  get detailPanelEvent(): OutlookBlock | null {
+    return this.calendarViewOutlookEvents.find((e) => e.id === this.detailPanelEventId) ?? null;
+  }
+  /// The link/add/ignore actions below all need a title (for their toast
+  /// copy) and a date (for suggestedTaskMatches) — `events` (Overview's
+  /// 7-day list) has both if loaded, but the calendar-view detail panel
+  /// can act on an event that's only ever been fetched via
+  /// calendarViewOutlookEvents (a specific day's free-slots call), never
+  /// through `events` at all. Checked in both places rather than requiring
+  /// one to be a superset of the other.
+  private eventInfo(eventId: string): { title: string; dateStr: string } | undefined {
+    const e = this.events.find((e) => e.id === eventId) ?? this.calendarViewOutlookEvents.find((e) => e.id === eventId);
+    return e ? { title: e.title, dateStr: this.toLocalDateStr(e.start) } : undefined;
+  }
+  private eventTitle(eventId: string): string | undefined {
+    return this.eventInfo(eventId)?.title;
+  }
+  /// The best guesses for which existing task a calendar event should link
+  /// to — a task due the same calendar day as the event is very often
+  /// already the right one (with no due *time* set yet, since it hasn't
+  /// been placed on the calendar), so same-day tasks are the entire
+  /// candidate pool, ranked purely by nameSimilarity against the event's
+  /// title. Shown in the "Link existing task" panel (see searchResultsFor)
+  /// whenever the search box is still empty — the moment the panel opens,
+  /// before the user's typed anything of their own to search for instead.
+  private suggestedTaskMatches(eventId: string): { gid: string; name: string; permalinkUrl: string; score: number }[] {
+    const info = this.eventInfo(eventId);
+    if (!info) return [];
+    return this.tasks
+      .filter((t) => t.dueOn === info.dateStr)
+      .map((t) => ({ gid: t.id, name: t.name, permalinkUrl: t.permalinkUrl, score: nameSimilarity(info.title, t.name) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+  }
+  /// Keeps the currently-shown calendar-view day in sync with a link/add/
+  /// ignore/unlink action immediately, the same way the equivalent action
+  /// already updates `events` — without this, an action taken from the
+  /// detail panel would only show up after the next full free-slots
+  /// refetch (changing day and back, or reopening the screen).
+  private patchCalendarViewEvent(eventId: string, patch: Partial<OutlookBlock>) {
+    this.calendarViewOutlookEvents = this.calendarViewOutlookEvents.map((e) => (e.id === eventId ? { ...e, ...patch } : e));
+  }
   /// Dismisses an event from the Overview list — persisted server-side
   /// (see routes/calendar.ts), not just hidden client-side, so it stays
   /// gone across reloads.
   async ignoreEvent(eventId: string) {
-    const ev = this.events.find((e) => e.id === eventId);
-    if (!ev) return;
+    const title = this.eventTitle(eventId);
+    if (!title) return;
+    const removedFromEvents = this.events.find((e) => e.id === eventId);
     try {
       await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/ignore`, {});
       this.events = this.events.filter((e) => e.id !== eventId);
+      this.patchCalendarViewEvent(eventId, { ignored: true, linked: false, linkedName: null, linkedTaskGid: null, linkedTaskPermalinkUrl: null });
       this.closeEventPopup();
-      this.showToast(`Ignored "${ev.title}"`, {
+      this.closeEventDetail();
+      this.showToast(`Ignored "${title}"`, {
         label: 'Undo',
         onClick: () => {
-          this.events = [...this.events, ev];
+          if (removedFromEvents) this.events = [...this.events, removedFromEvents];
+          this.patchCalendarViewEvent(eventId, { ignored: false });
           api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/unignore`, {}).catch((err) => {
             this.reportError(err, 'Could not restore this event');
           });
@@ -2362,17 +2516,50 @@ class PlannerStore {
       this.reportError(err, 'Could not ignore this event');
     }
   }
+  /// "Remove linked task" in the detail panel — distinct from ignoreEvent
+  /// above: clears the link but leaves the event undecided (not ignored),
+  /// still eligible for gating/relinking, rather than dismissing it.
+  async unlinkEvent(eventId: string) {
+    const title = this.eventTitle(eventId);
+    try {
+      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/unlink`, {});
+      this.events = this.events.map((e) => (e.id === eventId ? { ...e, linked: false, linkedName: null, linkedTaskGid: null, linkedTaskPermalinkUrl: null } : e));
+      this.patchCalendarViewEvent(eventId, { linked: false, linkedName: null, linkedTaskGid: null, linkedTaskPermalinkUrl: null });
+      if (title) this.showToast(`Removed the linked task from "${title}"`);
+    } catch (err) {
+      this.reportError(err, 'Could not remove the linked task');
+    }
+  }
+  /// The detail panel's own "Un-ignore" — brings an ignored event back to
+  /// undecided. Doesn't touch `events`: ignored events are filtered out of
+  /// that list server-side (see GET /events), so there's nothing there to
+  /// restore; it'll pick this event back up next time it refetches.
+  async unignoreEvent(eventId: string) {
+    try {
+      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/unignore`, {});
+      this.patchCalendarViewEvent(eventId, { ignored: false });
+    } catch (err) {
+      this.reportError(err, 'Could not restore this event');
+    }
+  }
 
   async addEventAsTaskWithProject(eventId: string, projectGid: string, projectName: string) {
-    const ev = this.events.find((e) => e.id === eventId);
-    if (!ev) return;
+    const title = this.eventTitle(eventId);
+    if (!title) return;
     try {
-      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/add-task`, {
-        title: ev.title,
+      const created = await api.post<{ gid: string; name: string; permalinkUrl: string }>(`/api/calendar/events/${encodeURIComponent(eventId)}/add-task`, {
+        title,
         target: { projectGid },
       });
-      this.showToast(`Added "${ev.title}" to ${projectName} · synced to Asana`);
+      this.showToast(`Added "${title}" to ${projectName} · synced to Asana`);
       this.closeSearchPanel();
+      this.patchCalendarViewEvent(eventId, {
+        linked: true,
+        linkedName: created.name,
+        linkedTaskGid: created.gid,
+        linkedTaskPermalinkUrl: created.permalinkUrl,
+        ignored: false,
+      });
       await Promise.all([this.refreshEvents(), this.refreshTasks()]);
     } catch (err) {
       this.reportError(err, 'Could not add the task in Asana');
@@ -2388,21 +2575,28 @@ class PlannerStore {
   /// surfaced anywhere — exactly the reported "selecting it doesn't do
   /// anything, the menu stays open" bug.
   async addEventAsSubtask(eventId: string, parentTaskId: string, parentTaskName: string, parentPermalinkUrl: string) {
-    const ev = this.events.find((e) => e.id === eventId);
-    if (!ev) return;
+    const title = this.eventTitle(eventId);
+    if (!title) return;
     try {
-      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/add-task`, {
-        title: ev.title,
+      const created = await api.post<{ gid: string; name: string; permalinkUrl: string }>(`/api/calendar/events/${encodeURIComponent(eventId)}/add-task`, {
+        title,
         target: { parentGid: parentTaskId },
       });
       // The subtask itself is new, so there's nothing ambiguous about it —
       // it's the *parent*, picked from typeahead's name-only results, that's
       // worth a second look (see linkEventToTask's identical reasoning).
-      this.showToast(`Added "${ev.title}" as a subtask of "${parentTaskName}" · synced to Asana`, {
+      this.showToast(`Added "${title}" as a subtask of "${parentTaskName}" · synced to Asana`, {
         label: 'Open parent',
         href: parentPermalinkUrl,
       });
       this.closeSearchPanel();
+      this.patchCalendarViewEvent(eventId, {
+        linked: true,
+        linkedName: created.name,
+        linkedTaskGid: created.gid,
+        linkedTaskPermalinkUrl: created.permalinkUrl,
+        ignored: false,
+      });
       await Promise.all([this.refreshEvents(), this.refreshTasks()]);
     } catch (err) {
       this.reportError(err, 'Could not add the subtask in Asana');
@@ -2417,6 +2611,12 @@ class PlannerStore {
   /// (see resolveEventLinkAnyway/resolveEventLinkChooseDifferent) rather
   /// than applied silently.
   async linkEventToTask(eventId: string, taskId: string, taskName: string, permalinkUrl: string) {
+    // Conflict detection only checks `events` (Overview's 7-day list) — an
+    // event only ever loaded via the calendar-view detail panel (see
+    // eventTitle) and already linked to this same task wouldn't be caught
+    // here. A rare miss, not a correctness issue: the server doesn't
+    // enforce exclusivity either (see CalendarEventLink's own comment),
+    // this check is a UX nicety on top.
     const conflict = this.events.find((e) => e.id !== eventId && e.linkedTaskGid === taskId);
     if (conflict) {
       this.pendingEventLink = {
@@ -2425,7 +2625,7 @@ class PlannerStore {
         taskName,
         permalinkUrl,
         conflictingEventTitle: conflict.title,
-        returnScreen: this.screen === 'overview' ? 'overview' : 'triage',
+        returnScreen: this.screen === 'overview' ? 'overview' : this.screen === 'calendarView' ? 'calendarView' : 'triage',
       };
       this.screen = 'eventLinkConflict';
       return;
@@ -2433,16 +2633,31 @@ class PlannerStore {
     await this.commitEventLink(eventId, taskId, taskName, permalinkUrl);
   }
   private async commitEventLink(eventId: string, taskId: string, taskName: string, permalinkUrl: string) {
-    const ev = this.events.find((e) => e.id === eventId);
-    if (!ev) return;
+    const title = this.eventTitle(eventId);
+    if (!title) return;
     try {
-      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/link`, { taskGid: taskId, taskName });
+      // Logged server-side (see matchLog.ts) regardless of how this task
+      // was actually picked — from the suggested list, or a manual search
+      // that happened to land on it anyway — as raw material for improving
+      // suggestedTaskMatches' own scoring later. matchRank null means this
+      // task wasn't in the suggested list at all, despite same-day
+      // candidates existing to rank.
+      const suggestions = this.suggestedTaskMatches(eventId);
+      const matchRank = suggestions.findIndex((s) => s.gid === taskId);
+      const matchScore = matchRank >= 0 ? suggestions[matchRank].score : nameSimilarity(title, taskName);
+      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/link`, {
+        taskGid: taskId,
+        taskName,
+        permalinkUrl,
+        matchLog: { eventTitle: title, matchScore, matchRank: matchRank >= 0 ? matchRank : null, candidateCount: suggestions.length },
+      });
       // Typeahead only shows a name, which isn't always enough to be sure
       // it's the right task among several similarly-named ones — "Open
       // task" lets the user confirm the actual Asana task before trusting
       // the link.
-      this.showToast(`Linked "${ev.title}" to "${taskName}"`, { label: 'Open task', href: permalinkUrl });
+      this.showToast(`Linked "${title}" to "${taskName}"`, { label: 'Open task', href: permalinkUrl });
       this.closeSearchPanel();
+      this.patchCalendarViewEvent(eventId, { linked: true, linkedName: taskName, linkedTaskGid: taskId, linkedTaskPermalinkUrl: permalinkUrl, ignored: false });
       await this.refreshEvents();
     } catch (err) {
       this.reportError(err, 'Could not link the event');
