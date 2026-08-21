@@ -32,11 +32,23 @@
   // that without depending on any network round-trip. Shared by resume()
   // below (backgrounding/foregrounding) and the screen-transition effect
   // further down (leaving CalendarView — see its comment).
+  //
+  // The revert waits for the next animation frame rather than happening
+  // synchronously right after the offsetHeight read: a layout flush forces
+  // layout, not necessarily a compositor paint, so reverting the style in
+  // the same synchronous burst can let WebKit coalesce the on/off pair away
+  // entirely — nothing ever actually gets composited in between. Giving it
+  // one real frame boundary before reverting means there's an actual "on"
+  // frame for it to paint. Surfaced by Overview's day-rows leaving the old
+  // screen stuck on-screen (state changed underneath, nothing visible
+  // moved) even though this same function already ran on that transition.
   function forceRepaint() {
     const el = document.documentElement;
     el.style.transform = 'translateZ(0)';
     void el.offsetHeight; // force a synchronous layout flush before reverting
-    el.style.transform = '';
+    requestAnimationFrame(() => {
+      el.style.transform = '';
+    });
   }
 
   // On an iOS home-screen PWA specifically, a screen transition can leave
@@ -130,19 +142,21 @@
   <div class="phone">
     {#if planner.screen === 'loading'}
       <div class="loading">
-        {#if planner.bootError}
-          <Icon name="warning-triangle" size={28} color="var(--color-feedback-wrong)" />
-          <p>Couldn't reach the server: {planner.bootError}</p>
-        {:else}
-          <div class="loading__mark">
-            <Icon name="grid" size={26} color="var(--color-brand-primary)" />
-            <div class="loading__ring"></div>
-          </div>
-          <p>{planner.bootStatus}</p>
-          {#if planner.loadingProgressLabel}
-            <p class="loading__progress">{planner.loadingProgressLabel}</p>
+        <div class="loading__body">
+          {#if planner.bootError}
+            <Icon name="warning-triangle" size={28} color="var(--color-feedback-wrong)" />
+            <p>Couldn't reach the server: {planner.bootError}</p>
+          {:else}
+            <div class="loading__mark">
+              <Icon name="grid" size={26} color="var(--color-brand-primary)" />
+              <div class="loading__ring"></div>
+            </div>
+            <p>{planner.bootStatus}</p>
+            {#if planner.loadingProgressLabel}
+              <p class="loading__progress">{planner.loadingProgressLabel}</p>
+            {/if}
           {/if}
-        {/if}
+        </div>
         <div class="loading__footer">
           <p class="loading__version">{VERSION_LABEL} {#if DEV_NOTES.length > 0}· currently in development:{/if}</p>
           {#if DEV_NOTES.length > 0}
@@ -231,20 +245,33 @@
     display: flex;
     flex-direction: column;
   }
+  /* Plain column, no centering of its own — .loading__body (below) is what
+     centers, within whatever space is actually left over after
+     .loading__footer, so a tall footer pushes the centered content up
+     instead of the two overlapping. Was previously the other way around
+     (this element centered everything, footer was position:absolute and
+     unaccounted for), which is exactly how the two ended up overlapping —
+     the centering had no idea the footer existed at all. */
   .loading {
-    position: relative;
     flex: 1;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 16px;
+    min-height: 0;
     padding: 24px;
     font-family: var(--font-family-base);
     font-size: 13px;
     font-weight: var(--font-weight-bold);
     color: var(--color-text-muted);
     text-align: center;
+  }
+  .loading__body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
   }
   .loading__mark {
     position: relative;
@@ -269,24 +296,24 @@
     font-variant-numeric: tabular-nums;
     opacity: 0.75;
   }
+  /* A normal flex item now, not position:absolute — the dev-notes list
+     accumulates across every uncommitted rebuild (see version.ts) with no
+     upper bound, and an absolutely-positioned footer has no way to tell
+     the centered content above it to make room as it grows. As a real
+     flex sibling of .loading__body, it claims its own space up front, so
+     .loading__body's flex:1 (and its own centering within that) naturally
+     shrinks and shifts up instead of the two overlapping. Still capped and
+     internally scrollable on top of that, purely as a backstop against an
+     extreme number of notes pushing .loading__body down to nothing. */
   .loading__footer {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 28px;
-    /* The dev-notes list accumulates across every uncommitted rebuild (see
-       version.ts) with no upper bound — during a long testing session it
-       can grow tall enough that, anchored purely by `bottom`, its top edge
-       creeps up into the vertically-centered spinner/status block above
-       it. Capping the height and scrolling internally keeps the footer's
-       footprint predictable regardless of how many notes have piled up. */
+    flex-shrink: 0;
     max-height: 40vh;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    padding: 0 24px;
+    padding: 16px 24px 0;
   }
   .loading__version {
     margin: 0;

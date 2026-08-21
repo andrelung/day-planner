@@ -435,13 +435,15 @@
           if (!allowPlacement) planner.openEventDetail(o.event.id);
         }}
       >
-        {#if o.event.linked}
-          <Icon name="link" size={12} color="var(--color-feedback-correct)" />
-        {:else if o.event.ignored}
-          <Icon name="link-off" size={12} color="var(--color-text-muted)" />
-        {:else}
-          <Icon name="calendar" size={12} color="var(--color-text-muted)" />
-        {/if}
+        <span class="outlook-block__icon">
+          {#if o.event.linked}
+            <Icon name="link" size={11} color="var(--color-feedback-correct)" />
+          {:else if o.event.ignored}
+            <Icon name="link-off" size={11} color="var(--color-text-muted)" />
+          {:else}
+            <Icon name="calendar" size={11} color="var(--color-text-muted)" />
+          {/if}
+        </span>
         <div class="outlook-block__text">
           <div class="outlook-block__name">{o.event.title}</div>
           <div class="outlook-block__time">{toHHMM(isoStartMinutes(o.event.start))}–{toHHMM(isoStartMinutes(o.event.end))}</div>
@@ -777,6 +779,23 @@
   }
   .outlook-block--clickable {
     cursor: pointer;
+  }
+  /* Same circular-badge treatment as .task-block__icon-btn just below —
+     the bare link/link-off/calendar glyph is a thin diagonal stroke with
+     a lot of empty space in its 24x24 box, so at this size it read as
+     noticeably smaller/fainter than a filled shape like the arrow-right
+     icon-buttons even at the identical size prop. A solid backdrop gives
+     it the same visual footprint regardless of how much ink the glyph
+     itself has. */
+  .outlook-block__icon {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   .outlook-block__text {
     min-width: 0;

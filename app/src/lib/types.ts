@@ -113,9 +113,18 @@ export interface PendingPlan {
   key?: string;
 }
 
+/// taskId is captured at the moment the conflict is detected (see
+/// tryPlanTodaySlot/tryPlanLaterSlot) rather than trusting focusTaskRaw to
+/// still be the same task by the time the user actually resolves the
+/// conflict — the queue can legitimately re-sort itself (a background
+/// task-list refresh, e.g. on app resume) while the SlotConflict screen is
+/// sitting there waiting for a tap, which used to mean "Double-book
+/// anyway" could silently commit a completely different task than the one
+/// that actually triggered the conflict. 'break' has no task of its own
+/// (see commitBreak), so it doesn't need one.
 export type PendingSlotPlan =
-  | { kind: 'today'; slot: string }
-  | { kind: 'later'; dayKey: string; slot: string }
+  | { kind: 'today'; slot: string; taskId: string }
+  | { kind: 'later'; dayKey: string; slot: string; taskId: string }
   | { kind: 'break'; slot: string };
 
 export interface ConflictItem {

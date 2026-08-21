@@ -19,9 +19,17 @@
     <IconButton icon="close" title="Close" size={36} iconSize={18} onclick={() => planner.closeFlow()} />
   </div>
   <div class="content">
-    <Icon name="warning-triangle" size={32} color="var(--color-feedback-wrong)" />
-    <div class="heading">{dayFullLabel} already looks full</div>
-    <div class="detail">{dayFullDetail}</div>
+    <div class="content__top">
+      <Icon name="warning-triangle" size={32} color="var(--color-feedback-wrong)" />
+      <div class="heading">{dayFullLabel} already looks full</div>
+      <div class="detail">{dayFullDetail}</div>
+    </div>
+    <!-- Anchored to the bottom of the screen (see .actions' margin-top:auto)
+         rather than wherever the content above happens to end — same
+         reasoning as SlotConflict.svelte's identical layout, which this
+         screen was itself the model for; short detail text would otherwise
+         strand these buttons high up, out of comfortable one-handed thumb
+         reach. -->
     <div class="actions">
       <Button variant="ghost" size="md" fullWidth onclick={() => planner.onReviewOtherTasks()}>Review other tasks on this day</Button>
       <Button variant="primary" size="md" fullWidth onclick={() => planner.onPlanAnyway()}>Plan for this day anyway</Button>
@@ -48,8 +56,13 @@
     flex-shrink: 0;
   }
   .content {
-    padding: 20px 28px 0;
+    display: flex;
+    flex-direction: column;
     flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 20px 28px calc(20px + env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
   }
   .heading {
     font-family: var(--font-family-base);
@@ -68,12 +81,15 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    margin-top: 26px;
+    flex-shrink: 0;
+    margin-top: auto;
+    padding-top: 26px;
   }
   .dismiss-actions {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    flex-shrink: 0;
     margin-top: 22px;
     align-items: center;
   }

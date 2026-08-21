@@ -9,6 +9,7 @@ import { prisma } from '../lib/prisma.js';
 import { createBugReportTask, createSubtask, createTaskInProject, listIncompleteAssignedTasks, refreshTasksByGid, typeahead } from '../providers/asana.js';
 import type { DueUpdate } from '../providers/asana.js';
 import type { RemoteTask } from '../providers/types.js';
+import { logTaskLoadFailure } from '../lib/taskLoadLog.js';
 
 export const tasksRouter = Router();
 tasksRouter.use(requireAuth);
@@ -44,9 +45,19 @@ function buildTasksPayload(raw: (RemoteTask & { projectGid: string | null })[]) 
 }
 
 tasksRouter.get('/', async (req, res) => {
-  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-  const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true });
-  res.json(buildTasksPayload(raw));
+  try {
+    const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+    const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true });
+    res.json(buildTasksPayload(raw));
+  } catch (err) {
+    logTaskLoadFailure({
+      source: 'server',
+      phase: 'refresh',
+      message: err instanceof Error ? err.message : String(err),
+      userId: req.userId,
+    });
+    throw err; // still handled by the app-level error middleware in index.ts
+  }
 });
 
 const refreshByGidSchema = z.object({ gids: z.array(z.string()).min(1).max(20) });
@@ -70,6 +81,36 @@ tasksRouter.post('/refresh-by-gid', async (req, res) => {
   const tasks: Record<string, ReturnType<typeof toTaskDto> | null> = {};
   for (const [gid, task] of Object.entries(byGid)) tasks[gid] = task ? toTaskDto(task) : null;
   res.json({ tasks });
+});
+
+const clientLogSchema = z.object({
+  phase: z.enum(['boot', 'refresh']),
+  message: z.string().min(1),
+  errorType: z.enum(['network', 'server']),
+  online: z.boolean().optional(),
+});
+
+/// Fire-and-forget: the client posts here whenever it catches a
+/// "Could not load tasks from Asana" failure (see store.svelte.ts's
+/// reportRetryableError call sites), so failures that never reach any
+/// other route at all — most notably a fetch() rejecting outright right
+/// after an iOS resume, before the network stack has actually
+/// reconnected — still land somewhere durable (see taskLoadLog.ts) instead
+/// of only ever being visible as a toast the user has to notice and
+/// describe after the fact. Always 204s, even on a malformed body — a
+/// broken diagnostic call is never worth surfacing to the user.
+tasksRouter.post('/client-log', (req, res) => {
+  const parsed = clientLogSchema.safeParse(req.body);
+  if (parsed.success) {
+    logTaskLoadFailure({
+      source: 'client',
+      phase: parsed.data.phase,
+      message: `[${parsed.data.errorType}] ${parsed.data.message}`,
+      userId: req.userId,
+      online: parsed.data.online,
+    });
+  }
+  res.status(204).end();
 });
 
 /// Same result as GET / (used for the initial boot fetch specifically), but
@@ -102,6 +143,12 @@ tasksRouter.get('/stream', async (req, res) => {
     });
     res.write(`event: done\ndata: ${JSON.stringify(buildTasksPayload(raw))}\n\n`);
   } catch (err) {
+    logTaskLoadFailure({
+      source: 'server',
+      phase: 'boot',
+      message: err instanceof Error ? err.message : String(err),
+      userId: req.userId,
+    });
     // Named "failed", not "error" — SSE's native connection-error event is
     // itself dispatched as an "error" event on the client's EventSource, so
     // reusing that name would be ambiguous with a real connection drop.

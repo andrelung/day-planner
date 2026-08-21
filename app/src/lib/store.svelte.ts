@@ -427,6 +427,37 @@ class PlannerStore {
     const msg = err instanceof ApiError ? err.message : fallback;
     this.showRetryToast(msg, onRetry);
   }
+  /// Best-effort report to the server's task-load diagnostic log (see
+  /// server/src/lib/taskLoadLog.ts) for "Could not load tasks from Asana"
+  /// failures specifically — a plain `catch` + toast leaves no trace once
+  /// the toast disappears, which makes an intermittent, hard-to-reproduce
+  /// failure (e.g. right after reopening the app) effectively unfalsifiable
+  /// without the user noticing and describing it in the moment. An
+  /// ApiError means the request reached the server and got a real error
+  /// response back (already logged server-side too, from that same
+  /// request — this call is still useful for correlating the two); any
+  /// other error (a bare fetch() rejection) means it never reached the
+  /// server at all, which the server-side log alone could never capture.
+  private logTaskLoadFailure(phase: 'boot' | 'refresh', err: unknown) {
+    api
+      .post('/api/tasks/client-log', {
+        phase,
+        message: err instanceof Error ? err.message : String(err),
+        errorType: err instanceof ApiError ? 'server' : 'network',
+        online: typeof navigator !== 'undefined' ? navigator.onLine : undefined,
+      })
+      .catch(() => {});
+  }
+  /// Best-effort report to the server's general anomaly log (see
+  /// server/src/lib/anomalyLog.ts) — for defensive guards elsewhere in this
+  /// file that fire on a branch that's only ever meant to run if some
+  /// assumption didn't hold (a stale pendingSlotPlan on a fast double-tap
+  /// was the bug this was built to have caught early — see
+  /// resolveConflictAnyway). `area` should be specific enough to grep for
+  /// this exact call site alone, e.g. "resolveConflictAnyway.noPendingPlan".
+  private logAnomaly(area: string, message: string, context?: Record<string, unknown>) {
+    api.post('/api/diagnostics/anomaly', { area, message, context }).catch(() => {});
+  }
 
   // --- boot ---
   // Surfaced on the loading screen (see App.svelte) so the wait between
@@ -642,6 +673,7 @@ class PlannerStore {
       await this.streamTasks();
       localStorage.setItem('lastTaskCount', String(this.tasks.length));
     } catch (err) {
+      this.logTaskLoadFailure('boot', err);
       this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.bootRefreshTasks());
       // Land on Triage with whatever (possibly nothing) came in rather than
       // leaving the user stuck on the loading screen after a failure.
@@ -815,6 +847,7 @@ class PlannerStore {
       if (focusId) this.selectFocus(focusId);
       if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     } catch (err) {
+      this.logTaskLoadFailure('refresh', err);
       this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.refreshTasks());
     }
   }
@@ -1335,9 +1368,20 @@ class PlannerStore {
   openPlanLater() {
     this.screen = 'planLater';
   }
+  /// Clears pendingPlan up front, same reasoning as resolveConflictAnyway's
+  /// identical guard for pendingSlotPlan (see its own comment) — this
+  /// screen doesn't itself commit a task to a slot the way SlotConflict's
+  /// "Double-book anyway" does (it only unblocks navigation to the actual
+  /// picker, which is where tryPlanTodaySlot/tryPlanLaterSlot's own
+  /// pinned-taskId fix takes over), so a stale double-invocation here can't
+  /// silently corrupt a different task's due date the same way — but a
+  /// never-cleared pendingPlan is still the same class of latent fragility,
+  /// hardened the same way on general principle.
   onPlanAnyway() {
     const p = this.pendingPlan;
+    this.pendingPlan = null;
     if (!p) {
+      this.logAnomaly('onPlanAnyway.noPendingPlan', 'Called with no pendingPlan — likely a duplicate/stale invocation', { screen: this.screen });
       this.screen = 'triage';
       return;
     }
@@ -1353,6 +1397,7 @@ class PlannerStore {
     }
   }
   onReviewOtherTasks() {
+    this.pendingPlan = null;
     this.focusIndex = 0;
     this.screen = 'triage';
   }
@@ -1382,7 +1427,14 @@ class PlannerStore {
   /// to another day, without a stop at its Triage card in between — and
   /// see returnFromPlanLater above for finding your way back afterward.
   openTaskInPlanLater(taskId: string) {
-    this.returnFromPlanLater = { screen: this.screen, focusTaskId: this.focusTaskRaw?.id ?? null };
+    // Only set on the *first* detour — a second arrow-tap before the first
+    // one's flow has finished (e.g. hitting a conflict, backing out partway,
+    // then tapping another task's arrow) used to silently overwrite this
+    // with the second detour's own screen, losing track of the actual
+    // origin closeFlow should return to.
+    if (!this.returnFromPlanLater) {
+      this.returnFromPlanLater = { screen: this.screen, focusTaskId: this.focusTaskRaw?.id ?? null };
+    }
     this.selectFocus(taskId);
     this.openPlanLater();
   }
@@ -1408,8 +1460,22 @@ class PlannerStore {
   calendarViewDate: string = $state(this.toDateStr(new Date()));
   calendarViewOutlookEvents: OutlookBlock[] = $state([]);
   calendarViewLoading = $state(false);
+  /// Deliberately its own thing rather than reusing dayLabelFor — that one
+  /// is shared by Triage/Overview, which want a bare weekday name ("Monday")
+  /// for the whole near-term stretch (see buildWorkloadDays). The calendar
+  /// view is a plain day-by-day browser with no such "named bucket" concept
+  /// — for anything beyond tomorrow, a bare weekday name alone doesn't say
+  /// *which* Monday, so it shows the short weekday plus the date instead
+  /// ("Mon, 24.8.").
   get calendarViewDayLabel(): string {
-    return this.dayLabelFor(this.calendarViewDate);
+    const date = this.calendarViewDate;
+    if (date === this.toDateStr(new Date())) return 'Today';
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (date === this.toDateStr(tomorrow)) return 'Tomorrow';
+    const d = new Date(`${date}T00:00:00`);
+    const weekday = d.toLocaleDateString('en-US', { weekday: 'short' });
+    return `${weekday}, ${d.getDate()}.${d.getMonth() + 1}.`;
   }
   openCalendarView() {
     this.calendarViewDate = this.activeDate || this.toDateStr(new Date());
@@ -1940,7 +2006,7 @@ class PlannerStore {
     const conflicts = this.findConflicts(dueAtIso, task.hours, task.id);
     if (conflicts.length && this.confirmDoubleBooking) {
       this.conflictItems = conflicts;
-      this.pendingSlotPlan = { kind: 'today', slot };
+      this.pendingSlotPlan = { kind: 'today', slot, taskId: task.id };
       this.screen = 'slotConflict';
       return;
     }
@@ -2018,35 +2084,82 @@ class PlannerStore {
     const conflicts = this.findConflicts(dueAtIso, task.hours, task.id);
     if (conflicts.length && this.confirmDoubleBooking) {
       this.conflictItems = conflicts;
-      this.pendingSlotPlan = { kind: 'later', dayKey, slot };
+      this.pendingSlotPlan = { kind: 'later', dayKey, slot, taskId: task.id };
       this.screen = 'slotConflict';
       return;
     }
     this.commitPlanLocally(task, dueAtIso, `Planned "${task.name}" for ${this.chosenDayLabel} at ${slot} · syncing to Asana`, dayKey);
   }
 
+  /// Clears pendingSlotPlan as literally the first thing, before any lookup
+  /// or await — makes this safe against firing twice for the same conflict
+  /// (a fast double-tap on "Double-book anyway" was a real, reported bug:
+  /// the first call's commitPlanLocally advances focusIndex to the next
+  /// queued task via justPlannedIds, so a second call that re-read
+  /// focusTaskRaw instead of a pinned id would double-book *that* task
+  /// instead — reading as "confirming moves another task"). Once cleared,
+  /// a second near-simultaneous call just sees `p` as null and no-ops.
   async resolveConflictAnyway() {
     const p = this.pendingSlotPlan;
-    const task = this.focusTaskRaw;
-    if (!p || !task) return;
-    if (p.kind === 'today' || p.kind === 'later') {
-      const dayKey = p.kind === 'today' ? 'today' : p.dayKey;
-      const date = this.dateFor(dayKey);
-      if (!date) return;
-      const dueAtIso = this.toIsoDateTime(date, this.slotStart(p.slot));
-      const label = p.kind === 'today' ? 'today' : this.chosenDayLabel;
-      this.commitPlanLocally(task, dueAtIso, `Planned "${task.name}" for ${label} at ${p.slot} · syncing to Asana (double-booked)`, dayKey);
-    } else if (p.kind === 'break') {
-      await this.commitBreak(p.slot, true);
+    if (!p) {
+      // The exact guard that fixed the double-tap bug — a second call this
+      // close together used to double-book whatever task focus had already
+      // drifted to. Logged so we know empirically how often a stale/
+      // duplicate invocation like this actually happens in practice, not
+      // just that this one instance got caught and fixed.
+      this.logAnomaly('resolveConflictAnyway.noPendingPlan', 'Called with no pendingSlotPlan — likely a duplicate/stale invocation', {
+        screen: this.screen,
+      });
+      return;
     }
+    this.pendingSlotPlan = null;
+    if (p.kind === 'break') {
+      await this.commitBreak(p.slot, true);
+      return;
+    }
+    // Pinned at conflict-detection time (see tryPlanTodaySlot/
+    // tryPlanLaterSlot) rather than re-reading focusTaskRaw here — see the
+    // method comment above for why that distinction is the actual fix.
+    const task = this.tasks.find((t) => t.id === p.taskId);
+    if (!task) {
+      this.logAnomaly('resolveConflictAnyway.taskMissing', 'Pinned task no longer in this.tasks', { taskId: p.taskId, kind: p.kind });
+      this.reportError(new Error('missing task'), 'Could not double-book — that task is no longer available');
+      return;
+    }
+    const dayKey = p.kind === 'today' ? 'today' : p.dayKey;
+    const date = this.dateFor(dayKey);
+    if (!date) {
+      this.logAnomaly('resolveConflictAnyway.noDate', 'dateFor(dayKey) returned null', { dayKey });
+      return;
+    }
+    const dueAtIso = this.toIsoDateTime(date, this.slotStart(p.slot));
+    const label = p.kind === 'today' ? 'today' : this.chosenDayLabel;
+    this.commitPlanLocally(task, dueAtIso, `Planned "${task.name}" for ${label} at ${p.slot} · syncing to Asana (double-booked)`, dayKey);
+  }
+  /// SlotConflict's own "don't ask again" — see DayFull's dontAskDayFullEver
+  /// for the equivalent pattern: flips the existing Settings toggle, then
+  /// completes the pending plan exactly as "Double-book anyway" would,
+  /// rather than leaving the user still stuck on the conflict screen after
+  /// choosing to stop seeing it.
+  dontAskDoubleBookingAgain() {
+    this.onConfirmDoubleBookingChange(false);
+    void this.resolveConflictAnyway();
   }
   resolveConflictChooseAnother() {
     const p = this.pendingSlotPlan;
+    this.pendingSlotPlan = null;
     if (!p) {
+      this.logAnomaly('resolveConflictChooseAnother.noPendingPlan', 'Called with no pendingSlotPlan — likely a duplicate/stale invocation', {
+        screen: this.screen,
+      });
       this.screen = 'triage';
       return;
     }
     if (p.kind === 'today') {
+      // Re-pin focus to the task this conflict was actually about — it may
+      // have silently drifted (see resolveConflictAnyway's comment) since
+      // the conflict was first detected.
+      this.selectFocus(p.taskId);
       this.screen = 'planToday';
       // The picker now auto-seeds a slot instead of waiting for a tap (see
       // earliestTodaySlotStart) — re-fetch so that re-seed reflects
@@ -2054,6 +2167,7 @@ class PlannerStore {
       // re-suggesting the exact same slot from a stale list.
       void this.loadTodaySlots();
     } else if (p.kind === 'later') {
+      this.selectFocus(p.taskId);
       this.screen = 'freeSlotsLater';
       void this.loadLaterSlots(p.dayKey);
     } else if (p.kind === 'break') {
@@ -2669,13 +2783,24 @@ class PlannerStore {
   resolveEventLinkChooseDifferent() {
     const p = this.pendingEventLink;
     this.pendingEventLink = null;
+    if (!p) this.logAnomaly('resolveEventLinkChooseDifferent.noPendingLink', 'Called with no pendingEventLink', { screen: this.screen });
     this.screen = p?.returnScreen ?? 'triage';
   }
   /// "Link anyway" — proceeds with the link the user actually picked,
-  /// leaving the other event's link to the same task in place too.
+  /// leaving the other event's link to the same task in place too. Already
+  /// safe against the same double-invocation class of bug resolveConflict
+  /// Anyway had (see its own comment): p's fields are captured values, not
+  /// a live re-read, and pendingEventLink is cleared before the only
+  /// `await` in this function, so a second near-simultaneous call always
+  /// sees it as null by the time it runs.
   async resolveEventLinkAnyway() {
     const p = this.pendingEventLink;
-    if (!p) return;
+    if (!p) {
+      this.logAnomaly('resolveEventLinkAnyway.noPendingLink', 'Called with no pendingEventLink — likely a duplicate/stale invocation', {
+        screen: this.screen,
+      });
+      return;
+    }
     this.screen = p.returnScreen;
     this.pendingEventLink = null;
     await this.commitEventLink(p.eventId, p.taskId, p.taskName, p.permalinkUrl);

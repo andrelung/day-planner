@@ -34,6 +34,12 @@ export const env = {
   // Where the calendar-event/task match-log workbook lives — same idea and
   // same fallback behavior as CHANGE_LOG_PATH above. See matchLog.ts.
   MATCH_LOG_PATH: process.env.MATCH_LOG_PATH || null,
+  // Where the task-load diagnostic log lives — same idea and fallback
+  // behavior as CHANGE_LOG_PATH above. See taskLoadLog.ts.
+  TASK_LOAD_LOG_PATH: process.env.TASK_LOAD_LOG_PATH || null,
+  // Where the general "a defensive guard fired" anomaly log lives — same
+  // idea and fallback behavior as CHANGE_LOG_PATH above. See anomalyLog.ts.
+  ANOMALY_LOG_PATH: process.env.ANOMALY_LOG_PATH || null,
   // Sets this process's system timezone (Node/ICU respect TZ natively —
   // fixes "Today"/"Tomorrow" day-bucketing to use this zone's day boundary
   // instead of the container's default UTC) and seeds the default for a

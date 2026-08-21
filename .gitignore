@@ -7,4 +7,6 @@ change-log.xlsx
 ~$change-log.xlsx
 match-log.xlsx
 ~$match-log.xlsx
+task-load-log.jsonl
+anomaly-log.jsonl
 .dev-notes.local.json

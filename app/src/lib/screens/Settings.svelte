@@ -33,7 +33,7 @@
       onchange={(v) => planner.onBufferChange(v)}
     />
     <label class="row">
-      <div class="row__label">Warn me when a day looks full</div>
+      <div class="row__label">Warn, when a day seems fully booked</div>
       <input
         type="checkbox"
         class="toggle"
@@ -42,7 +42,7 @@
       />
     </label>
     <label class="row">
-      <div class="row__label">Ask for confirmation on double booked calendar slots</div>
+      <div class="row__label">Warn, when a timeslot is double booked</div>
       <input
         type="checkbox"
         class="toggle"
@@ -154,10 +154,15 @@
     color: var(--color-text-primary);
   }
   .content {
-    padding: 12px 20px;
+    /* Bottom padding matches the loading screen's own "add distance to the
+       bottom, it looks cramped" fix — the version/dev-notes block is the
+       last thing in this scrollable list too, and was sitting flush
+       against the safe-area edge the same way. */
+    padding: 12px 20px calc(20px + env(safe-area-inset-bottom, 0px));
     flex: 1;
     min-width: 0;
     overflow-y: auto;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: 20px;

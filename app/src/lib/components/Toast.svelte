@@ -34,11 +34,20 @@
 {/if}
 
 <style>
+  /* top:16px used to sit directly on top of every screen's own header row
+     (a close button, or icon-button row, all landing somewhere in roughly
+     an 18-70px band from the top — checked across Triage/Settings/
+     Overview/CalendarView/DayFull/SlotConflict/PlanToday/PlanLater) — this
+     toast is opaque and z-index:50, so any toast showing while a screen
+     was open could silently sit right on top of that screen's close
+     button, blocking it without anything visibly wrong (reported as
+     "wasn't able to close the settings screen"). Dropping below that band
+     clears every screen's header with room to spare. */
   .toast {
     position: absolute;
     left: 16px;
     right: 16px;
-    top: 16px;
+    top: 76px;
     display: flex;
     align-items: center;
     justify-content: space-between;

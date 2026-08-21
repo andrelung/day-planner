@@ -59,6 +59,8 @@ services:
       MS_TENANT_ID: ${MS_TENANT_ID:-common}
       CHANGE_LOG_PATH: /host-root/change-log.xlsx
       MATCH_LOG_PATH: /host-root/match-log.xlsx
+      TASK_LOAD_LOG_PATH: /host-root/task-load-log.jsonl
+      ANOMALY_LOG_PATH: /host-root/anomaly-log.jsonl
       TZ: ${TZ:-UTC}
       NODE_ENV: production
 

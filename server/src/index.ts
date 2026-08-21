@@ -11,6 +11,7 @@ import { tasksRouter } from './routes/tasks.js';
 import { calendarRouter } from './routes/calendar.js';
 import { workloadRouter } from './routes/workload.js';
 import { pendingActionsRouter } from './routes/pendingActions.js';
+import { diagnosticsRouter } from './routes/diagnostics.js';
 import { ProviderNotConfiguredError } from './providers/asana.js';
 import { ProviderNotConnectedError } from './lib/tokens.js';
 import { startPendingActionWorker } from './lib/pendingActionQueue.js';
@@ -56,6 +57,7 @@ app.use('/api/tasks', tasksRouter);
 app.use('/api/calendar', calendarRouter);
 app.use('/api/workload', workloadRouter);
 app.use('/api/pending-actions', pendingActionsRouter);
+app.use('/api/diagnostics', diagnosticsRouter);
 
 // Serve the built Svelte app and fall back to index.html for any
 // non-API route (single-page app, no server-side routing needed).

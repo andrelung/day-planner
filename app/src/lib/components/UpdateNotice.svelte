@@ -17,11 +17,15 @@
     position: absolute;
     left: 16px;
     right: 16px;
-    top: 16px;
-    /* Both this and Toast otherwise land at the exact same top:16px slot —
-       with equal z-index, whichever renders later in the DOM (this one)
-       would completely hide an active Toast rather than merely overlap
-       it, since there'd be nothing else visibly wrong to notice. Dropping
+    /* Matches Toast's own top offset — see its comment for why 16px used
+       to sit directly on top of every screen's header/close button,
+       silently blocking it (reported as "wasn't able to close the
+       settings screen"). */
+    top: 76px;
+    /* Both this and Toast otherwise land at the exact same slot — with
+       equal z-index, whichever renders later in the DOM (this one) would
+       completely hide an active Toast rather than merely overlap it,
+       since there'd be nothing else visibly wrong to notice. Dropping
        below Toast's own approximate height when one is showing keeps both
        readable instead of one silently eating the other; not pixel-exact
        since Toast's height varies with its content (a retry countdown's
@@ -42,7 +46,7 @@
     z-index: 50;
   }
   .update-notice--stacked {
-    top: 88px;
+    top: 148px;
   }
   .update-notice__msg {
     font-size: 13px;
