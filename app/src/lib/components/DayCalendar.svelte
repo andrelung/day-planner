@@ -421,7 +421,7 @@
                 planner.openTaskInPlanLater(b.task.id);
               }}
             >
-              <Icon name="arrow-right" size={12} color="var(--color-text-primary)" />
+              <Icon name="arrow-right" size={13} color="var(--color-text-primary)" />
             </button>
             <button
               class="task-block__icon-btn"
@@ -743,17 +743,21 @@
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
   }
   .task-block__icon-btn {
+    /* Wider than tall on purpose — a bigger circular target would eat into
+       the block's fixed row height (and the time label next to it), but
+       there's slack to spend horizontally instead, so the touch target
+       grows without disturbing the layout. */
     flex-shrink: 0;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
+    width: 34px;
+    height: 20px;
+    border-radius: 10px;
     border: none;
     background: var(--color-border);
     color: var(--color-text-primary);
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1;
     display: flex;
     align-items: center;

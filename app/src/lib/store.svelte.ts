@@ -2411,6 +2411,7 @@ class PlannerStore {
   confirmBacklogExplainer() {
     localStorage.setItem('backlogExplainerSeen', '1');
     this.removeDueDate();
+    this.screen = 'triage';
   }
   /// Same reasoning as clearOtherTaskDueDate — no due date at all takes a
   /// task out of the server's queue entirely, so it moves to
