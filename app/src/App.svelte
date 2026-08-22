@@ -158,6 +158,29 @@
       window.removeEventListener('day-planner:force-repaint', forceRepaint);
     };
   });
+
+  // Independent of bootRefreshTasks' own SSE watchdog — a defensive second
+  // layer, not a replacement for it. The watchdog lives inside the same
+  // stream it's watching; if the JS runtime itself is what's wedged (iOS
+  // is known to throttle timers under some conditions), a timer *inside*
+  // that stalled context might never fire either, which is exactly the
+  // "stuck on 'Connecting to Asana…' for minutes" report this exists for.
+  // This timer starts fresh every time 'loading' begins, so it can't
+  // itself get contaminated by whatever state a previous attempt left
+  // behind. Firing this doesn't retry silently — it hands the user an
+  // actual button, since the whole point is not leaving them with nothing
+  // to do but wait.
+  let loadingStuck = $state(false);
+  $effect(() => {
+    if (planner.screen !== 'loading') {
+      loadingStuck = false;
+      return;
+    }
+    const id = setTimeout(() => {
+      loadingStuck = true;
+    }, 10_000);
+    return () => clearTimeout(id);
+  });
 </script>
 
 <div class="viewport">
@@ -176,6 +199,9 @@
             <p>{planner.bootStatus}</p>
             {#if planner.loadingProgressLabel}
               <p class="loading__progress">{planner.loadingProgressLabel}</p>
+            {/if}
+            {#if loadingStuck}
+              <button class="loading__stuck-retry" onclick={() => planner.reloadForUpdate()}>Taking a while — tap to reload</button>
             {/if}
           {/if}
         </div>
@@ -319,6 +345,18 @@
     font-weight: var(--font-weight-normal);
     font-variant-numeric: tabular-nums;
     opacity: 0.75;
+  }
+  .loading__stuck-retry {
+    margin-top: 8px;
+    padding: 10px 16px;
+    background: var(--color-brand-primary);
+    color: var(--color-text-inverse);
+    border: none;
+    border-radius: var(--radius-md);
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 13px;
+    cursor: pointer;
   }
   /* A normal flex item now, not position:absolute — the dev-notes list
      accumulates across every uncommitted rebuild (see version.ts) with no

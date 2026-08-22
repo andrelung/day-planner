@@ -815,15 +815,21 @@ class PlannerStore {
     return `${this.loadingTasksCount} tasks loaded`;
   }
 
-  /// `isRetry` distinguishes a fresh attempt from the one silent retry
-  /// below — a failure right at boot is very often the same transient
-  /// iOS-resume-before-network-is-actually-back blip refreshTasks()
-  /// silently absorbs (see its own comment), not a real, ongoing problem.
-  /// Surfacing the "Could not load tasks" toast on the very first hiccup
-  /// read as an alarming error for something that quietly fixed itself a
-  /// second later — this only shows it once a second attempt has also
-  /// failed, which is a much stronger signal something's actually wrong.
-  private async bootRefreshTasks(isRetry = false) {
+  /// Deliberately *not* silently retried the way refreshTasks() is — a
+  /// failure here leaves the loading screen as the only thing on screen,
+  /// nothing else to look at or interact with, so any delay before the
+  /// user gets a real "Retry now" has a much higher cost than it does for
+  /// a background refresh (where Triage is already fully usable
+  /// underneath). This tried a silent retry once before showing anything —
+  /// found, live, to be able to leave someone stuck staring at a bare
+  /// spinner for minutes: if that retry's own stream ever stalls without
+  /// its watchdog rejecting it (still not root-caused), there was no
+  /// screen transition and no toast queued until it did, i.e. never. Every
+  /// failure here surfaces the toast immediately instead, same as before
+  /// that attempt — a possibly-unnecessary toast for a hiccup that would
+  /// have self-healed is a far smaller cost than an unrecoverable stuck
+  /// screen.
+  private async bootRefreshTasks() {
     if (!this.asanaConnected) {
       this.screen = 'triage';
       return;
@@ -837,10 +843,6 @@ class PlannerStore {
       localStorage.setItem('lastTaskCount', String(this.tasks.length));
     } catch (err) {
       this.logTaskLoadFailure('boot', err);
-      if (!isRetry) {
-        setTimeout(() => void this.bootRefreshTasks(true), 1500);
-        return;
-      }
       this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.bootRefreshTasks());
       // Land on Triage with whatever (possibly nothing) came in rather than
       // leaving the user stuck on the loading screen after a failure.
@@ -858,21 +860,17 @@ class PlannerStore {
   /// from under them; it just gets more complete/correct further ahead.
   private applyTaskBatch(data: { tasks: Task[]; tasksWithoutDueDate: Task[]; projects: Project[] }) {
     const focusId = this.focusTaskRaw?.id ?? null;
-    const focusIdx = focusId ? this.tasks.findIndex((t) => t.id === focusId) : -1;
-    if (focusIdx === -1) {
-      this.tasks = data.tasks;
-    } else {
-      const alreadyShown = this.tasks.slice(0, focusIdx + 1);
-      const shownIds = new Set(alreadyShown.map((t) => t.id));
-      this.tasks = [...alreadyShown, ...data.tasks.filter((t) => !shownIds.has(t.id))];
-    }
+    this.tasks = data.tasks;
     this.tasksWithoutDueDate = data.tasksWithoutDueDate;
     this.projects = data.projects;
-    if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     if (this.screen === 'loading') {
+      // Nothing was focused yet — this is establishing the initial card,
+      // not disturbing an existing one.
       this.focusIndex = 0;
       this.screen = 'triage';
+      return;
     }
+    this.resyncFocus(focusId);
   }
 
   /// EventSource's own onerror only fires when the connection genuinely
@@ -1019,14 +1017,17 @@ class PlannerStore {
   /// the spinner's already gone.
   async refreshTasks(isRetry = false): Promise<void> {
     if (!this.asanaConnected) return;
-    const focusId = this.focusTaskRaw?.id ?? null;
     try {
       const res = await api.get<{ tasks: Task[]; tasksWithoutDueDate: Task[]; projects: Project[] }>('/api/tasks');
+      // Read whatever's actually focused right as the fresh data lands
+      // (not whatever was focused when the request started) — the user
+      // may have swiped/planned/skipped in the meantime, and it's that
+      // card resyncFocus needs to keep pointing at.
+      const focusId = this.focusTaskRaw?.id ?? null;
       this.tasks = res.tasks;
       this.tasksWithoutDueDate = res.tasksWithoutDueDate;
       this.projects = res.projects;
-      if (focusId) this.selectFocus(focusId);
-      if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
+      this.resyncFocus(focusId);
     } catch (err) {
       this.logTaskLoadFailure('refresh', err);
       if (!isRetry) {
@@ -1060,8 +1061,7 @@ class PlannerStore {
       const apply = (list: Task[]) => list.map((t) => (gids.includes(t.id) ? (res.tasks[t.id] ?? null) : t)).filter((t): t is Task => t !== null);
       if (this.reviewingBacklog) this.tasksWithoutDueDate = apply(this.tasksWithoutDueDate);
       else this.tasks = apply(this.tasks);
-      if (focusId) this.selectFocus(focusId);
-      if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
+      this.resyncFocus(focusId);
     } catch {
       // Best-effort top-up — refreshTasks() alongside this one already has
       // its own error toast + Retry, so a failure here is silently left to
@@ -1161,6 +1161,35 @@ class PlannerStore {
   selectFocus(id: string) {
     this.pinnedEventId = null;
     this.focusIndex = Math.max(0, this.queueTasks.findIndex((t) => t.id === id));
+  }
+
+  /// Re-points focus at the same task by id after a background sync
+  /// (streamed boot batches, resume()'s refresh, the visible-tasks top-up)
+  /// merges fresh server data into this.tasks/tasksWithoutDueDate. The
+  /// card on screen must never change just because a sync landed — only
+  /// because that task is genuinely gone (completed/deleted elsewhere).
+  /// Everything else a sync can bring (re-sorted due times, new tasks,
+  /// edited fields) only affects what's queued up *after* the current
+  /// card, since this always re-finds the same id in the freshly-merged
+  /// queueTasks rather than trusting a raw index that could now point at
+  /// something else entirely.
+  private resyncFocus(focusId: string | null) {
+    if (focusId) {
+      const idx = this.queueTasks.findIndex((t) => t.id === focusId);
+      if (idx !== -1) {
+        this.focusIndex = idx;
+        return;
+      }
+      const stillExists = this.tasks.some((t) => t.id === focusId) || this.tasksWithoutDueDate.some((t) => t.id === focusId);
+      this.logAnomaly(
+        stillExists ? 'resyncFocus.movedLists' : 'resyncFocus.taskGone',
+        stillExists
+          ? 'Focused task still exists but left the active queue (e.g. its due date changed) — advancing past it'
+          : 'Focused task no longer present anywhere in a fresh sync — advancing past it',
+        { focusId, reviewingBacklog: this.reviewingBacklog, screen: this.screen },
+      );
+    }
+    this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
   }
 
   /// "Leave as is" — advances past this task without changing anything
