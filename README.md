@@ -4,12 +4,20 @@ A mobile-web app that helps people at a creative agency pre-plan their upcoming 
 
 The original Claude Design handoff — product briefing, screen-by-screen spec, and the interactive prototype it was built from — lives in [`design_handoff_day_planner/`](./design_handoff_day_planner). This app implements that spec, plus real sign-in (Login / Connect-secondary-provider screens and a "Primary" account tag in Integrations) that the linked prototype snapshot predates but the briefing's OAuth requirements call for.
 
+<p>
+  <img src="docs/screenshots/triage.png" width="31%" alt="Triage screen: a focus card for one task at a time, with due date, breadcrumb, and a re-file action, plus a collapsible Up Next list">
+  <img src="docs/screenshots/calendar.png" width="31%" alt="Calendar day view: task blocks with reschedule/clear actions alongside an Outlook event linked to a task">
+  <img src="docs/screenshots/overview.png" width="31%" alt="Overview screen: workload bars for the next few days plus an aggregate next-week bucket">
+</p>
+
 ## Layout
 
 - **`app/`** — the frontend: Svelte 5 + TypeScript + Vite, no backend framework knowledge required to read.
 - **`server/`** — the backend: Express + TypeScript + Prisma/Postgres. Handles Asana and Microsoft (Outlook/Graph) OAuth, encrypted token storage, and proxies the Asana/Graph APIs so the browser never sees a raw access token.
 - **`design_handoff_day_planner/`** — the original design bundle (spec + prototype) this was built from.
 - **`Dockerfile`** / **`docker-compose.yml`** — builds both into one image (the server serves the built frontend's static files) plus a Postgres container.
+- **`deploy/docker-compose.prod.yml`** — the pull-only production compose file (see "Production" below).
+- **`scripts/`** — `rebuild.sh` (local rebuild+restart with build metadata baked in) and `publish.sh` (build + push the production image to GHCR).
 
 ## Configuration
 
@@ -22,13 +30,52 @@ cp .env.example .env
 
 Docker Compose auto-loads it from this exact path. Running the server directly on the host (`npm run dev`/`npm test`/`npm run prisma:*` in `server/`) also loads it, via `--env-file-if-exists=../.env` in `server/package.json` — so there's nowhere else to duplicate secrets, and the two ways of running the app always agree on config. See the comments in `.env.example` for what each variable does (including `DATABASE_URL`, which only matters for the host-process path — Docker Compose builds its own from the `POSTGRES_*` vars).
 
+`PORT` (default 3000) drives both the published host port and the port the server binds inside the container, so changing it in `.env` is enough — there's no second place to keep in sync. `POSTGRES_PORT` (default 55433) only affects the localhost-only port Postgres is published on for host tooling.
+
 ## Running with Docker Compose
 
 ```
 docker compose up --build
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000 (or whatever `PORT` you set).
+
+For local iteration there's also `./scripts/rebuild.sh`, which does the same rebuild-and-restart but bakes the current commit, dirty flag, and a fresh build id into the image so the running app can identify itself and offer a reload when it's out of date. Pass `DEV_NOTE="what you're testing"` to have it listed on the loading screen while the change is uncommitted.
+
+## Production
+
+**Direct (e.g. testing on a server without a registry):** clone the repo onto the server, set up `.env` as above (with `PUBLIC_APP_URL` set to the real `https://` URL — see "HTTPS" below), and run `docker compose up -d --build` from the repo root. The container runs `prisma migrate deploy` automatically on startup, so there's no separate migration step.
+
+**Via GitHub Container Registry (the recommended approach, same as `asana-sales-autostatus`):** the image is published to `ghcr.io/andrelung/day-planner`, and a production stack only ever pulls it — no source tree, no git, no build step on that host at all. That stack's compose file is [deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml); paste it into Dockge (or any other stack manager) when creating the stack there, or run it directly with `docker compose -f deploy/docker-compose.prod.yml up -d`. Place a `.env` file (same as above) alongside it in the stack's directory.
+
+To publish an update after any code change:
+```bash
+docker login ghcr.io   # one-time, needs a GitHub PAT with write:packages scope
+./scripts/publish.sh
+```
+`publish.sh` builds for `linux/amd64` specifically — a plain `docker build`/`docker compose build` targets whatever architecture it's running on, which silently produces an arm64-only image on an Apple Silicon dev machine and then fails to pull on a typical amd64 Linux server (`no matching manifest for linux/amd64`). Add `,linux/arm64` to the `--platform` list in that script if the image should also run natively on Apple Silicon hosts.
+
+Then recreate the stack (Dockge's update button, or `docker compose -f deploy/docker-compose.prod.yml pull && docker compose -f deploy/docker-compose.prod.yml up -d`) to pull and restart with the new image. That's the entire update mechanism — no SSH into the app, no git on the production side.
+
+**Package visibility:** a freshly-pushed GHCR package is private to your GitHub account by default — **keep it that way** and grant access to whichever account or org the production host authenticates as (which then needs its own `docker login ghcr.io`, with a PAT scoped to `read:packages` only). Unlike `asana-sales-autostatus`, there's no reason to make this one public: the image contains the full built application, and a private package costs nothing here since only your own server pulls it.
+
+The image itself carries no secrets — `.env` is excluded from the build context via `.dockerignore`, every credential arrives at runtime from the compose file's `environment:` block, and `publish.sh` deliberately doesn't pass `DEV_NOTES_JSON` (so in-development notes never ship in a published build). The only things baked in are the commit hash, dirty flag, and build id.
+
+**HTTPS:** the container only speaks plain HTTP (on `PORT`, default 3000) either way. Asana's OAuth and most Microsoft Entra configurations reject non-HTTPS redirect URIs, so production needs a reverse proxy (Caddy, Traefik, nginx+certbot, whatever's already handling TLS on that host) terminating TLS in front of the app's published port, with `PUBLIC_APP_URL` set to that `https://` URL. Register `https://<your-domain>/auth/asana/callback` and `https://<your-domain>/auth/outlook/callback` as redirect URIs in the Asana app and Azure app registration respectively (see "Registering the OAuth apps" below).
+
+### Handling the production secrets
+
+Generate **fresh** values for `TOKEN_ENCRYPTION_KEY`, `SESSION_JWT_SECRET`, and `POSTGRES_PASSWORD` on the production host (`openssl rand -base64 32`) — never copy them over from a dev machine's `.env`. `TOKEN_ENCRYPTION_KEY` in particular encrypts every stored Asana/Microsoft refresh token at rest, so rotating it later invalidates all of them and forces everyone to sign in again.
+
+Two commands print every secret in full, so avoid them when screen-sharing or pasting into a ticket: `docker compose config` (resolves and echoes the whole file) and `docker compose exec app env`. To check a single value, `grep` the specific key out of `.env` instead.
+
+The production stack mounts only a dedicated `./logs` subdirectory into the container, not the stack directory itself — the app writes nothing but its audit/diagnostic files (see "Change log" below), and there's no reason for the container to be able to read the `.env` sitting next to it. Create it with `mkdir -p logs` next to the compose file before first start.
+
+### Which build is actually running
+
+Every image records the commit it was built from, a dirty flag, and a unique build id. They're visible three ways: `GET /api/version`, the app's own Settings screen, and the loading screen's footer. Before concluding a fix "didn't work," check that first — it's the fastest way to rule out "the container is still running the old image."
+
+A `dirty: true` means the image was built from a working tree with uncommitted changes — expected for a local `rebuild.sh` while iterating, worth noticing on something meant to be a clean release. Locally, `rebuild.sh` also accumulates a `DEV_NOTE="..."` per rebuild into a "Currently in development" list on the loading screen, so a tester can see what an uncommitted build contains; that list resets automatically once the working tree is clean, and never ships in a `publish.sh` image.
 
 ## Running locally without Docker
 
@@ -78,9 +125,15 @@ If the Asana app is installed on the iPhone, tapping the sign-in link can hand o
 
 The login/connect buttons are real `<a href>` links (not JavaScript-triggered navigation) specifically so you have a manual escape hatch: **long-press "Continue with Asana"** and choose **Open in New Tab** (or **Open in Safari**, wording varies by iOS version) from the menu that appears, instead of tapping it normally. That routes around the app handoff. The quickest way to avoid it entirely while testing is to just not have the Asana app installed on the test device.
 
-### Blank screen after returning from "Open in Asana" (iOS)
+### Blank or frozen screen after returning from another app (iOS)
 
-When installed as a home-screen app, iOS can suspend or outright kill a standalone PWA's WKWebView while it's backgrounded (e.g. while you're over in the Asana app), and fail to repaint it on return, leaving a blank screen. `App.svelte` re-runs `planner.boot()` when the page becomes visible again after being hidden for a few seconds, which forces a fresh render and re-syncs task/workload data. This is a workaround for a WebKit/OS-level quirk, not a bug in this app's own state handling.
+When installed as a home-screen app, iOS can suspend or outright kill a standalone PWA's WKWebView while it's backgrounded (e.g. while you're over in the Asana app), and fail to repaint it on return. The symptom is either a blank screen or — more confusingly — a screen that *looks* fine but ignores taps, because state updated correctly while the frame never repainted. This is a WebKit/OS-level quirk, not a bug in this app's own state handling, and `App.svelte` works around it in three places:
+
+- **`forceRepaint()`** — toggles a style on `documentElement`, forces layout, then reverts, deferred across a double `requestAnimationFrame` (a same-tick revert gets coalesced away with nothing ever actually painted). It runs on every screen/date change, on resume, and whenever the store logs an anomaly (a stale-guard trip is this bug's signature).
+- **`resume()`** — wired to `visibilitychange`, `pageshow`, *and* `focus`, deduped, since standalone iOS PWAs frequently don't fire `visibilitychange` on the way back. It repaints and refetches tasks/workload with plain GETs — deliberately *not* `boot()`'s SSE-streamed path, since re-establishing a long-lived `EventSource` while iOS's background network suspension is still lifting proved unreliable.
+- **A 10-second stuck-loading safety net** — if the loading screen hasn't resolved by then, a "Taking a while — tap to reload" button appears, doing a cache-busted reload (plain `reload()` can serve a stale build from WKWebView's memory cache). This timer is deliberately independent of the task stream's own stall watchdog, so it still fires if the runtime itself is what's wedged.
+
+If the app is genuinely stuck despite all of this, force-quitting it from the App Switcher clears it; backgrounding and returning is the lighter thing to try first.
 
 ## Install as an app (iOS / Android)
 
@@ -103,7 +156,7 @@ Either way you get a real navy-and-yellow app icon and a standalone window — n
 
 ## Testing
 
-Unit tests cover the pure business logic — the pieces most likely to silently regress: the `[4]`-in-title duration convention, doubled-task/queue-ordering, free-slot computation, workload day-bucketing, and token encryption. They don't need a database, Docker, or real OAuth credentials.
+Unit tests cover the pure business logic — the pieces most likely to silently regress: the `[4]`-in-title duration convention, doubled-task/queue-ordering, free-slot computation, workload day-bucketing, timezone/day-boundary handling (including cross-timezone regression cases), and token encryption. They don't need a database, Docker, or real OAuth credentials.
 
 ```
 cd server && npm install && npm test   # node's built-in test runner, via tsx
@@ -121,9 +174,20 @@ Every real write to Asana (due date set/rescheduled/removed, estimate change, ta
 Timestamps and due dates are rendered in the timezone set in Settings → Timezone rather than raw UTC. A brand-new user defaults to whatever `TZ` is set to in `.env` (falling back to UTC if unset) until they pick their own.
 
 - **Local dev** (`npm run dev`/`npm start` in `server/`): the file is written straight to the project root, no setup needed.
-- **Docker Compose**: the container mounts the project root at `/host-root` and `CHANGE_LOG_PATH` points there (see `docker-compose.yml`), so the file still lands in the project root on the host.
+- **Docker Compose (dev)**: the container mounts the project root at `/host-root` and `CHANGE_LOG_PATH` points there (see `docker-compose.yml`), so the file still lands in the project root on the host.
+- **Production**: the stack mounts its own `./logs` subdirectory at `/host-root` instead (see `deploy/docker-compose.prod.yml`), so these land in `logs/` next to the compose file rather than alongside the production `.env`.
 
 It's gitignored — open it in Excel/Numbers/Google Sheets locally. If it's open in Excel while the app writes to it, that write is logged to the server console and dropped (the real Asana action still succeeds either way).
+
+Three other files are written to the same directory, all gitignored and all safe to delete at any time:
+
+| File | What it holds |
+|---|---|
+| `match-log.xlsx` | Outlook-event → Asana-task match suggestions and what was picked, for tuning the matching heuristic. |
+| `task-load-log.jsonl` | One line per task-load failure, tagged `boot` or `refresh`. The first thing to check when someone reports the app not loading. |
+| `anomaly-log.jsonl` | One line per detected internal inconsistency (a stale/duplicate action, a focused task vanishing from a sync). Mostly useful for diagnosing the iOS stuck-frame class of bug above, which is hard to reproduce on demand. |
+
+Both `.jsonl` files are plain JSON-lines — `tail` them directly. They're written to a mounted volume, so they survive container rebuilds.
 
 ## Manually testing the full app
 
@@ -164,8 +228,17 @@ No custom field setup needed for the time estimate — see "Hours estimate" belo
 
 Restart the app after editing `.env`. The server intentionally still starts up without these set — it fails only the specific `/auth/:provider/start` request, with a message pointing back here — so the rest of the stack (Postgres, static assets, health check) is easy to verify independently.
 
+## Timezones
+
+Every day boundary in the app — "Today"/"Tomorrow" labels, which day a task is bucketed into, free-slot computation, the workload bars, the calendar's now-line, and the change log's rendered timestamps — resolves against the **per-user `Settings.timezone`**, not the server process's clock or the device's local time. This matters in practice: someone travelling sees the same day assignments as they would at home, rather than tasks silently shifting a day when they cross a timezone.
+
+The `TZ` env var only seeds the default for a brand-new user (falling back to UTC if unset); once a user picks a timezone in Settings, that's what applies to them.
+
+The mechanics live in two deliberately identical modules, `server/src/lib/tz.ts` and `app/src/lib/tz.ts` — `dateStrInTz`, `zonedMidnightUtc`, `hmInTz`/`hhmmInTz`, plus timezone-*independent* calendar-date helpers (`addDaysToDateStr`, `weekdayOfDateStr`) for arithmetic that genuinely doesn't need a zone. If you add date logic, use these rather than `new Date(...)` arithmetic or `toLocaleDateString` without an explicit `timeZone` — that's exactly the shape of bug they exist to prevent, and `app/src/lib/tz.test.ts` has regression cases for it.
+
+Two spots deliberately stay device-local, both because they run at store-construction time before the user's timezone has been fetched from the server: the skeleton workload days and the initial `activeDate`/`calendarViewDate` values. Both are corrected as soon as real data arrives.
+
 ## Known simplifications
 
-- **Timezone**: the change log (see above) renders in the per-user `Settings.timezone` the user picks in the app, and the server process's own clock (which drives "Today"/"Tomorrow" day-bucketing) is set via the `TZ` env var. Both assume everyone using a given deployment is in the same timezone — fine for a single-office team, worth reconsidering before rolling out across regions.
 - **Capacity**: a day's capacity is derived from the employee's preferred start/end time (Settings), not from historical throughput — the original briefing calls the latter out as the more realistic long-term source.
 - **Hours estimate**: since Asana has no native duration field, the estimate is read from and written to a `[4]`-style bracket at the end of the task title (e.g. "Draft outline [4]"), the same convention used by the team's `asana-to-mongo-replicator` — so titles stay readable by both tools. Supports a decimal comma (`[1,5]`), a trailing `/`-divided value (`[1/6]` → 6), and the `∑` summary-total prefix on read; only ever writes the plain `[N]` form. The task name shown in the UI has the bracket stripped.

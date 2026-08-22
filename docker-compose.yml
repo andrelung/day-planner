@@ -20,6 +20,7 @@ services:
       retries: 10
 
   app:
+    image: ghcr.io/andrelung/day-planner:latest
     build:
       context: .
       # Passed through from the host's actual git state (see the "docker
@@ -40,7 +41,10 @@ services:
       db:
         condition: service_healthy
     ports:
-      - '${PORT:-3000}:3000'
+      # Container-side port must match environment.PORT below (the app binds
+      # to whatever PORT it's told) — both driven from the same .env value
+      # rather than one of them silently staying pinned to the 3000 default.
+      - '${PORT:-3000}:${PORT:-3000}'
     volumes:
       # The container's filesystem isn't visible on the host by default —
       # mount the project root so change-log.xlsx (written by the app) lands
@@ -50,7 +54,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-dayplanner}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dayplanner}?schema=public
       TOKEN_ENCRYPTION_KEY: '${TOKEN_ENCRYPTION_KEY:?set TOKEN_ENCRYPTION_KEY in .env, e.g. openssl rand -base64 32}'
       SESSION_JWT_SECRET: '${SESSION_JWT_SECRET:?set SESSION_JWT_SECRET in .env, e.g. openssl rand -base64 32}'
-      PORT: 3000
+      PORT: ${PORT:-3000}
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
       ASANA_CLIENT_ID: ${ASANA_CLIENT_ID:-}
       ASANA_CLIENT_SECRET: ${ASANA_CLIENT_SECRET:-}

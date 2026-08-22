@@ -1,0 +1,80 @@
+# Paste this into Dockge (or any other stack manager, or just `docker compose -f
+# docker-compose.prod.yml up -d`) when creating the stack on the production host.
+# Deliberately has no `build:` for the app service — this only ever pulls the image
+# from GitHub Container Registry, it never has (or needs) the source tree. Place a
+# `.env` file (copy .env.example from the repo and fill in real production secrets —
+# see the main README's "Configuration" section) alongside this compose file in the
+# stack's directory on the host, and create a ./logs subdirectory next to it
+# (`mkdir -p logs`) for the app's audit/diagnostic files.
+#
+# Generate PRODUCTION-ONLY values for TOKEN_ENCRYPTION_KEY / SESSION_JWT_SECRET /
+# POSTGRES_PASSWORD (openssl rand -base64 32) — never reuse the ones from a dev
+# machine's .env. Note that `docker compose config` and `docker compose exec app env`
+# print every one of these in full, so avoid them when someone's looking over your
+# shoulder or when pasting output into a ticket.
+#
+# To publish an update after any code change, from the source repo:
+#   ./scripts/publish.sh
+# Then recreate this stack (Dockge's "Aktualisieren"/"Update", or
+# `docker compose -f docker-compose.prod.yml pull && docker compose -f
+# docker-compose.prod.yml up -d`) to pull and restart with the new image.
+#
+# The app still needs HTTPS in front of it for Asana/Microsoft OAuth to work
+# (both reject non-HTTPS redirect URIs) — put a reverse proxy (Caddy, Traefik,
+# nginx+certbot, whatever's already handling TLS on this host) in front of the
+# app's published port, and set PUBLIC_APP_URL below to the real https:// URL.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dayplanner}
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}'
+      POSTGRES_DB: ${POSTGRES_DB:-dayplanner}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    image: ghcr.io/andrelung/day-planner:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # Container-side port must match environment.PORT below (the app binds
+      # to whatever PORT it's told) — both driven from the same .env value
+      # rather than one of them silently staying pinned to the 3000 default.
+      - '${PORT:-3000}:${PORT:-3000}'
+    volumes:
+      # Deliberately a dedicated ./logs subdirectory, NOT the stack directory
+      # itself — the app only ever writes the four log files below, while the
+      # stack directory also holds .env (OAuth client secrets, the token
+      # encryption key, the session signing secret). Mounting the whole
+      # directory would put all of that inside the container's filesystem for
+      # no benefit. Create it next to this file: `mkdir -p logs`.
+      - ./logs:/host-root
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dayplanner}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dayplanner}?schema=public
+      TOKEN_ENCRYPTION_KEY: '${TOKEN_ENCRYPTION_KEY:?set TOKEN_ENCRYPTION_KEY in .env, e.g. openssl rand -base64 32}'
+      SESSION_JWT_SECRET: '${SESSION_JWT_SECRET:?set SESSION_JWT_SECRET in .env, e.g. openssl rand -base64 32}'
+      PORT: ${PORT:-3000}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:?set PUBLIC_APP_URL in .env to the real https:// production URL}
+      ASANA_CLIENT_ID: ${ASANA_CLIENT_ID:-}
+      ASANA_CLIENT_SECRET: ${ASANA_CLIENT_SECRET:-}
+      MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+      MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
+      MS_TENANT_ID: ${MS_TENANT_ID:-common}
+      CHANGE_LOG_PATH: /host-root/change-log.xlsx
+      MATCH_LOG_PATH: /host-root/match-log.xlsx
+      TASK_LOAD_LOG_PATH: /host-root/task-load-log.jsonl
+      ANOMALY_LOG_PATH: /host-root/anomaly-log.jsonl
+      TZ: ${TZ:-UTC}
+      NODE_ENV: production
+
+volumes:
+  db-data:
