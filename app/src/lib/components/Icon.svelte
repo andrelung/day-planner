@@ -17,7 +17,8 @@
       | 'calendar'
       | 'link'
       | 'link-off'
-      | 'info';
+      | 'info'
+      | 'share-ios';
     size?: number;
     color?: string;
   }
@@ -93,5 +94,12 @@
     <circle cx="12" cy="12" r="9"></circle>
     <line x1="12" y1="16" x2="12" y2="11"></line>
     <line x1="12" y1="8" x2="12.01" y2="8"></line>
+  {:else if name === 'share-ios'}
+    <!-- iOS's own Share affordance: a tray with an arrow leaving the top.
+         Drawn to match what the user is actually looking for in the
+         toolbar, rather than the generic three-node "share" graph. -->
+    <path d="M8 11H6a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-2"></path>
+    <line x1="12" y1="3" x2="12" y2="15"></line>
+    <polyline points="8.5 6.5 12 3 15.5 6.5"></polyline>
   {/if}
 </svg>

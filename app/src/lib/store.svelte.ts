@@ -19,6 +19,7 @@ import { fmtHours, slotStartTime } from './format';
 import { BUILD_ID } from './version';
 import { stringSimilarity } from 'string-similarity-js';
 import { addDaysToDateStr, dateStrInTz, hhmmInTz, monthDayOfDateStr, weekdayNameOfDateStr, weekdayOfDateStr, zonedMidnightUtc } from './tz';
+import { detectInstallPlatform, isStandaloneDisplay, readPlatformSignals, type InstallPlatform } from './platform';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let toastRetryInterval: ReturnType<typeof setInterval> | undefined;
@@ -945,21 +946,27 @@ class PlannerStore {
   }
 
   // --- install banner ---
-  // Chrome/Edge/Android fire beforeinstallprompt (captured as early as
+  // Android/Chromium fires beforeinstallprompt (captured as early as
   // possible in main.ts, before this store's UI even exists, in case it
-  // fires immediately on load) and support a real programmatic install
-  // prompt. iOS Safari never fires that event at all — "Add to Home
-  // Screen" only exists as a manual Share-sheet action — so that path is
-  // detected separately and just shows instructions instead of a button.
-  // Either way the banner only renders once the user reaches Triage
-  // (main.ts sets planner.screen via boot() before this can show), not on
-  // first load, and a dismissal is remembered so it never nags again.
+  // fires immediately on load) and supports a real programmatic install
+  // prompt. iOS never fires that event at all — adding to the Home Screen
+  // is only ever a manual Share-sheet action there — so that path is
+  // detected separately and shows instructions instead of a button.
+  //
+  // Crucially, beforeinstallprompt ALSO fires on desktop Chromium, which
+  // is how an "add it to your home screen" banner ended up in front of a
+  // Chrome-on-macOS user. This is a phone-shaped app, so the banner is
+  // gated on actually being a phone/tablet — see platform.ts, which
+  // documents that and the other detection pitfalls.
+  //
+  // Either way the banner only renders on the Login/Triage screens, and a
+  // dismissal is remembered so it never nags again.
   private installPromptEvent: { prompt(): void; userChoice: Promise<{ outcome: string }> } | null = null;
   showInstallBanner = $state(false);
-  installBannerKind: 'android' | 'ios' | null = $state(null);
+  installBannerKind: InstallPlatform | null = $state(null);
 
   private isStandalone(): boolean {
-    return window.matchMedia?.('(display-mode: standalone)').matches || (navigator as unknown as { standalone?: boolean }).standalone === true;
+    return isStandaloneDisplay();
   }
   private installDismissed(): boolean {
     return localStorage.getItem('installBannerDismissed') === '1';
@@ -968,6 +975,9 @@ class PlannerStore {
   captureInstallPrompt(e: { prompt(): void; userChoice: Promise<{ outcome: string }> }) {
     this.installPromptEvent = e;
     if (this.isStandalone() || this.installDismissed()) return;
+    // Desktop Chromium fires this too — installable, but "add to your home
+    // screen" is the wrong pitch for a laptop, so no banner there.
+    if (detectInstallPlatform(readPlatformSignals()) !== 'android') return;
     this.installBannerKind = 'android';
     this.showInstallBanner = true;
   }
@@ -976,9 +986,10 @@ class PlannerStore {
     this.installPromptEvent = null;
   }
   private maybeShowIosInstallBanner() {
-    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    if (!isIos || this.isStandalone() || this.installDismissed()) return;
-    this.installBannerKind = 'ios';
+    if (this.isStandalone() || this.installDismissed()) return;
+    const platform = detectInstallPlatform(readPlatformSignals());
+    if (platform !== 'ios-safari' && platform !== 'ios-other-browser') return;
+    this.installBannerKind = platform;
     this.showInstallBanner = true;
   }
   async promptInstall() {
