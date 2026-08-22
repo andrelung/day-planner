@@ -2,27 +2,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeFreeSlots } from './freeSlots.js';
 
-const DAY = new Date('2026-08-19T00:00:00');
+// Explicit +02:00 (Europe/Berlin's August/CEST offset) on every instant
+// below, rather than a bare local-time string — computeFreeSlots is
+// timezone-aware now, so its output should depend only on the `TZ`
+// parameter passed in, never on whatever zone the test runner's own
+// process happens to be in. Wall-clock times are unchanged from before.
+const DATE = '2026-08-19';
+const TZ = 'Europe/Berlin';
 
 void test('an empty day (no busy blocks) yields back-to-back 30-min slots across the whole window', () => {
-  const slots = computeFreeSlots(DAY, '09:00', '10:00', 0, []);
+  const slots = computeFreeSlots(DATE, TZ, '09:00', '10:00', 0, []);
   assert.deepEqual(slots, ['09:00–09:30', '09:30–10:00']);
 });
 
 void test('a busy block removes exactly the slots it overlaps', () => {
-  const slots = computeFreeSlots(DAY, '09:00', '11:00', 0, [
-    { start: new Date('2026-08-19T09:30:00'), end: new Date('2026-08-19T10:00:00') },
+  const slots = computeFreeSlots(DATE, TZ, '09:00', '11:00', 0, [
+    { start: new Date('2026-08-19T09:30:00+02:00'), end: new Date('2026-08-19T10:00:00+02:00') },
   ]);
   assert.deepEqual(slots, ['09:00–09:30', '10:00–10:30', '10:30–11:00']);
 });
 
 void test('the buffer-between-tasks setting pads each busy block only on the trailing side (wrap-up time), not before it starts', () => {
   const slots = computeFreeSlots(
-    DAY,
+    DATE,
+    TZ,
     '09:00',
     '11:00',
     15, // minutes
-    [{ start: new Date('2026-08-19T09:30:00'), end: new Date('2026-08-19T10:00:00') }],
+    [{ start: new Date('2026-08-19T09:30:00+02:00'), end: new Date('2026-08-19T10:00:00+02:00') }],
   );
   // Padded busy window becomes 09:30–10:15 (buffer only after the end) —
   // the leading gap (09:00–09:30) is exactly one clean 30-min slot, and one
@@ -33,46 +40,50 @@ void test('the buffer-between-tasks setting pads each busy block only on the tra
 
 void test('a busy block that ends exactly at window start does not push the first slot later via buffer', () => {
   const slots = computeFreeSlots(
-    DAY,
+    DATE,
+    TZ,
     '09:00',
     '11:00',
     10,
-    [{ start: new Date('2026-08-19T08:00:00'), end: new Date('2026-08-19T09:00:00') }],
+    [{ start: new Date('2026-08-19T08:00:00+02:00'), end: new Date('2026-08-19T09:00:00+02:00') }],
   );
   assert.deepEqual(slots, ['09:00–09:30', '09:30–10:00', '10:00–10:30', '10:30–11:00']);
 });
 
 void test('a busy block that ends before window start does not push the first slot later via buffer either', () => {
   const slots = computeFreeSlots(
-    DAY,
+    DATE,
+    TZ,
     '09:00',
     '10:00',
     30,
-    [{ start: new Date('2026-08-19T08:00:00'), end: new Date('2026-08-19T08:55:00') }],
+    [{ start: new Date('2026-08-19T08:00:00+02:00'), end: new Date('2026-08-19T08:55:00+02:00') }],
   );
   assert.deepEqual(slots, ['09:00–09:30', '09:30–10:00']);
 });
 
 void test('a busy block that crosses into the window still gets its full trailing buffer', () => {
   const slots = computeFreeSlots(
-    DAY,
+    DATE,
+    TZ,
     '09:00',
     '11:00',
     10,
-    [{ start: new Date('2026-08-19T08:30:00'), end: new Date('2026-08-19T09:05:00') }],
+    [{ start: new Date('2026-08-19T08:30:00+02:00'), end: new Date('2026-08-19T09:05:00+02:00') }],
   );
   assert.deepEqual(slots, ['09:15–09:45', '09:45–10:15', '10:15–10:45']);
 });
 
 void test('two back-to-back busy blocks only get one buffer gap between them, not a doubled one', () => {
   const slots = computeFreeSlots(
-    DAY,
+    DATE,
+    TZ,
     '09:00',
     '12:00',
     15,
     [
-      { start: new Date('2026-08-19T09:00:00'), end: new Date('2026-08-19T09:30:00') },
-      { start: new Date('2026-08-19T10:15:00'), end: new Date('2026-08-19T10:45:00') },
+      { start: new Date('2026-08-19T09:00:00+02:00'), end: new Date('2026-08-19T09:30:00+02:00') },
+      { start: new Date('2026-08-19T10:15:00+02:00'), end: new Date('2026-08-19T10:45:00+02:00') },
     ],
   );
   // Only the first block's trailing buffer (09:30–09:45) applies between
@@ -82,34 +93,34 @@ void test('two back-to-back busy blocks only get one buffer gap between them, no
 });
 
 void test('overlapping and back-to-back busy blocks are merged before computing gaps', () => {
-  const slots = computeFreeSlots(DAY, '09:00', '11:00', 0, [
-    { start: new Date('2026-08-19T09:00:00'), end: new Date('2026-08-19T09:45:00') },
-    { start: new Date('2026-08-19T09:30:00'), end: new Date('2026-08-19T10:00:00') }, // overlaps the first
+  const slots = computeFreeSlots(DATE, TZ, '09:00', '11:00', 0, [
+    { start: new Date('2026-08-19T09:00:00+02:00'), end: new Date('2026-08-19T09:45:00+02:00') },
+    { start: new Date('2026-08-19T09:30:00+02:00'), end: new Date('2026-08-19T10:00:00+02:00') }, // overlaps the first
   ]);
   assert.deepEqual(slots, ['10:00–10:30', '10:30–11:00']);
 });
 
 void test('a busy block entirely outside the working-hours window has no effect', () => {
-  const slots = computeFreeSlots(DAY, '09:00', '10:00', 0, [
-    { start: new Date('2026-08-19T18:00:00'), end: new Date('2026-08-19T19:00:00') },
+  const slots = computeFreeSlots(DATE, TZ, '09:00', '10:00', 0, [
+    { start: new Date('2026-08-19T18:00:00+02:00'), end: new Date('2026-08-19T19:00:00+02:00') },
   ]);
   assert.deepEqual(slots, ['09:00–09:30', '09:30–10:00']);
 });
 
 void test('a fully booked window yields no slots', () => {
-  const slots = computeFreeSlots(DAY, '09:00', '10:00', 0, [
-    { start: new Date('2026-08-19T09:00:00'), end: new Date('2026-08-19T10:00:00') },
+  const slots = computeFreeSlots(DATE, TZ, '09:00', '10:00', 0, [
+    { start: new Date('2026-08-19T09:00:00+02:00'), end: new Date('2026-08-19T10:00:00+02:00') },
   ]);
   assert.deepEqual(slots, []);
 });
 
 void test('an inverted or zero-length window yields no slots', () => {
-  assert.deepEqual(computeFreeSlots(DAY, '10:00', '09:00', 0, []), []);
-  assert.deepEqual(computeFreeSlots(DAY, '09:00', '09:00', 0, []), []);
+  assert.deepEqual(computeFreeSlots(DATE, TZ, '10:00', '09:00', 0, []), []);
+  assert.deepEqual(computeFreeSlots(DATE, TZ, '09:00', '09:00', 0, []), []);
 });
 
 void test('a trailing gap shorter than one slot is dropped, not returned as a short slot', () => {
-  const slots = computeFreeSlots(DAY, '09:00', '09:45', 0, []);
+  const slots = computeFreeSlots(DATE, TZ, '09:00', '09:45', 0, []);
   assert.deepEqual(slots, ['09:00–09:30']);
 });
 
@@ -117,7 +128,7 @@ void test('a trailing gap shorter than one slot is dropped, not returned as a sh
 /// a fixed 30 minutes — a 90-minute task offered "10:10–10:40" (a 30-min
 /// window) would overrun into whatever comes next.
 void test('slotMinutes sizes each returned slot to the task duration being planned, not a fixed 30 minutes', () => {
-  const slots = computeFreeSlots(DAY, '09:00', '13:00', 10, [], 90);
+  const slots = computeFreeSlots(DATE, TZ, '09:00', '13:00', 10, [], 90);
   for (const s of slots) {
     const [start, end] = s.split('–');
     const [sh, sm] = start.split(':').map(Number);
@@ -132,12 +143,24 @@ void test('a gap shorter than the requested task duration is not offered, even t
   // too short for a 90-min task, even though a naive 30-min chunker would
   // have offered "10:15–10:45" here.
   const slots = computeFreeSlots(
-    DAY,
+    DATE,
+    TZ,
     '09:00',
     '11:00',
     15,
-    [{ start: new Date('2026-08-19T09:30:00'), end: new Date('2026-08-19T10:00:00') }],
+    [{ start: new Date('2026-08-19T09:30:00+02:00'), end: new Date('2026-08-19T10:00:00+02:00') }],
     90,
   );
   assert.deepEqual(slots, []);
+});
+
+void test('computeFreeSlots follows the passed timezone, not the server process\'s own clock', () => {
+  // Same wall-clock request (09:00-10:00, no busy blocks) in two different
+  // zones on the same calendar date should produce identically-labeled
+  // slots — the output is purely a function of the timezone argument, not
+  // whatever zone the process happens to be running under.
+  const berlin = computeFreeSlots(DATE, 'Europe/Berlin', '09:00', '10:00', 0, []);
+  const losAngeles = computeFreeSlots(DATE, 'America/Los_Angeles', '09:00', '10:00', 0, []);
+  assert.deepEqual(berlin, ['09:00–09:30', '09:30–10:00']);
+  assert.deepEqual(losAngeles, ['09:00–09:30', '09:30–10:00']);
 });

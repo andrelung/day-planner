@@ -2,6 +2,7 @@
   import { flip } from 'svelte/animate';
   import { planner } from '../store.svelte';
   import { fmtElapsed, fmtHours } from '../format';
+  import { addDaysToDateStr, zonedMidnightUtc } from '../tz';
   import Icon from '../components/Icon.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Stepper from '../components/Stepper.svelte';
@@ -42,7 +43,7 @@
   const focusCreatedLabel = $derived.by(() => {
     const iso = planner.taskDetails?.createdAt;
     if (!iso) return null;
-    return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: planner.timezone });
   });
   const focusDescriptionPreview = $derived.by(() => {
     const text = planner.taskDetails?.description;
@@ -192,9 +193,9 @@
     if (!focusRaw) return null;
     if (focusRaw.dueAt) return new Date(focusRaw.dueAt);
     if (!focusRaw.dueOn) return null;
-    const endOfDay = new Date(`${focusRaw.dueOn}T00:00:00`);
-    endOfDay.setDate(endOfDay.getDate() + 1);
-    return endOfDay;
+    // "End of day" in the user's own configured timezone, not the
+    // device's ambient one — see app/src/lib/tz.ts.
+    return zonedMidnightUtc(addDaysToDateStr(focusRaw.dueOn, 1), planner.timezone);
   });
   const focusOverdueMs = $derived(focusEffectiveDueAt ? now.getTime() - focusEffectiveDueAt.getTime() : 0);
   const focusIsOverdue = $derived(focusOverdueMs > 0);
@@ -252,9 +253,9 @@
       </div>
     </div>
     <div class="up-next-inner" style="transform:translateY({pullY}px); transition:{pulling ? 'none' : 'transform 200ms ease-out'};">
-      {#if restTasks.length > 0}
+      {#if hasFocusTask}
         <button class="section-label section-label--toggle" onclick={() => planner.toggleUpNextCollapsed()}>
-          <span>Up next{planner.upNextCollapsed ? ` (${restTasks.length})` : ''}</span>
+          <span>Up next ({restTasks.length})</span>
           <span class="section-label__chevron" style="transform:rotate({planner.upNextCollapsed ? 0 : 90}deg);">
             <Icon name="chevron-right" size={14} color="var(--color-text-muted)" />
           </span>
@@ -432,6 +433,39 @@
           <div class="focus-card__project" class:focus-card__project--full={planner.upNextCollapsed}>{focusRaw.project}</div>
 
           {#if planner.upNextCollapsed}
+            {#if planner.taskRefileId === focusRaw.id}
+              <div class="search-panel">
+                <div class="search-panel__top">
+                  <div class="search-panel__title">Move to project or subtask</div>
+                  <button class="search-panel__cancel" onclick={() => planner.closeSearchPanel()}>Cancel</button>
+                </div>
+                <Input placeholder="Search projects or tasks…" value={planner.searchQuery} onchange={(v) => planner.onSearchChange(v)} />
+                {#if planner.typeaheadLoading}
+                  <div class="search-loading">
+                    <div class="search-loading__spinner"></div>
+                    <span>Searching…</span>
+                  </div>
+                {:else}
+                  <div class="search-results">
+                    {#each planner.searchResultsForRefile() as r}
+                      {@const m = planner.matchSplit(r.label)}
+                      <button class="search-result" onclick={r.onSelect}>
+                        <div class="search-result__label">
+                          {#if m}{m.pre}<mark>{m.match}</mark>{m.post}{:else}{r.label}{/if}
+                        </div>
+                        <div class="search-result__type">{r.typeLabel}</div>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {:else}
+              <button class="focus-details__refile" onclick={() => planner.openTaskRefilePanel()}>
+                <Icon name="pencil" size={13} color="var(--color-text-muted)" />
+                <span>Move to a different project or subtask</span>
+              </button>
+            {/if}
+
             <div class="focus-details">
               {#if focusDueLabel}
                 <div class="focus-details__row">
@@ -461,38 +495,6 @@
                     {/each}
                   </div>
                 {/if}
-              {/if}
-              {#if planner.taskRefileId === focusRaw.id}
-                <div class="search-panel">
-                  <div class="search-panel__top">
-                    <div class="search-panel__title">Move to project or subtask</div>
-                    <button class="search-panel__cancel" onclick={() => planner.closeSearchPanel()}>Cancel</button>
-                  </div>
-                  <Input placeholder="Search projects or tasks…" value={planner.searchQuery} onchange={(v) => planner.onSearchChange(v)} />
-                  {#if planner.typeaheadLoading}
-                    <div class="search-loading">
-                      <div class="search-loading__spinner"></div>
-                      <span>Searching…</span>
-                    </div>
-                  {:else}
-                    <div class="search-results">
-                      {#each planner.searchResultsForRefile() as r}
-                        {@const m = planner.matchSplit(r.label)}
-                        <button class="search-result" onclick={r.onSelect}>
-                          <div class="search-result__label">
-                            {#if m}{m.pre}<mark>{m.match}</mark>{m.post}{:else}{r.label}{/if}
-                          </div>
-                          <div class="search-result__type">{r.typeLabel}</div>
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {:else}
-                <button class="focus-details__refile" onclick={() => planner.openTaskRefilePanel()}>
-                  <Icon name="pencil" size={13} color="var(--color-text-muted)" />
-                  <span>Move to a different project or subtask</span>
-                </button>
               {/if}
             </div>
           {/if}
@@ -565,7 +567,15 @@
     position: relative;
     flex: 1;
     overflow-y: auto;
-    min-height: 0;
+    /* Not 0 — flex:1 combined with min-height:0 lets this shrink all the
+       way to nothing when the focus card below it grows tall enough (a
+       long description, full details expanded), which took the "Up Next"
+       toggle down with it instead of just trimming the list under it. This
+       floor is just about enough for the toggle row itself (see
+       .up-next-inner's own padding) plus a bit of headroom, so it — and
+       the breathing room above the card below it — survive regardless of
+       how tall the card gets. */
+    min-height: 56px;
     touch-action: pan-y;
     /* Without this, iOS Safari's own native rubber-band bounce takes over
        the instant you drag past scrollTop 0 — it both visually fights the
@@ -884,6 +894,12 @@
     font-family: var(--font-family-base);
     font-size: 13px;
     color: var(--color-text-primary);
+    /* Capped rather than left to grow with however long the description
+       happens to be — an unbounded card here was tall enough on a real
+       device to push "Up Next" out of its own flex:1 share of the screen
+       entirely (see .up-next-wrap's min-height:0), not just crowd it. */
+    max-height: 96px;
+    overflow-y: auto;
   }
   .focus-details__description-line {
     line-height: 1.4;

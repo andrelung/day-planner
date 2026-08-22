@@ -1,6 +1,7 @@
 import { env } from '../lib/env.js';
 import { cleanTitle, parseDurationFromTitle, titleWithDuration } from '../lib/titleDuration.js';
 import { recordChange } from '../lib/changeLog.js';
+import { addDaysToDateStr, dateStrInTz, hmInTz } from '../lib/tz.js';
 import type { OAuthTokenSet, RemoteTask } from './types.js';
 
 const AUTHORIZE_URL = 'https://app.asana.com/-/oauth_authorize';
@@ -176,18 +177,20 @@ interface AsanaTaskDto {
 const TASK_OPT_FIELDS = 'name,due_on,due_at,permalink_url,completed,projects.gid,projects.name,parent.gid,parent.name,parent.projects.gid,parent.projects.name';
 
 /// due_at is a real UTC instant (see setTaskDueAt) — reading its wall-clock
-/// hour back has to go through Date's local getters (which respect this
-/// process's TZ env var, i.e. the operator's timezone — see settings.ts),
-/// not string-slicing: slicing reads the UTC digits directly, which are
-/// only ever right on a UTC server. That mismatch is what made a task
-/// dragged to, say, 11:00 redisplay a couple hours off.
-function localHHMM(iso: string): string {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+/// hour back has to go through the *acting user's own configured
+/// Settings.timezone* (not this process's ambient clock — see workload.ts's
+/// identical reasoning; a mismatch here is what made a task dragged to,
+/// say, 11:00 redisplay a couple hours off for anyone whose zone differs
+/// from the server's), not string-slicing: slicing reads the UTC digits
+/// directly, which are only ever right when the target zone happens to be
+/// UTC itself.
+function localHHMM(iso: string, timezone: string): string {
+  const { h, m } = hmInTz(new Date(iso), timezone);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-function toRemoteTask(dto: AsanaTaskDto): RemoteTask & { projectGid: string | null } {
-  const dueHour = dto.due_at ? localHHMM(dto.due_at) : null;
+function toRemoteTask(dto: AsanaTaskDto, timezone: string): RemoteTask & { projectGid: string | null } {
+  const dueHour = dto.due_at ? localHHMM(dto.due_at, timezone) : null;
   return {
     gid: dto.gid,
     // Display name is the "[4]"-stripped title — the duration lives in the
@@ -289,10 +292,14 @@ async function fetchTaskOrNull(accessToken: string, gid: string): Promise<AsanaT
 /// instead of) a fuller refresh, which still matters for tasks not
 /// currently on screen — a newly assigned or newly-due task this endpoint
 /// was never told to look for.
-export async function refreshTasksByGid(accessToken: string, gids: string[]): Promise<Record<string, (RemoteTask & { projectGid: string | null }) | null>> {
+export async function refreshTasksByGid(
+  accessToken: string,
+  gids: string[],
+  timezone: string,
+): Promise<Record<string, (RemoteTask & { projectGid: string | null }) | null>> {
   const fetched = await Promise.all(gids.map(async (gid) => ({ gid, dto: await fetchTaskOrNull(accessToken, gid) })));
   const alive = fetched.filter((f): f is { gid: string; dto: AsanaTaskDto } => !!f.dto && !f.dto.completed);
-  const entries = alive.map((f) => ({ dto: f.dto, task: toRemoteTask(f.dto) }));
+  const entries = alive.map((f) => ({ dto: f.dto, task: toRemoteTask(f.dto, timezone) }));
   await resolveBreadcrumbs(accessToken, entries);
   const result: Record<string, (RemoteTask & { projectGid: string | null }) | null> = {};
   for (const gid of gids) result[gid] = null;
@@ -427,8 +434,16 @@ export async function listIncompleteAssignedTasks(
     withBreadcrumbs?: boolean;
     onBatch?: (tasksSoFar: (RemoteTask & { projectGid: string | null })[], totalSoFar: number) => void;
     onPhase?: (label: string) => void;
+    // The acting user's own configured Settings.timezone — not the server
+    // process's ambient clock (see workload.ts's identical reasoning).
+    // Defaults to UTC purely so the many existing tests below that don't
+    // exercise timezone-sensitive behavior (pagination, dedup, staleness)
+    // don't all need updating for an unrelated concern; every real caller
+    // passes the acting user's actual zone explicitly.
+    timezone?: string;
   },
 ): Promise<(RemoteTask & { projectGid: string | null })[]> {
+  const timezone = options?.timezone ?? 'UTC';
   const workspaces = await listWorkspaces(accessToken);
   // Keyed by gid rather than a plain array so the full-fetch pass below can
   // *overwrite* a search-sourced entry, not just skip re-adding it — Asana's
@@ -451,9 +466,7 @@ export async function listIncompleteAssignedTasks(
   const pendingSearchOnly = new Set<string>();
 
   options?.onPhase?.('Looking for upcoming tasks…');
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() + 35);
-  const dueOnBefore = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, '0')}-${String(cutoff.getDate()).padStart(2, '0')}`;
+  const dueOnBefore = addDaysToDateStr(dateStrInTz(new Date(), timezone), 35);
   for (const ws of workspaces) {
     const nearTerm = await searchNearTermTasks(accessToken, ws.gid, dueOnBefore);
     for (const dto of nearTerm) {
@@ -462,7 +475,7 @@ export async function listIncompleteAssignedTasks(
       // completion state (see TASK_OPT_FIELDS) — checked again here rather
       // than trusting that filter alone.
       if (dto.completed || byGid.has(dto.gid)) continue;
-      byGid.set(dto.gid, { dto, task: toRemoteTask(dto) });
+      byGid.set(dto.gid, { dto, task: toRemoteTask(dto, timezone) });
       pendingSearchOnly.add(dto.gid);
     }
     if (nearTerm.length) {
@@ -484,7 +497,7 @@ export async function listIncompleteAssignedTasks(
         // fresher than whatever the search pass may have seeded — over any
         // existing entry for the same gid.
         if (dto.completed) byGid.delete(dto.gid);
-        else byGid.set(dto.gid, { dto, task: toRemoteTask(dto) });
+        else byGid.set(dto.gid, { dto, task: toRemoteTask(dto, timezone) });
       }
       options?.onBatch?.(
         [...byGid.values()].filter((e) => !pendingSearchOnly.has(e.dto.gid)).map((e) => e.task),

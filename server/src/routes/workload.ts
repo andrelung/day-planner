@@ -12,8 +12,8 @@ workloadRouter.use(requireAuth);
 
 workloadRouter.get('/', async (req, res) => {
   const now = new Date();
-  const days = buildWorkloadDays(now);
   const settings = await getOrCreateSettings(req.userId!);
+  const days = buildWorkloadDays(now, settings.timezone);
   const capacityPerDay = dailyCapacityHours(settings.prefStartTime, settings.prefEndTime);
 
   const [asanaAccount, outlookAccount] = await Promise.all([
@@ -27,7 +27,7 @@ workloadRouter.get('/', async (req, res) => {
 
   if (asanaAccount) {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-    tasks = await listIncompleteAssignedTasks(accessToken);
+    tasks = await listIncompleteAssignedTasks(accessToken, { timezone: settings.timezone });
     const links = await prisma.calendarEventLink.findMany({
       where: { userId: req.userId!, ignored: false, linkedAsanaTaskGid: { not: null } },
       select: { linkedAsanaTaskGid: true },
@@ -54,7 +54,7 @@ workloadRouter.get('/', async (req, res) => {
     return {
       key: d.key,
       label: d.label,
-      date: d.date ? toLocalDateStr(d.date) : null,
+      date: d.date ? toLocalDateStr(d.date, settings.timezone) : null,
       rangeStart: d.rangeStart ? d.rangeStart.toISOString() : null,
       rangeEnd: d.rangeEnd ? d.rangeEnd.toISOString() : null,
       planned: Math.round(planned * 10) / 10,

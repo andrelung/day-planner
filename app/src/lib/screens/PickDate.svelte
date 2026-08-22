@@ -12,6 +12,15 @@
     if (ratio > 0) return 'cell__dot--partial';
     return '';
   }
+  // `dateStr` is already a resolved "YYYY-MM-DD" (see planner.calendarWeeks)
+  // — pure calendar-date formatting, so this anchors to UTC rather than
+  // re-parsing through the device's local timezone (which a bare
+  // `T00:00` local-time string would do), matching app/src/lib/tz.ts's own
+  // reasoning for keeping calendar-date arithmetic timezone-independent.
+  function formatCellLabel(dateStr: string): string {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+  }
 </script>
 
 <div class="screen">
@@ -62,7 +71,7 @@
             class:cell--out={!cell.inMonth}
             class:cell--today={cell.isToday}
             class:cell--past={cell.isPast && !cell.isToday}
-            onclick={() => planner.selectSpecificDay(cell.date, new Date(`${cell.date}T00:00`).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' }))}
+            onclick={() => planner.selectSpecificDay(cell.date, formatCellLabel(cell.date))}
           >
             <span class="cell__day">{cell.day}</span>
             <span class="cell__dot {fullnessClass(cell.ratio)}"></span>

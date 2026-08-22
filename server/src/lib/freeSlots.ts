@@ -1,10 +1,8 @@
+import { hmInTz, zonedMidnightUtc } from './tz.js';
+
 export interface BusyBlock {
   start: Date;
   end: Date;
-}
-
-function fmtTime(d: Date): string {
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 /// Computes open slots for one day within the employee's preferred working
@@ -12,21 +10,28 @@ function fmtTime(d: Date): string {
 /// bufferMinutes` — wrap-up/context-switch time *after* something finishes,
 /// not preparation time before it starts, so nothing is padded before a
 /// block's own start. Returned as "HH:MM–HH:MM" labels chunked to
-/// `slotMinutes`, matching the UI's slot list.
+/// `slotMinutes`, matching the UI's slot list. `timeZone` is the acting
+/// user's own configured Settings.timezone (see workload.ts's identical
+/// reasoning) — both the window boundaries and the returned "HH:MM" labels
+/// are wall-clock time *in that zone*, not the server process's own.
 export function computeFreeSlots(
-  day: Date,
+  dateStr: string,
+  timeZone: string,
   prefStartTime: string,
   prefEndTime: string,
   bufferMinutes: number,
   busy: BusyBlock[],
   slotMinutes = 30,
 ): string[] {
+  const fmtTime = (d: Date): string => {
+    const { h, m } = hmInTz(d, timeZone);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  };
   const [sh, sm] = prefStartTime.split(':').map(Number);
   const [eh, em] = prefEndTime.split(':').map(Number);
-  const windowStart = new Date(day);
-  windowStart.setHours(sh, sm, 0, 0);
-  const windowEnd = new Date(day);
-  windowEnd.setHours(eh, em, 0, 0);
+  const dayStart = zonedMidnightUtc(dateStr, timeZone);
+  const windowStart = new Date(dayStart.getTime() + (sh * 60 + sm) * 60_000);
+  const windowEnd = new Date(dayStart.getTime() + (eh * 60 + em) * 60_000);
   if (windowEnd <= windowStart) return [];
 
   const bufMs = bufferMinutes * 60_000;

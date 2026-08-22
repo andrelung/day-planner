@@ -4,6 +4,7 @@
   import Icon from './Icon.svelte';
   import Input from './Input.svelte';
   import type { OutlookBlock, Task } from '../types';
+  import { dateStrInTz, hmInTz } from '../tz';
 
   interface Props {
     /// "YYYY-MM-DD" — the day being planned.
@@ -68,12 +69,13 @@
   /// while it kept right on conflicting at confirm time.
   const otherTasks = $derived(planner.tasks.filter((t) => t.dueOn === date && t.dueAt && t.id !== excludeTaskId));
 
-  /// Local minutes-of-day for an Outlook event's start, or a task's dueAt —
-  /// has to go through Date's local getters, not string-slicing the ISO
-  /// instant, for the same reason toLocalTimeStr (store.svelte.ts) does.
+  /// Minutes-of-day for an Outlook event's start, or a task's dueAt, in the
+  /// user's own configured timezone — not the device's ambient one, which
+  /// can silently differ from it (most obviously while traveling). See
+  /// app/src/lib/tz.ts and store.svelte.ts's toLocalTimeStr, same reasoning.
   function isoStartMinutes(iso: string): number {
-    const d = new Date(iso);
-    return d.getHours() * 60 + d.getMinutes();
+    const { h, m } = hmInTz(new Date(iso), planner.timezone);
+    return h * 60 + m;
   }
   function isoDurationMinutes(startIso: string, endIso: string): number {
     return (new Date(endIso).getTime() - new Date(startIso).getTime()) / 60_000;
@@ -249,10 +251,16 @@
     }, 60_000);
     return () => clearInterval(id);
   });
+  // In the user's own configured timezone, not the device's ambient one —
+  // see app/src/lib/tz.ts. This is what decides which day's track actually
+  // gets the "current time" line, and where on it.
   function localDateStr(d: Date): string {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return dateStrInTz(d, planner.timezone);
   }
-  const nowMin = $derived(now.getHours() * 60 + now.getMinutes());
+  const nowMin = $derived.by(() => {
+    const { h, m } = hmInTz(now, planner.timezone);
+    return h * 60 + m;
+  });
   const showNowLine = $derived(localDateStr(now) === date && nowMin >= startMin && nowMin <= endMin);
   const nowLineTop = $derived((nowMin - startMin) * PX_PER_MIN);
 

@@ -18,6 +18,7 @@ import { api, ApiError } from './api';
 import { fmtHours, slotStartTime } from './format';
 import { BUILD_ID } from './version';
 import { stringSimilarity } from 'string-similarity-js';
+import { addDaysToDateStr, dateStrInTz, hhmmInTz, monthDayOfDateStr, weekdayNameOfDateStr, weekdayOfDateStr, zonedMidnightUtc } from './tz';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let toastRetryInterval: ReturnType<typeof setInterval> | undefined;
@@ -79,15 +80,22 @@ function stepHours(current: number, dir: 1 | -1, max = 40): number {
   return prev ?? steps[0];
 }
 
-/// Mirrors the server's buildWorkloadDays (workload.ts) exactly — the day
-/// structure (which keys, which labels, which dates) is a pure function of
-/// "now", no server round-trip actually needed for it, only the real
-/// planned/capacity numbers are. Used to seed `workloadDays` immediately
-/// so day rows (Overview, "When later?") and date-dependent actions
-/// (loading free slots) work right away instead of waiting on
+/// Mirrors the shape of the server's buildWorkloadDays (workload.ts) — the
+/// day structure (which keys, which labels, which dates) is a pure
+/// function of "now", no server round-trip actually needed for it, only
+/// the real planned/capacity numbers are. Used to seed `workloadDays`
+/// immediately so day rows (Overview, "When later?") and date-dependent
+/// actions (loading free slots) work right away instead of waiting on
 /// /api/workload — each entry's `loaded` stays false, and its
 /// planned/capacity are just zeroed, until refreshWorkload() replaces them
 /// with the real thing.
+///
+/// Deliberately still device-local, unlike everywhere else in this file
+/// (see app/src/lib/tz.ts) — this runs at construction time, before
+/// `this.timezone` has been fetched from the server at all, so there's no
+/// configured zone available yet to be timezone-*aware* with. It's a
+/// best-guess placeholder for the handful of frames before the real,
+/// correctly-zoned data arrives, not a load-bearing source of truth.
 function buildSkeletonWorkloadDays(now: Date): WorkloadDay[] {
   const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const isWeekend = (d: Date) => d.getDay() === 0 || d.getDay() === 6;
@@ -175,7 +183,7 @@ class PlannerStore {
   }
   set focusIndex(v: number) {
     this._focusIndex = v;
-    this.activeDate = this.queueTasks[v]?.dueOn ?? this.toDateStr(new Date());
+    this.activeDate = this.queueTasks[v]?.dueOn ?? this.todayDateStr;
   }
 
   /// Tasks just committed (planned/moved/split) during this Triage visit —
@@ -401,13 +409,16 @@ class PlannerStore {
     const t = this.todayWorkload;
     return t?.loaded ? `${t.planned}/${t.capacity}h` : '';
   }
+  /// The user's own configured timezone (Settings → Timezone) — not the
+  /// device's ambient one, which can silently differ from it (most
+  /// obviously while traveling). This is *the* fix for "today"/"tomorrow"
+  /// disagreeing with a task's own (genuinely timezone-independent, Asana-
+  /// assigned) due date — see app/src/lib/tz.ts.
   private get todayDateStr(): string {
-    return this.toDateStr(new Date());
+    return dateStrInTz(new Date(), this.timezone);
   }
   private get yesterdayDateStr(): string {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return this.toDateStr(d);
+    return addDaysToDateStr(this.todayDateStr, -1);
   }
   /// Tasks due today, by Asana's due date (dueOn — set whether or not a
   /// specific time is attached), independent of the "unplanned if no time"
@@ -458,9 +469,6 @@ class PlannerStore {
     const active = this.activeDate;
     return this.events.filter((e) => !e.linked && this.toLocalDateStr(e.start) === active);
   }
-  private get tasksForActiveDay(): Task[] {
-    return this.tasks.filter((t) => t.dueOn === this.activeDate);
-  }
   /// Shared by queueLabel, Triage's date-nav header and its Up Next
   /// day-section headers — same "which named bucket (or Yesterday, or a
   /// formatted date) does this date fall under" logic everywhere, no
@@ -471,7 +479,7 @@ class PlannerStore {
     const namedDay = this.workloadDays.find((d) => d.date === dueOn);
     if (namedDay) return namedDay.label;
     if (dueOn === this.yesterdayDateStr) return 'Yesterday';
-    return new Date(`${dueOn}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+    return monthDayOfDateStr(dueOn);
   }
   get queueLabel() {
     if (this.reviewingBacklog) {
@@ -479,9 +487,15 @@ class PlannerStore {
       return `Backlog - ${n} task${n === 1 ? '' : 's'} without a due date`;
     }
     const dateLabel = this.dayLabelFor(this.activeDate);
-    const dueThatDay = this.tasksForActiveDay;
-    const withTime = dueThatDay.filter((t) => t.dueAt).length;
-    return `${dateLabel} - ${withTime}/${dueThatDay.length} timeslots assigned`;
+    // How many of today's tasks are still ahead in the queue — from the
+    // current focus (inclusive) to the end, not "still missing a time":
+    // a task already given a time hasn't actually been *traversed* yet if
+    // you haven't swiped past it, so it still counts. Matches queueTasks'
+    // own ordering/filtering (justPlannedIds excluded) rather than
+    // re-deriving "done" from dueAt, which counted a plan-today'd-but-not-
+    // yet-advanced-past task as already handled.
+    const remaining = this.queueTasks.slice(this.focusIndex).filter((t) => t.dueOn === this.activeDate).length;
+    return `${dateLabel} - ${remaining} task${remaining === 1 ? '' : 's'} left to traverse`;
   }
   get chosenDayLabel() {
     if (this.laterDayKey === 'custom') return this.customDayLabel;
@@ -762,7 +776,12 @@ class PlannerStore {
   /// for the following midnight every time it fires.
   private scheduleMidnightRefresh() {
     const now = new Date();
-    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+    // Midnight in the user's own configured timezone, not the device's
+    // ambient one — same reasoning as todayDateStr above. A device whose
+    // local midnight lands hours away from the configured zone's own
+    // (traveling, most obviously) would otherwise fire this at the wrong
+    // wall-clock moment relative to what "today" actually means here.
+    const nextMidnight = new Date(zonedMidnightUtc(addDaysToDateStr(this.todayDateStr, 1), this.timezone).getTime() + 5_000);
     setTimeout(() => {
       if (this.asanaConnected) void this.refreshWorkload();
       else this.workloadDays = buildSkeletonWorkloadDays(new Date());
@@ -796,7 +815,15 @@ class PlannerStore {
     return `${this.loadingTasksCount} tasks loaded`;
   }
 
-  private async bootRefreshTasks() {
+  /// `isRetry` distinguishes a fresh attempt from the one silent retry
+  /// below — a failure right at boot is very often the same transient
+  /// iOS-resume-before-network-is-actually-back blip refreshTasks()
+  /// silently absorbs (see its own comment), not a real, ongoing problem.
+  /// Surfacing the "Could not load tasks" toast on the very first hiccup
+  /// read as an alarming error for something that quietly fixed itself a
+  /// second later — this only shows it once a second attempt has also
+  /// failed, which is a much stronger signal something's actually wrong.
+  private async bootRefreshTasks(isRetry = false) {
     if (!this.asanaConnected) {
       this.screen = 'triage';
       return;
@@ -810,6 +837,10 @@ class PlannerStore {
       localStorage.setItem('lastTaskCount', String(this.tasks.length));
     } catch (err) {
       this.logTaskLoadFailure('boot', err);
+      if (!isRetry) {
+        setTimeout(() => void this.bootRefreshTasks(true), 1500);
+        return;
+      }
       this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.bootRefreshTasks());
       // Land on Triage with whatever (possibly nothing) came in rather than
       // leaving the user stuck on the loading screen after a failure.
@@ -972,7 +1003,21 @@ class PlannerStore {
   /// Re-sorting can shift the focused task to a different array index, so
   /// this re-points focusIndex at the same task by id afterward rather
   /// than leaving it as a raw number that might now land on something else.
-  async refreshTasks() {
+  ///
+  /// `isRetry` distinguishes a fresh call from the one silent retry below —
+  /// a failure right after resume is very often the same transient
+  /// iOS-network-not-actually-back-yet blip refreshVisibleTasks() already
+  /// absorbs silently (see its own comment) rather than an ongoing
+  /// problem. Surfacing "Could not load tasks" on the very first hiccup
+  /// read as an alarming error for something that quietly fixed itself a
+  /// second later — this only shows it once a second attempt has also
+  /// failed, a much stronger signal something's actually wrong. Awaiting
+  /// the delay-and-retry (not firing it detached) keeps this promise
+  /// resolving only once the whole thing has genuinely settled, so a
+  /// caller like Triage's pull-to-refresh still shows "refreshing" for the
+  /// duration of the silent retry instead of it running invisibly after
+  /// the spinner's already gone.
+  async refreshTasks(isRetry = false): Promise<void> {
     if (!this.asanaConnected) return;
     const focusId = this.focusTaskRaw?.id ?? null;
     try {
@@ -984,6 +1029,10 @@ class PlannerStore {
       if (this.focusIndex >= this.queueTasks.length) this.focusIndex = Math.max(0, this.queueTasks.length - 1);
     } catch (err) {
       this.logTaskLoadFailure('refresh', err);
+      if (!isRetry) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        return this.refreshTasks(true);
+      }
       this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.refreshTasks());
     }
   }
@@ -1446,7 +1495,7 @@ class PlannerStore {
   /// that redundant fetch was the dominant cost of this endpoint on a
   /// large workspace.
   private freeSlotsQuery(date: string, hours: number, excludeId: string): string {
-    const dayStart = new Date(`${date}T00:00:00`);
+    const dayStart = zonedMidnightUtc(date, this.timezone);
     const dayEnd = new Date(dayStart.getTime() + 86_400_000);
     const busyTasks = this.tasks
       .filter((t) => t.id !== excludeId && t.dueAt)
@@ -1605,16 +1654,13 @@ class PlannerStore {
   /// ("Mon, 24.8.").
   get calendarViewDayLabel(): string {
     const date = this.calendarViewDate;
-    if (date === this.toDateStr(new Date())) return 'Today';
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    if (date === this.toDateStr(tomorrow)) return 'Tomorrow';
-    const d = new Date(`${date}T00:00:00`);
-    const weekday = d.toLocaleDateString('en-US', { weekday: 'short' });
-    return `${weekday}, ${d.getDate()}.${d.getMonth() + 1}.`;
+    if (date === this.todayDateStr) return 'Today';
+    if (date === addDaysToDateStr(this.todayDateStr, 1)) return 'Tomorrow';
+    const [, m, d] = date.split('-').map(Number);
+    return `${weekdayNameOfDateStr(date, 'short')}, ${d}.${m}.`;
   }
   openCalendarView() {
-    this.calendarViewDate = this.activeDate || this.toDateStr(new Date());
+    this.calendarViewDate = this.activeDate || this.todayDateStr;
     this.screen = 'calendarView';
     void this.loadCalendarViewEvents();
   }
@@ -1622,9 +1668,7 @@ class PlannerStore {
     this.screen = 'triage';
   }
   calendarViewStepDay(dir: -1 | 1) {
-    const d = new Date(`${this.calendarViewDate}T00:00:00`);
-    d.setDate(d.getDate() + dir);
-    this.calendarViewDate = this.toDateStr(d);
+    this.calendarViewDate = addDaysToDateStr(this.calendarViewDate, dir);
     void this.loadCalendarViewEvents();
   }
   /// Reuses free-slots purely for its outlookEvents half (see calendar.ts) —
@@ -1716,7 +1760,7 @@ class PlannerStore {
   /// (laterDays below, Overview's day list) rather than each re-deriving it.
   get workloadDaysForDisplay(): WorkloadDay[] {
     const tomorrow = this.workloadDays.find((d) => d.key === 'tomorrow');
-    const tomorrowIsMonday = !!tomorrow?.date && new Date(`${tomorrow.date}T00:00:00`).getDay() === 1;
+    const tomorrowIsMonday = !!tomorrow?.date && weekdayOfDateStr(tomorrow.date) === 1;
     return tomorrowIsMonday ? this.workloadDays.filter((d) => d.key !== 'nextweek') : this.workloadDays;
   }
   /// "Today" is normally excluded — this flow's whole purpose is choosing
@@ -1743,12 +1787,18 @@ class PlannerStore {
   /// shared basis for weekDeferOptions and nextWeekDays below, both of
   /// which reason in real Mon-Sun weeks rather than the rolling
   /// today/tomorrow/day2../day5 run.
-  private get thisWeekMonday(): Date {
-    const now = new Date();
-    const day = now.getDay();
+  private get thisWeekMondayStr(): string {
+    const today = this.todayDateStr;
+    const day = weekdayOfDateStr(today);
     const mondayOffset = day === 0 ? -6 : 1 - day;
-    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + mondayOffset);
+    return addDaysToDateStr(today, mondayOffset);
   }
+  /// Device-local, deliberately — only used left as-is for activeDate's and
+  /// calendarViewDate's own field initializers, which (like
+  /// buildSkeletonWorkloadDays above) run at construction time before
+  /// `this.timezone` exists to be aware of yet. Every getter/method that
+  /// runs *after* boot uses todayDateStr (timezone-aware) instead — see
+  /// app/src/lib/tz.ts.
   private toDateStr(d: Date): string {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
@@ -1759,12 +1809,15 @@ class PlannerStore {
   /// UTC device — everywhere else it's off by the local UTC offset (e.g. a
   /// drag to 11:00 on a UTC+2 device round-tripped through dueAtIso.slice()
   /// used to redisplay as 09:00).
+  /// Which calendar day (or time) `iso` (a real UTC instant — a calendar
+  /// event's start, say) falls on *in the user's own configured timezone*
+  /// — not the device's ambient one, which can silently differ from it
+  /// (most obviously while traveling). See app/src/lib/tz.ts.
   private toLocalDateStr(iso: string): string {
-    return this.toDateStr(new Date(iso));
+    return dateStrInTz(new Date(iso), this.timezone);
   }
   private toLocalTimeStr(iso: string): string {
-    const d = new Date(iso);
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return hhmmInTz(new Date(iso), this.timezone);
   }
 
   /// Booked/fullness cue shared by every "pick a day" surface — the later
@@ -1784,8 +1837,9 @@ class PlannerStore {
 
   /// "d.m." with no leading zeros (e.g. "31.8.") — matches how the range in
   /// weekDeferOptions' labels is meant to read.
-  private fmtDayMonth(d: Date): string {
-    return `${d.getDate()}.${d.getMonth() + 1}.`;
+  private fmtDayMonthStr(dateStr: string): string {
+    const [, m, d] = dateStr.split('-').map(Number);
+    return `${d}.${m}.`;
   }
   /// "Further in the future, I'll plan it later" quick actions — unlike
   /// laterDays, these don't lead to a time-slot picker; they just push the
@@ -1798,20 +1852,13 @@ class PlannerStore {
   /// which days that is without doing the math yourself.
   get weekDeferOptions(): { key: string; label: string; date: string; badgeLabel: string; tone: 'correct' | 'wrong' }[] {
     return [2, 3, 4].map((n) => {
-      const monday = new Date(this.thisWeekMonday);
-      monday.setDate(monday.getDate() + n * 7);
-      const date = this.toDateStr(monday);
-      const weekDates = [0, 1, 2, 3, 4].map((i) => {
-        const d = new Date(monday);
-        d.setDate(d.getDate() + i);
-        return this.toDateStr(d);
-      });
+      const date = addDaysToDateStr(this.thisWeekMondayStr, n * 7);
+      const weekDates = [0, 1, 2, 3, 4].map((i) => addDaysToDateStr(date, i));
       const planned = weekDates.reduce((sum, d) => sum + this.plannedHoursFor(d), 0);
       const capacity = this.dailyCapacityHours * weekDates.length;
       const ratio = capacity > 0 ? planned / capacity : 0;
-      const friday = new Date(monday);
-      friday.setDate(friday.getDate() + 4);
-      const range = `${this.fmtDayMonth(monday)} - ${this.fmtDayMonth(friday)}`;
+      const friday = addDaysToDateStr(date, 4);
+      const range = `${this.fmtDayMonthStr(date)} - ${this.fmtDayMonthStr(friday)}`;
       return { key: `week+${n}`, label: `Plan in ${n} weeks (${range})`, date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
     });
   }
@@ -1821,14 +1868,11 @@ class PlannerStore {
   /// (which stay untouched, still just today/tomorrow/day2../day5 plus the
   /// week+N no-time defers above).
   get nextWeekDays(): { key: string; label: string; date: string; badgeLabel: string; tone: 'correct' | 'wrong' }[] {
-    const nextMonday = new Date(this.thisWeekMonday);
-    nextMonday.setDate(nextMonday.getDate() + 7);
+    const nextMonday = addDaysToDateStr(this.thisWeekMondayStr, 7);
     return [0, 1, 2, 3, 4].map((n) => {
-      const d = new Date(nextMonday);
-      d.setDate(d.getDate() + n);
-      const date = this.toDateStr(d);
+      const date = addDaysToDateStr(nextMonday, n);
       const { planned, capacity, ratio } = this.fullnessFor(date);
-      return { key: `nextweekday+${n}`, label: d.toLocaleDateString('en-US', { weekday: 'long' }), date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
+      return { key: `nextweekday+${n}`, label: weekdayNameOfDateStr(date), date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
     });
   }
   openNextWeekDays() {
@@ -1854,11 +1898,13 @@ class PlannerStore {
   // current month each time the screen opens (see openPickDate).
   private calendarCursor = $state({ year: 2000, month: 0 });
   get calendarMonthLabel(): string {
-    return new Date(this.calendarCursor.year, this.calendarCursor.month, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const { year, month } = this.calendarCursor;
+    const firstOfMonth = new Date(Date.UTC(year, month, 1));
+    return firstOfMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   }
   openPickDate() {
-    const now = new Date();
-    this.calendarCursor = { year: now.getFullYear(), month: now.getMonth() };
+    const [year, month] = this.todayDateStr.split('-').map(Number);
+    this.calendarCursor = { year, month: month - 1 };
     this.screen = 'pickDate';
   }
   calendarPrevMonth() {
@@ -1886,18 +1932,17 @@ class PlannerStore {
   }
   get calendarWeeks(): { date: string; day: number; inMonth: boolean; isToday: boolean; isPast: boolean; ratio: number }[][] {
     const { year, month } = this.calendarCursor;
-    const firstOfMonth = new Date(year, month, 1);
-    const startOffset = (firstOfMonth.getDay() + 6) % 7; // Monday-first
-    const gridStart = new Date(year, month, 1 - startOffset);
+    const firstOfMonthStr = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    const startOffset = (weekdayOfDateStr(firstOfMonthStr) + 6) % 7; // Monday-first
+    const gridStartStr = addDaysToDateStr(firstOfMonthStr, -startOffset);
     const todayStr = this.todayDateStr;
     const cells = Array.from({ length: 42 }, (_, i) => {
-      const d = new Date(gridStart);
-      d.setDate(d.getDate() + i);
-      const dateStr = this.toDateStr(d);
+      const dateStr = addDaysToDateStr(gridStartStr, i);
+      const [, cellMonth, cellDay] = dateStr.split('-').map(Number);
       return {
         date: dateStr,
-        day: d.getDate(),
-        inMonth: d.getMonth() === month,
+        day: cellDay,
+        inMonth: cellMonth - 1 === month,
         isToday: dateStr === todayStr,
         isPast: dateStr < todayStr,
         ratio: this.fullnessFor(dateStr).ratio,

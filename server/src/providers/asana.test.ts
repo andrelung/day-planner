@@ -542,7 +542,7 @@ void test('refreshTasksByGid fetches each gid directly: edits show through, dele
   }) as typeof fetch;
 
   try {
-    const result = await refreshTasksByGid('fake-token', ['edited', 'deleted', 'completed']);
+    const result = await refreshTasksByGid('fake-token', ['edited', 'deleted', 'completed'], 'UTC');
     assert.equal(result.edited?.name, 'Fresh name');
     assert.equal(result.deleted, null);
     assert.equal(result.completed, null);

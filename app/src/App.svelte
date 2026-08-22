@@ -70,8 +70,16 @@
   // side-effect-free style toggle, so this now runs on every screen
   // transition rather than trying to guess which ones are "heavy enough"
   // to need it. Not reproducible on desktop (WebKit-specific).
+  //
+  // Also keyed on activeDate: Triage's date-nav arrows swap the focus
+  // card's whole content without ever changing `screen` (still 'triage'
+  // throughout), so that class of update had no repaint trigger at all —
+  // surfaced as the header's queue-label text staying stuck on a stale day
+  // after tapping the arrow once, catching up only a tap or two later
+  // once something else happened to force a repaint anyway.
   $effect(() => {
     void planner.screen;
+    void planner.activeDate;
     forceRepaint();
   });
 

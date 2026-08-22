@@ -57,7 +57,8 @@ function buildTasksPayload(raw: (RemoteTask & { projectGid: string | null })[]) 
 tasksRouter.get('/', async (req, res) => {
   try {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-    const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true });
+    const settings = await getOrCreateSettings(req.userId!);
+    const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true, timezone: settings.timezone });
     res.json(buildTasksPayload(raw));
   } catch (err) {
     logTaskLoadFailure({
@@ -87,7 +88,8 @@ tasksRouter.post('/refresh-by-gid', async (req, res) => {
     return;
   }
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-  const byGid = await refreshTasksByGid(accessToken, parsed.data.gids);
+  const settings = await getOrCreateSettings(req.userId!);
+  const byGid = await refreshTasksByGid(accessToken, parsed.data.gids, settings.timezone);
   const tasks: Record<string, ReturnType<typeof toTaskDto> | null> = {};
   for (const [gid, task] of Object.entries(byGid)) tasks[gid] = task ? toTaskDto(task) : null;
   res.json({ tasks });
@@ -181,8 +183,10 @@ tasksRouter.get('/stream', async (req, res) => {
 
   try {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+    const settings = await getOrCreateSettings(req.userId!);
     const raw = await listIncompleteAssignedTasks(accessToken, {
       withBreadcrumbs: true,
+      timezone: settings.timezone,
       onBatch: (tasksSoFar, totalSoFar) => {
         res.write(`event: progress\ndata: ${JSON.stringify({ count: totalSoFar, ...buildTasksPayload(tasksSoFar) })}\n\n`);
       },
@@ -290,7 +294,7 @@ const resetDaySchema = z.object({ taskGids: z.array(z.string().min(1)).min(1) })
 /// Clears due_at (and due_on, per setTaskDueAt's existing "remove due date"
 /// behavior) for a caller-supplied set of tasks — used by Settings' "Reset
 /// today's plan". The frontend already knows exactly which of its loaded
-/// tasks are due today (same data queueLabel's x/y count is built from), so
+/// tasks are due today (same data queueLabel's own count is built from), so
 /// it sends those gids directly rather than the server re-deriving "today's
 /// tasks" via another full Asana fetch. Each clear is queued individually
 /// (see pendingActionQueue.ts) rather than awaited, so resetting a large

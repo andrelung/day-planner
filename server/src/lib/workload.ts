@@ -1,70 +1,78 @@
+import { addDaysToDateStr, dateStrInTz, weekdayNameOfDateStr, weekdayOfDateStr, zonedMidnightUtc } from './tz.js';
+
 export interface WorkloadDay {
   key: string; // 'today' | 'tomorrow' | 'day2' | 'day3' | 'day4' | 'day5' | 'nextweek'
   label: string;
   /// Concrete date for 'today'..'day3' (used to query due tasks/events for
-  /// that exact day); null for the aggregate 'nextweek' bucket.
+  /// that exact day); null for the aggregate 'nextweek' bucket. Always the
+  /// UTC instant of local midnight *in the caller's timezone* (see
+  /// zonedMidnightUtc) — read back with toLocalDateStr passing that same
+  /// timezone, not local getters.
   date: Date | null;
   /// Inclusive range for the 'nextweek' aggregate bucket; null otherwise.
   rangeStart: Date | null;
   rangeEnd: Date | null;
 }
 
-function addDays(d: Date, n: number): Date {
-  const r = new Date(d);
-  r.setDate(r.getDate() + n);
-  return r;
+/// Formats a Date previously built by this file (zonedMidnightUtc) back to
+/// "YYYY-MM-DD" — `timeZone` must be the same zone it was built with, or
+/// this silently reads back the wrong calendar day. Kept as a named export
+/// (rather than callers reaching for dateStrInTz directly) so every caller
+/// of this file's own dates is visibly paired with this file's own
+/// contract.
+export function toLocalDateStr(d: Date, timeZone: string): string {
+  return dateStrInTz(d, timeZone);
 }
-function startOfDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-/// Formats a Date's *local* calendar date as "YYYY-MM-DD" — every date in
-/// this file is built from local getters (startOfDay/addDays) specifically
-/// to represent a calendar day, not an instant, so it has to be read back
-/// the same way. toISOString().slice(0, 10) converts to UTC first, which
-/// silently shifts the string back a day for any timezone ahead of UTC
-/// (local midnight becomes the previous day's evening in UTC) — exactly
-/// the kind of "today's Outlook event shows up under tomorrow" bug this
-/// exists to avoid.
-export function toLocalDateStr(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-function isWeekend(d: Date): boolean {
-  const day = d.getDay();
+function isWeekendStr(dateStr: string): boolean {
+  const day = weekdayOfDateStr(dateStr);
   return day === 0 || day === 6;
 }
 
 /// Builds the 7 workload buckets shown in Overview / Plan Later: Today,
 /// Tomorrow, the next four weekdays by name, and an aggregate "Next week"
 /// bucket for the week after. Weekends are skipped for the named days.
-export function buildWorkloadDays(now: Date): WorkloadDay[] {
-  const today = startOfDay(now);
-  const namedDates: Date[] = [today];
-  let cursor = today;
-  while (namedDates.length < 6) {
-    cursor = addDays(cursor, 1);
-    if (!isWeekend(cursor)) namedDates.push(cursor);
+/// Every date is anchored to `timeZone` (the acting user's own configured
+/// Settings.timezone) — not the server process's ambient clock, which can
+/// silently differ from the user's own zone (most obviously while
+/// traveling), causing "today"/"tomorrow" here to disagree with what a
+/// task's own (Asana-assigned, genuinely timezone-independent) due date
+/// actually is.
+export function buildWorkloadDays(now: Date, timeZone: string): WorkloadDay[] {
+  const todayStr = dateStrInTz(now, timeZone);
+  const namedDateStrs: string[] = [todayStr];
+  let cursor = todayStr;
+  while (namedDateStrs.length < 6) {
+    cursor = addDaysToDateStr(cursor, 1);
+    if (!isWeekendStr(cursor)) namedDateStrs.push(cursor);
   }
 
-  const [d0, d1, d2, d3, d4, d5] = namedDates;
-  const named = (key: string, label: string, date: Date): WorkloadDay => ({ key, label, date, rangeStart: null, rangeEnd: null });
+  const [s0, s1, s2, s3, s4, s5] = namedDateStrs;
+  const toInstant = (s: string) => zonedMidnightUtc(s, timeZone);
+  const named = (key: string, label: string, dateStr: string): WorkloadDay => ({
+    key,
+    label,
+    date: toInstant(dateStr),
+    rangeStart: null,
+    rangeEnd: null,
+  });
   // "Tomorrow" only actually means tomorrow when today isn't a Friday — the
   // weekend-skip above otherwise lands this bucket on Monday while still
   // calling it "Tomorrow", which reads as flatly wrong (Monday isn't
   // tomorrow from a Friday, whatever this bucket's own reasoning is).
   // Falls back to the real weekday name, same as day2..day5 below.
-  const tomorrowLabel = toLocalDateStr(d1) === toLocalDateStr(addDays(d0, 1)) ? 'Tomorrow' : d1.toLocaleDateString('en-US', { weekday: 'long' });
+  const tomorrowLabel = s1 === addDaysToDateStr(s0, 1) ? 'Tomorrow' : weekdayNameOfDateStr(s1);
   const days: WorkloadDay[] = [
-    named('today', 'Today', d0),
-    named('tomorrow', tomorrowLabel, d1),
-    named('day2', d2.toLocaleDateString('en-US', { weekday: 'long' }), d2),
-    named('day3', d3.toLocaleDateString('en-US', { weekday: 'long' }), d3),
-    named('day4', d4.toLocaleDateString('en-US', { weekday: 'long' }), d4),
-    named('day5', d5.toLocaleDateString('en-US', { weekday: 'long' }), d5),
+    named('today', 'Today', s0),
+    named('tomorrow', tomorrowLabel, s1),
+    named('day2', weekdayNameOfDateStr(s2), s2),
+    named('day3', weekdayNameOfDateStr(s3), s3),
+    named('day4', weekdayNameOfDateStr(s4), s4),
+    named('day5', weekdayNameOfDateStr(s5), s5),
   ];
 
-  const nextWeekStart = addDays(d5, 1);
-  const nextWeekEnd = addDays(nextWeekStart, 7);
-  days.push({ key: 'nextweek', label: 'Next week', date: null, rangeStart: nextWeekStart, rangeEnd: nextWeekEnd });
+  const nextWeekStartStr = addDaysToDateStr(s5, 1);
+  const nextWeekEndStr = addDaysToDateStr(nextWeekStartStr, 7);
+  days.push({ key: 'nextweek', label: 'Next week', date: null, rangeStart: toInstant(nextWeekStartStr), rangeEnd: toInstant(nextWeekEndStr) });
 
   return days;
 }

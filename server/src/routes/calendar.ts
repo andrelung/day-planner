@@ -8,21 +8,29 @@ import { getOrCreateSettings } from '../lib/settings.js';
 import { listEvents } from '../providers/outlook.js';
 import { createSubtask, createTaskInProject } from '../providers/asana.js';
 import { recordMatch } from '../lib/matchLog.js';
+import { addDaysToDateStr, dateStrInTz, hmInTz, weekdayNameOfDateStr, zonedMidnightUtc } from '../lib/tz.js';
 
 export const calendarRouter = Router();
 calendarRouter.use(requireAuth);
 
-function relativeDayLabel(date: Date, now: Date): string {
-  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diffDays = Math.round((startOfDay(date).getTime() - startOfDay(now).getTime()) / 86_400_000);
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Tomorrow';
-  return date.toLocaleDateString('en-US', { weekday: 'long' });
+/// `timeZone` is the acting user's own configured Settings.timezone — not
+/// the server process's ambient clock (see workload.ts's identical
+/// reasoning), so "Today"/"Tomorrow" here agrees with the day-bucketing
+/// shown everywhere else in the app instead of drifting for a user whose
+/// physical location (or just their chosen zone) differs from the
+/// server's.
+function relativeDayLabel(date: Date, now: Date, timeZone: string): string {
+  const dateStr = dateStrInTz(date, timeZone);
+  const todayStr = dateStrInTz(now, timeZone);
+  if (dateStr === todayStr) return 'Today';
+  if (dateStr === addDaysToDateStr(todayStr, 1)) return 'Tomorrow';
+  return weekdayNameOfDateStr(dateStr);
 }
 
-function timeLabel(date: Date, now: Date): string {
-  const hhmm = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-  return `${relativeDayLabel(date, now)} · ${hhmm}`;
+function timeLabel(date: Date, now: Date, timeZone: string): string {
+  const { h, m } = hmInTz(date, timeZone);
+  const hhmm = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return `${relativeDayLabel(date, now, timeZone)} · ${hhmm}`;
 }
 
 /// A recurring meeting's Outlook occurrences each carry their own
@@ -38,6 +46,7 @@ async function ignoredTitleSet(userId: string): Promise<Set<string>> {
 // events over the next 7 days, for the Overview screen.
 calendarRouter.get('/events', async (req, res) => {
   const accessToken = await getValidAccessToken(req.userId!, 'OUTLOOK');
+  const settings = await getOrCreateSettings(req.userId!);
   const now = new Date();
   const to = new Date(now.getTime() + 7 * 86_400_000);
   const events = await listEvents(accessToken, now, to);
@@ -54,7 +63,7 @@ calendarRouter.get('/events', async (req, res) => {
         return {
           id: e.id,
           title: e.subject,
-          timeLabel: timeLabel(e.start, now),
+          timeLabel: timeLabel(e.start, now, settings.timezone),
           start: e.start.toISOString(),
           end: e.end.toISOString(),
           linked: !!link?.linkedAsanaTaskGid,
@@ -97,10 +106,13 @@ calendarRouter.get('/free-slots', async (req, res) => {
     return;
   }
   const { date: dateStr, hours, busyTasks } = parsed.data;
-  const day = new Date(`${dateStr}T00:00:00`);
-  const dayEnd = new Date(day.getTime() + 86_400_000);
-
   const settings = await getOrCreateSettings(req.userId!);
+  // The acting user's own configured zone, not the server's ambient one —
+  // see workload.ts's identical reasoning. `dateStr` is a bare calendar
+  // date with no timezone of its own (the client sends whichever day it's
+  // showing), so "midnight" only means something once anchored to a zone.
+  const day = zonedMidnightUtc(dateStr, settings.timezone);
+  const dayEnd = new Date(day.getTime() + 86_400_000);
 
   const busy: { start: Date; end: Date }[] = [];
   // Returned alongside `slots` so the client's day-calendar view can draw
@@ -162,7 +174,7 @@ calendarRouter.get('/free-slots', async (req, res) => {
     }
   }
 
-  const slots = computeFreeSlots(day, settings.prefStartTime, settings.prefEndTime, settings.bufferMinutes, busy, Math.round(hours * 60));
+  const slots = computeFreeSlots(dateStr, settings.timezone, settings.prefStartTime, settings.prefEndTime, settings.bufferMinutes, busy, Math.round(hours * 60));
   res.json({ slots, outlookEvents });
 });
 
