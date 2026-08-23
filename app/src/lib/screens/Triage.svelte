@@ -8,7 +8,6 @@
   import Stepper from '../components/Stepper.svelte';
   import Button from '../components/Button.svelte';
   import Badge from '../components/Badge.svelte';
-  import InstallBanner from '../components/InstallBanner.svelte';
   import Input from '../components/Input.svelte';
 
   // The active day's unlinked calendar events gate that day's tasks below —
@@ -227,8 +226,6 @@
       <IconButton icon="menu" title="Overview" onclick={() => planner.openOverview()} />
     </div>
   </div>
-
-  <InstallBanner />
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div

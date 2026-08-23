@@ -1,17 +1,16 @@
 import { mount } from 'svelte';
 import './lib/tokens.css';
 import App from './App.svelte';
-import { planner } from './lib/store.svelte';
+import { captureInstallPromptEvent } from './lib/installPrompt';
 
 // Registered before mount() since beforeinstallprompt can fire as soon as
 // the page loads if install criteria are already met — attaching the
-// listener any later risks missing it.
+// listener any later risks missing it. Handed to <pwa-install> (App.svelte)
+// once it exists; `appinstalled` needs no listener of our own, the library
+// handles that internally.
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
-  planner.captureInstallPrompt(e as unknown as { prompt(): void; userChoice: Promise<{ outcome: string }> });
-});
-window.addEventListener('appinstalled', () => {
-  planner.onAppInstalled();
+  captureInstallPromptEvent(e);
 });
 
 const app = mount(App, {

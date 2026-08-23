@@ -11,6 +11,12 @@
   const timezones: string[] =
     typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [planner.timezone, 'UTC'];
 
+  // Standalone status can't change without a full app restart from a home
+  // screen icon, so a plain one-time check at mount is enough — no need to
+  // track it reactively.
+  const isStandalone =
+    window.matchMedia('(display-mode: standalone)').matches || (navigator as unknown as { standalone?: boolean }).standalone === true;
+
   // So the "Pending & Failed Actions" row's badge count is current the
   // moment Settings opens, not just after the user has already drilled in.
   onMount(() => {
@@ -60,6 +66,14 @@
         </select>
       </div>
     </label>
+    {#if !isStandalone}
+      <button class="row" onclick={() => planner.requestInstallPrompt()}>
+        <div class="row__label">Install as App</div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+          ><polyline points="9 18 15 12 9 6"></polyline></svg
+        >
+      </button>
+    {/if}
     <button class="row" onclick={() => planner.openIntegrations()}>
       <div class="row__label">Connections (Tasks &amp; Calendar)</div>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"

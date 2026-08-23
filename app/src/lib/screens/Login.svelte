@@ -1,11 +1,16 @@
 <script lang="ts">
   import { planner } from '../store.svelte';
   import Icon from '../components/Icon.svelte';
-  import InstallBanner from '../components/InstallBanner.svelte';
+  import Button from '../components/Button.svelte';
+
+  // Standalone status can't change without a full app restart from a home
+  // screen icon, so a plain one-time check at mount is enough — no need to
+  // track it reactively.
+  const isStandalone =
+    window.matchMedia('(display-mode: standalone)').matches || (navigator as unknown as { standalone?: boolean }).standalone === true;
 </script>
 
 <div class="screen">
-  <InstallBanner />
   <div class="content">
     <div class="heading">Plan your day</div>
     <div class="subtitle">
@@ -24,6 +29,12 @@
       <div class="provider-name">Continue with Outlook</div>
       <Icon name="chevron-right" size={16} color="var(--color-text-muted)" />
     </a>
+
+    {#if !isStandalone}
+      <div class="install-row">
+        <Button variant="ghost" size="sm" fullWidth onclick={() => planner.requestInstallPrompt()}>Install as App</Button>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -81,6 +92,9 @@
     font-weight: var(--font-weight-extrabold);
     font-size: 16px;
     color: var(--color-text-primary);
+  }
+  .install-row {
+    margin-top: 28px;
   }
   .provider-name {
     flex: 1;

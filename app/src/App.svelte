@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import '@khmyznikov/pwa-install';
   import { planner } from './lib/store.svelte';
+  import { capturedInstallPromptEvent } from './lib/installPrompt';
   import { DEV_NOTES, VERSION_LABEL } from './lib/version';
   import Toast from './lib/components/Toast.svelte';
   import UpdateNotice from './lib/components/UpdateNotice.svelte';
@@ -181,10 +183,50 @@
     }, 10_000);
     return () => clearTimeout(id);
   });
+
+  // Detection and dialog rendering are entirely the library's job — this
+  // component only hands it whatever beforeinstallprompt event main.ts
+  // caught before this even mounted, and reveals it on demand (Login,
+  // Settings — see their own "Install as App" buttons). No auto-show on
+  // boot: manual-apple/manual-chrome below keep it hidden until a button
+  // is actually tapped, deliberately — an earlier auto-show-on-boot
+  // version needed the library's own pwa-install-available-event to avoid
+  // a real race (calling showDialog() before the library's own async init
+  // finished could get silently re-hidden moments later), which added a
+  // lot of fragility for a prompt users would rather trigger themselves.
+  let pwaInstallEl:
+    | (HTMLElement & { externalPromptEvent: Event | null; showDialog: (forced?: boolean) => void; styles: Record<string, string> })
+    | undefined = $state();
+  let lastManualRequestId = 0;
+  onMount(() => {
+    if (!pwaInstallEl) return;
+    pwaInstallEl.externalPromptEvent = capturedInstallPromptEvent;
+    // Set as a real object via the property (not a JSON-string attribute) —
+    // Svelte's template parser treats a literal `{` in an attribute value
+    // as the start of a mustache expression even when quoted, so there's
+    // no clean way to write this as a plain attribute in the template.
+    pwaInstallEl.styles = { '--tint-color': '#16203c' };
+  });
+  // Forced open, bypassing the library's own availability gate, since a
+  // button the user explicitly tapped should always do something rather
+  // than silently no-op if detection hasn't settled yet.
+  $effect(() => {
+    if (planner.installPromptRequestId > lastManualRequestId && pwaInstallEl) {
+      lastManualRequestId = planner.installPromptRequestId;
+      pwaInstallEl.showDialog(true);
+    }
+  });
 </script>
 
 <div class="viewport">
   <div class="phone">
+    <pwa-install
+      bind:this={pwaInstallEl}
+      manual-apple
+      manual-chrome
+      use-local-storage
+      manifest-url="/manifest.webmanifest"
+    ></pwa-install>
     {#if planner.screen === 'loading'}
       <div class="loading">
         <div class="loading__body">

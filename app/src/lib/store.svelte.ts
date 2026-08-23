@@ -19,7 +19,6 @@ import { fmtHours, slotStartTime } from './format';
 import { BUILD_ID } from './version';
 import { stringSimilarity } from 'string-similarity-js';
 import { addDaysToDateStr, dateStrInTz, hhmmInTz, monthDayOfDateStr, weekdayNameOfDateStr, weekdayOfDateStr, zonedMidnightUtc } from './tz';
-import { detectInstallPlatform, isStandaloneDisplay, readPlatformSignals, type InstallPlatform } from './platform';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let toastRetryInterval: ReturnType<typeof setInterval> | undefined;
@@ -688,14 +687,6 @@ class PlannerStore {
   async boot() {
     this.bootStatus = 'Starting app…';
     this.scheduleUpdateCheck();
-    // Purely a device-capability check (iOS + not already standalone + not
-    // previously dismissed) — independent of auth, so it needs to run
-    // before the /api/me call below, not after login succeeds. Installing
-    // before signing in avoids a double sign-in: Safari-in-browser and the
-    // installed standalone app are separate storage contexts on iOS, so
-    // signing in only in the browser and installing afterward meant
-    // logging in again once inside the installed app.
-    this.maybeShowIosInstallBanner();
     const params = new URLSearchParams(window.location.search);
     const onboarding = params.get('onboarding') === 'secondary';
     // Strips onboarding=secondary once consumed below, and reloadForUpdate's
@@ -953,64 +944,21 @@ class PlannerStore {
     });
   }
 
-  // --- install banner ---
-  // Android/Chromium fires beforeinstallprompt (captured as early as
-  // possible in main.ts, before this store's UI even exists, in case it
-  // fires immediately on load) and supports a real programmatic install
-  // prompt. iOS never fires that event at all — adding to the Home Screen
-  // is only ever a manual Share-sheet action there — so that path is
-  // detected separately and shows instructions instead of a button.
-  //
-  // Crucially, beforeinstallprompt ALSO fires on desktop Chromium, which
-  // is how an "add it to your home screen" banner ended up in front of a
-  // Chrome-on-macOS user. This is a phone-shaped app, so the banner is
-  // gated on actually being a phone/tablet — see platform.ts, which
-  // documents that and the other detection pitfalls.
-  //
-  // Either way the banner only renders on the Login/Triage screens, and a
-  // dismissal is remembered so it never nags again.
-  private installPromptEvent: { prompt(): void; userChoice: Promise<{ outcome: string }> } | null = null;
-  showInstallBanner = $state(false);
-  installBannerKind: InstallPlatform | null = $state(null);
-
-  private isStandalone(): boolean {
-    return isStandaloneDisplay();
-  }
-  private installDismissed(): boolean {
-    return localStorage.getItem('installBannerDismissed') === '1';
-  }
-
-  captureInstallPrompt(e: { prompt(): void; userChoice: Promise<{ outcome: string }> }) {
-    this.installPromptEvent = e;
-    if (this.isStandalone() || this.installDismissed()) return;
-    // Desktop Chromium fires this too — installable, but "add to your home
-    // screen" is the wrong pitch for a laptop, so no banner there.
-    if (detectInstallPlatform(readPlatformSignals()) !== 'android') return;
-    this.installBannerKind = 'android';
-    this.showInstallBanner = true;
-  }
-  onAppInstalled() {
-    this.showInstallBanner = false;
-    this.installPromptEvent = null;
-  }
-  private maybeShowIosInstallBanner() {
-    if (this.isStandalone() || this.installDismissed()) return;
-    const platform = detectInstallPlatform(readPlatformSignals());
-    if (platform !== 'ios-safari' && platform !== 'ios-other-browser') return;
-    this.installBannerKind = platform;
-    this.showInstallBanner = true;
-  }
-  async promptInstall() {
-    if (!this.installPromptEvent) return;
-    this.installPromptEvent.prompt();
-    await this.installPromptEvent.userChoice;
-    this.installPromptEvent = null;
-    this.showInstallBanner = false;
-    localStorage.setItem('installBannerDismissed', '1');
-  }
-  dismissInstallBanner() {
-    this.showInstallBanner = false;
-    localStorage.setItem('installBannerDismissed', '1');
+  // --- install prompt ---
+  // Detection/dialog rendering is entirely delegated to <pwa-install> (see
+  // App.svelte) — user-triggered only (Login, Settings — "Install as App"),
+  // no automatic on-boot offer.
+  /// A manual "Install as App" button (Login, Settings — see their own components)
+  /// has no direct reference to <pwa-install>, which lives once at the top
+  /// of App.svelte rather than per-screen. Incrementing this is the signal
+  /// to show it on demand; App.svelte's effect reacts to every increment
+  /// (not just the first), so each tap reopens it even if a previous one
+  /// was dismissed. Forced open (bypassing the library's own availability
+  /// gate) since a button the user explicitly tapped should always do
+  /// something, not silently no-op if detection hasn't settled yet.
+  installPromptRequestId = $state(0);
+  requestInstallPrompt() {
+    this.installPromptRequestId++;
   }
 
   /// Re-fetches tasks fresh from Asana — used after returning from
