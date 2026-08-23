@@ -50,3 +50,35 @@ export function logTaskLoadFailure(entry: TaskLoadLogEntry): void {
     console.error('taskLoadLog: failed to append', err);
   }
 }
+
+export interface TaskLoadTimingEntry {
+  phase: 'boot';
+  userId?: string;
+  /// Milliseconds spent in each named stage, in the order they actually
+  /// ran — a slow boot on a genuinely healthy connection needs to be
+  /// attributed to a specific stage (workspace/auth lookup, the near-term
+  /// search pass, full pagination, breadcrumb resolution) rather than
+  /// just "the whole thing was slow", especially on a large account
+  /// (~2000 tasks here) where any one of those could plausibly dominate.
+  stages: Record<string, number>;
+  /// One entry per page fetched during the full-fetch pagination pass, in
+  /// order — see asanaFetchAllPages' onPageMs for what this distinguishes.
+  pageMs: number[];
+  /// Non-null only if getValidAccessToken actually hit the network for a
+  /// token refresh this time — see its own onRefresh comment.
+  tokenRefreshMs: number | null;
+  totalMs: number;
+  taskCount: number;
+}
+
+/// Logged on every successful boot, not just failures — the only way to
+/// see where time actually goes on a *working* but slow load, which
+/// logTaskLoadFailure's error-only entries can't show at all.
+export function logTaskLoadTiming(entry: TaskLoadTimingEntry): void {
+  const line = JSON.stringify({ timestamp: new Date().toISOString(), type: 'timing', ...entry });
+  try {
+    fs.appendFileSync(LOG_PATH, line + '\n');
+  } catch (err) {
+    console.error('taskLoadLog: failed to append', err);
+  }
+}

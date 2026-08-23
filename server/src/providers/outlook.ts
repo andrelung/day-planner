@@ -5,6 +5,10 @@ import { ProviderNotConfiguredError } from './asana.js';
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const SCOPES = 'offline_access openid profile User.Read Calendars.Read';
 
+/// Same reasoning as ASANA_FETCH_TIMEOUT_MS in asana.ts — without this, a
+/// hung connection to Microsoft Graph leaves the fetch pending forever.
+const GRAPH_FETCH_TIMEOUT_MS = 15_000;
+
 function requireCredentials() {
   if (!env.MS_CLIENT_ID || !env.MS_CLIENT_SECRET) {
     throw new ProviderNotConfiguredError('outlook');
@@ -46,6 +50,7 @@ async function tokenRequest(body: Record<string, string>): Promise<MsTokenRespon
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(body),
+    signal: AbortSignal.timeout(GRAPH_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Microsoft token request failed: ${res.status} ${await res.text()}`);
@@ -101,6 +106,7 @@ export async function refreshOutlookToken(refreshToken: string): Promise<OAuthTo
 async function graphFetch(accessToken: string, path: string): Promise<any> {
   const res = await fetch(`${GRAPH_BASE}${path}`, {
     headers: { Authorization: `Bearer ${accessToken}`, Prefer: 'outlook.timezone="UTC"' },
+    signal: AbortSignal.timeout(GRAPH_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Graph API ${path} failed: ${res.status} ${await res.text()}`);

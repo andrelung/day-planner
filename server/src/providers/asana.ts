@@ -8,6 +8,20 @@ const AUTHORIZE_URL = 'https://app.asana.com/-/oauth_authorize';
 const TOKEN_URL = 'https://app.asana.com/-/oauth_token';
 const API_BASE = 'https://app.asana.com/api/1.0';
 
+/// Every fetch to Asana below passes this — without it, a hung TCP
+/// connection (a real network partition, or Asana's own server just not
+/// responding) leaves the fetch promise pending forever, since neither
+/// Node's fetch nor Asana's API impose a timeout of their own. That used
+/// to surface eventually via the SSE stream's client-side stall watchdog
+/// timing out — but the watchdog now also resets on the stream's own
+/// heartbeat (see routes/tasks.ts), which keeps resetting for as long as
+/// the Node process is merely alive, whether or not the fetch it's
+/// waiting on is actually making progress. Confirmed live: a real device
+/// stuck on "Connecting to Asana…" indefinitely, with no timeout, no
+/// error, and nothing in the diagnostic log at all — exactly what an
+/// unbounded hung fetch masked by a live heartbeat looks like.
+const ASANA_FETCH_TIMEOUT_MS = 15_000;
+
 function requireCredentials() {
   if (!env.ASANA_CLIENT_ID || !env.ASANA_CLIENT_SECRET) {
     throw new ProviderNotConfiguredError('asana');
@@ -62,6 +76,7 @@ async function tokenRequest(body: Record<string, string>): Promise<AsanaTokenRes
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(body),
+    signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Asana token request failed: ${res.status} ${await res.text()}`);
@@ -119,6 +134,7 @@ async function asanaFetch(accessToken: string, path: string, init?: RequestInit)
       'Content-Type': 'application/json',
       ...init?.headers,
     },
+    signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Asana API ${path} failed: ${res.status} ${await res.text()}`);
@@ -135,17 +151,31 @@ async function asanaFetch(accessToken: string, path: string, init?: RequestInit)
 ///
 /// `onPage` fires with each freshly-fetched page's own items (not a
 /// cumulative count) — the caller decides how to accumulate/report on them.
-async function asanaFetchAllPages(accessToken: string, path: string, onPage?: (page: any[]) => void): Promise<any[]> {
+/// `onPageMs` fires alongside it with how long that one page's request
+/// took — a diagnostic hook, not something normal callers need: roughly
+/// constant latency per page points at fixed per-request overhead (a new
+/// connection/TLS handshake for each one, since these can't be
+/// parallelized — Asana's cursor for page N+1 only exists in page N's own
+/// response); latency that climbs with page count points at something
+/// else (larger responses, server-side load on Asana's end).
+async function asanaFetchAllPages(
+  accessToken: string,
+  path: string,
+  onPage?: (page: any[]) => void,
+  onPageMs?: (ms: number) => void,
+): Promise<any[]> {
   const all: any[] = [];
   // Asana hands back a ready-to-use `next_page.uri` for the following page —
   // simpler and less error-prone than reconstructing offset/limit by hand.
   let url: string | null = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}limit=100`;
   while (url) {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const pageStart = Date.now();
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS) });
     if (!res.ok) {
       throw new Error(`Asana API ${url} failed: ${res.status} ${await res.text()}`);
     }
     const json = (await res.json()) as any;
+    onPageMs?.(Date.now() - pageStart);
     all.push(...json.data);
     onPage?.(json.data);
     url = json.next_page?.uri ?? null;
@@ -274,6 +304,7 @@ async function resolveBreadcrumbs(
 async function fetchTaskOrNull(accessToken: string, gid: string): Promise<AsanaTaskDto | null> {
   const res = await fetch(`${API_BASE}/tasks/${gid}?opt_fields=${TASK_OPT_FIELDS}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS),
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Asana API /tasks/${gid} failed: ${res.status} ${await res.text()}`);
@@ -322,6 +353,7 @@ export interface TaskDetails {
 export async function getTaskDetails(accessToken: string, gid: string): Promise<TaskDetails | null> {
   const res = await fetch(`${API_BASE}/tasks/${gid}?opt_fields=notes,followers.name,created_at`, {
     headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS),
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Asana API /tasks/${gid} failed: ${res.status} ${await res.text()}`);
@@ -434,6 +466,8 @@ export async function listIncompleteAssignedTasks(
     withBreadcrumbs?: boolean;
     onBatch?: (tasksSoFar: (RemoteTask & { projectGid: string | null })[], totalSoFar: number) => void;
     onPhase?: (label: string) => void;
+    /// Diagnostic-only — see asanaFetchAllPages' onPageMs.
+    onPageMs?: (ms: number) => void;
     // The acting user's own configured Settings.timezone — not the server
     // process's ambient clock (see workload.ts's identical reasoning).
     // Defaults to UTC purely so the many existing tests below that don't
@@ -503,7 +537,7 @@ export async function listIncompleteAssignedTasks(
         [...byGid.values()].filter((e) => !pendingSearchOnly.has(e.dto.gid)).map((e) => e.task),
         byGid.size,
       );
-    });
+    }, options?.onPageMs);
   }
   // Anything the search pass added but the full, source-of-truth fetch
   // never confirmed (across every workspace, now that both passes are

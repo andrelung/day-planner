@@ -19,7 +19,7 @@ import {
 } from '../providers/asana.js';
 import type { DueUpdate } from '../providers/asana.js';
 import type { RemoteTask } from '../providers/types.js';
-import { logTaskLoadFailure } from '../lib/taskLoadLog.js';
+import { logTaskLoadFailure, logTaskLoadTiming } from '../lib/taskLoadLog.js';
 
 export const tasksRouter = Router();
 tasksRouter.use(requireAuth);
@@ -199,9 +199,37 @@ tasksRouter.get('/stream', async (req, res) => {
   // the two as the same thing. Cleared in `finally` below either way.
   const heartbeat = setInterval(() => res.write(`event: heartbeat\ndata: {}\n\n`), 8_000);
 
+  // Buckets wall-clock time by the same phase labels already shown to the
+  // user, so a "why is this slow" report can point at a specific stage
+  // instead of just the total — see logTaskLoadTiming's own comment.
+  const streamStart = Date.now();
+  const stages: Record<string, number> = {};
+  let stageStart = streamStart;
+  let stageLabel = 'getValidAccessToken';
+  const markStage = (nextLabel: string) => {
+    const now = Date.now();
+    stages[stageLabel] = now - stageStart;
+    stageStart = now;
+    stageLabel = nextLabel;
+  };
+  // Per-page timings for the full-fetch pagination pass, alongside its
+  // total in `stages` — roughly constant per-page latency points at fixed
+  // per-request overhead (a new connection/TLS handshake for each one);
+  // latency that climbs with page count points at something else (larger
+  // responses, server-side load).
+  const pageMs: number[] = [];
+  let tokenRefreshMs: number | null = null;
+
   try {
-    const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+    const accessToken = await getValidAccessToken(req.userId!, 'ASANA', (ms) => {
+      tokenRefreshMs = ms;
+    });
+    markStage('getOrCreateSettings');
     const settings = await getOrCreateSettings(req.userId!);
+    // No markStage here — listIncompleteAssignedTasks' onPhase fires with
+    // 'Looking for upcoming tasks…' as its very first line, before any
+    // await, so that closes out 'getOrCreateSettings' itself a moment
+    // later with a negligible (near-zero) gap folded in.
     const raw = await listIncompleteAssignedTasks(accessToken, {
       withBreadcrumbs: true,
       timezone: settings.timezone,
@@ -209,9 +237,13 @@ tasksRouter.get('/stream', async (req, res) => {
         res.write(`event: progress\ndata: ${JSON.stringify({ count: totalSoFar, ...buildTasksPayload(tasksSoFar) })}\n\n`);
       },
       onPhase: (label) => {
+        markStage(label);
         res.write(`event: phase\ndata: ${JSON.stringify({ label })}\n\n`);
       },
+      onPageMs: (ms) => pageMs.push(ms),
     });
+    markStage('done');
+    logTaskLoadTiming({ phase: 'boot', userId: req.userId, stages, pageMs, tokenRefreshMs, totalMs: Date.now() - streamStart, taskCount: raw.length });
     res.write(`event: done\ndata: ${JSON.stringify(buildTasksPayload(raw))}\n\n`);
   } catch (err) {
     logTaskLoadFailure({

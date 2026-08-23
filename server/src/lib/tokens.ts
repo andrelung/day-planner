@@ -11,8 +11,13 @@ export class ProviderNotConnectedError extends Error {
 }
 
 /// Returns a valid (refreshed if necessary) access token for the given user
-/// + provider, persisting a refreshed token back to the DB.
-export async function getValidAccessToken(userId: string, provider: Provider): Promise<string> {
+/// + provider, persisting a refreshed token back to the DB. `onRefresh` is
+/// diagnostic-only, firing only on the (uncommon) path that actually hits
+/// the network — lets a caller distinguish "this call was slow because of
+/// a genuine token refresh" from "this call was slow for some other
+/// reason" (a slow DB, e.g.) without adding that distinction for every
+/// caller that doesn't care.
+export async function getValidAccessToken(userId: string, provider: Provider, onRefresh?: (ms: number) => void): Promise<string> {
   const account = await prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId, provider } } });
   if (!account) throw new ProviderNotConnectedError(provider);
 
@@ -26,8 +31,10 @@ export async function getValidAccessToken(userId: string, provider: Provider): P
     return decryptSecret(account.accessTokenEnc);
   }
 
+  const refreshStart = Date.now();
   const refreshToken = decryptSecret(account.refreshTokenEnc);
   const fresh = provider === 'ASANA' ? await refreshAsanaToken(refreshToken) : await refreshOutlookToken(refreshToken);
+  onRefresh?.(Date.now() - refreshStart);
 
   await prisma.oAuthAccount.update({
     where: { id: account.id },

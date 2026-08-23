@@ -4,6 +4,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { env } from './lib/env.js';
 import { attachSession } from './lib/auth.js';
+import { prisma } from './lib/prisma.js';
 import { authRouter } from './routes/auth.js';
 import { meRouter } from './routes/me.js';
 import { settingsRouter } from './routes/settings.js';
@@ -81,6 +82,18 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 });
 
 startPendingActionWorker();
+
+// Prisma otherwise connects lazily, on whichever query happens to run
+// first — meaning that cost lands on a real user's first request instead
+// of here. Confirmed live: a boot's first-ever request (three routes
+// hitting the DB concurrently — see settings.ts's own comment) took
+// several seconds longer than every one after it, consistent with paying
+// for connection setup right then. Non-fatal if it fails — Postgres not
+// being up yet just means every future query fails until the DB comes up
+// on its own, exactly as it would have without this.
+prisma
+  .$connect()
+  .catch((err) => console.error('Prisma eager connect failed (will retry lazily per-query):', err));
 
 app.listen(env.PORT, () => {
   console.log(`day-planner server listening on :${env.PORT}`);
