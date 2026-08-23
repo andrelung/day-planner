@@ -179,7 +179,25 @@ tasksRouter.get('/stream', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  // Tells nginx (and anything else that respects the convention) not to
+  // buffer this response — without it, a reverse proxy sitting in front of
+  // this route can hold every 'phase'/'progress' event in its own buffer
+  // until the connection closes, so the client never sees anything (not
+  // even the very first phase update) until the whole fetch finishes or a
+  // buffer/timeout limit forces a flush. Harmless if nothing in the path
+  // actually looks at it.
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
+
+  // The client's own stall watchdog only resets on a named event it
+  // actually listens for (see streamTasks() in store.svelte.ts) — without
+  // this, a real account's breadcrumb-resolution pass (resolveBreadcrumbs,
+  // below) runs as a single long step with no progress event of its own,
+  // and on a large/deeply-nested project structure that step alone can
+  // genuinely take longer than the watchdog's timeout. That's not a stall,
+  // just quiet, real work — this heartbeat keeps the client from treating
+  // the two as the same thing. Cleared in `finally` below either way.
+  const heartbeat = setInterval(() => res.write(`event: heartbeat\ndata: {}\n\n`), 8_000);
 
   try {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
@@ -206,6 +224,8 @@ tasksRouter.get('/stream', async (req, res) => {
     // itself dispatched as an "error" event on the client's EventSource, so
     // reusing that name would be ambiguous with a real connection drop.
     res.write(`event: failed\ndata: ${JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to load tasks' })}\n\n`);
+  } finally {
+    clearInterval(heartbeat);
   }
   res.end();
 });

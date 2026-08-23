@@ -919,6 +919,14 @@ class PlannerStore {
           // malformed progress event — harmless, just skip this tick
         }
       });
+      // No payload, no UI effect — exists purely to keep resetting
+      // lastActivity while the server is genuinely still working through a
+      // single long step (breadcrumb resolution on a large account) that
+      // has no progress event of its own. Without this, that quiet stretch
+      // reads identically to a real stall once it passes STALL_TIMEOUT_MS.
+      es.addEventListener('heartbeat', () => {
+        lastActivity = Date.now();
+      });
       es.addEventListener('failed', (e) => {
         const msg = (() => {
           try {
