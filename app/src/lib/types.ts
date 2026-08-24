@@ -16,6 +16,8 @@ export type Screen =
   | 'dayFull'
   | 'slotConflict'
   | 'eventLinkConflict'
+  | 'eventHoursConflict'
+  | 'ignoreTitlePrompt'
   | 'breakName'
   | 'breakTime'
   | 'breakDuration'
@@ -28,6 +30,12 @@ export interface Task {
   name: string;
   project: string;
   hours: number;
+  /// Whether `hours` came from a real duration bracket in the task's title
+  /// or is just the no-bracket-at-all default (both display as a plain
+  /// number — a bracket-less task defaults to 1h) — see the server's
+  /// RemoteTask for the full reasoning. Used by the calendar-link flow to
+  /// tell "never estimated" apart from "genuinely estimated at 1h".
+  hasExplicitHours: boolean;
   /// "HH:MM" or null — null whenever there's no due_at at all (a date-only
   /// due date, or no due date). Display-only; anything computing whether a
   /// task is overdue should use dueAt instead (see Triage.svelte).
@@ -159,6 +167,44 @@ export interface PendingEventLink {
   /// Triage's event card, and the calendar view's detail panel all reach
   /// linkEventToTask, so "choose a different task" needs to know which one
   /// to go back to.
+  returnScreen: 'triage' | 'overview' | 'calendarView';
+}
+
+/// Stashed while eventHoursConflict asks how to reconcile a task's own
+/// (real, bracket-set) estimate against the calendar entry it's about to be
+/// linked to — see PlannerStore.linkEventToTaskAfterConflictCheck. Only
+/// raised when the two genuinely disagree; a task with no real estimate at
+/// all silently adopts the calendar entry's duration instead of asking.
+export interface PendingHoursConflict {
+  eventId: string;
+  /// Purely for the confirmation screen's copy.
+  eventTitle: string;
+  taskId: string;
+  taskName: string;
+  permalinkUrl: string;
+  /// The clean (bracket-stripped) title — needed to rebuild the estimate
+  /// bracket if the user picks "update" (see PATCH /api/tasks/:gid).
+  cleanName: string;
+  /// The calendar entry's own end time — every resolution links the task
+  /// AND sets this as its due instant, independent of which hours option
+  /// gets picked.
+  dueAtIso: string;
+  taskHours: number;
+  eventHours: number;
+  returnScreen: 'triage' | 'overview' | 'calendarView';
+}
+
+/// Stashed while ignoreTitlePrompt asks whether to start auto-ignoring a
+/// title, once ignoring a single instance shows the server-reported count
+/// of separately-ignored instances of it has reached 2+ (see
+/// PlannerStore.ignoreEvent) — this instance is already ignored either way,
+/// this is purely about whether *future* instances should be too.
+export interface PendingIgnoreTitlePrompt {
+  eventId: string;
+  title: string;
+  /// How many separate instances of this title have now been individually
+  /// ignored, including this one — shown directly in the prompt's copy.
+  count: number;
   returnScreen: 'triage' | 'overview' | 'calendarView';
 }
 

@@ -30,6 +30,7 @@ function toTaskDto(t: RemoteTask) {
     name: t.name,
     project: t.project,
     hours: t.hours,
+    hasExplicitHours: t.hasExplicitHours,
     dueHour: t.dueHour,
     dueAt: t.dueAt,
     dueOn: t.dueOn,
@@ -58,7 +59,7 @@ tasksRouter.get('/', async (req, res) => {
   try {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
     const settings = await getOrCreateSettings(req.userId!);
-    const raw = await listIncompleteAssignedTasks(accessToken, { timezone: settings.timezone });
+    const raw = await listIncompleteAssignedTasks(accessToken, { timezone: settings.timezone, userId: req.userId! });
     res.json(buildTasksPayload(raw));
   } catch (err) {
     logTaskLoadFailure({
@@ -237,6 +238,7 @@ tasksRouter.get('/stream', async (req, res) => {
     const timezone = await resolveTimezone(req.userId!, req.query.timezone);
     const raw = await listIncompleteAssignedTasks(accessToken, {
       timezone,
+      userId: req.userId!,
       onBatch: (tasksSoFar, totalSoFar) => {
         res.write(`event: progress\ndata: ${JSON.stringify({ count: totalSoFar, ...buildTasksPayload(tasksSoFar) })}\n\n`);
       },
@@ -287,7 +289,7 @@ tasksRouter.get('/typeahead', async (req, res) => {
     return;
   }
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-  const results = await typeahead(accessToken, parsed.data.resourceType, parsed.data.query);
+  const results = await typeahead(accessToken, parsed.data.resourceType, parsed.data.query, req.userId!);
   res.json({ results: results.map((r) => ({ gid: r.gid, name: r.name, permalinkUrl: r.permalinkUrl })) });
 });
 
@@ -403,6 +405,6 @@ tasksRouter.post('/bug-report', async (req, res) => {
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
   const settings = await getOrCreateSettings(req.userId!);
   const account = await prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId: req.userId!, provider: 'ASANA' } } });
-  const created = await createBugReportTask(accessToken, parsed.data.description, account?.externalAccountId ?? null, settings.timezone);
+  const created = await createBugReportTask(accessToken, parsed.data.description, account?.externalAccountId ?? null, settings.timezone, req.userId!);
   res.status(201).json({ gid: created.gid, permalinkUrl: created.permalink_url });
 });

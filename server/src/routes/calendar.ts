@@ -235,16 +235,34 @@ calendarRouter.post('/events/:eventId/unlink', async (req, res) => {
   res.status(204).end();
 });
 
+const ignoreSchema = z.object({ title: z.string().min(1) });
+
 /// Dismisses an event from the Overview list without linking it to
 /// anything — persisted (unlike a purely client-side hide) so it stays
-/// dismissed across reloads, same as a real link would.
+/// dismissed across reloads, same as a real link would. Storing `title`
+/// alongside this (only ever set when ignored — see the schema's own
+/// comment) lets the response report how many *separate* instances of this
+/// exact title the user has now individually ignored, which is what the
+/// client uses to decide whether it's worth offering the always-ignore
+/// rule (see ignore-title below) — not on a bare first-time ignore, only
+/// once a real pattern shows up.
 calendarRouter.post('/events/:eventId/ignore', async (req, res) => {
+  const parsed = ignoreSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { title } = parsed.data;
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },
-    create: { userId: req.userId!, externalEventId: req.params.eventId, ignored: true },
-    update: { ignored: true, linkedAsanaTaskGid: null, linkedTaskName: null, linkedTaskPermalinkUrl: null },
+    create: { userId: req.userId!, externalEventId: req.params.eventId, ignored: true, title },
+    update: { ignored: true, title, linkedAsanaTaskGid: null, linkedTaskName: null, linkedTaskPermalinkUrl: null },
   });
-  res.status(204).end();
+  const [ignoredTitleCount, declined] = await Promise.all([
+    prisma.calendarEventLink.count({ where: { userId: req.userId!, ignored: true, title } }),
+    prisma.declinedAutoIgnoreTitle.findUnique({ where: { userId_title: { userId: req.userId!, title } } }),
+  ]);
+  res.json({ ignoredTitleCount, alreadyDeclinedAutoIgnore: !!declined });
 });
 
 /// Reverses the above — the Undo action on the "Ignored" toast. A no-op if
@@ -278,10 +296,35 @@ calendarRouter.post('/events/:eventId/ignore-title', async (req, res) => {
     create: { userId: req.userId!, title: parsed.data.title },
     update: {},
   });
+  // Stale now that the user has actually opted into always-ignoring this
+  // title — leaving it behind would mean a later un-ignore-then-ignore
+  // cycle for the same title silently skips the prompt again, as if they'd
+  // *declined* it, which is the opposite of what just happened.
+  await prisma.declinedAutoIgnoreTitle.deleteMany({ where: { userId: req.userId!, title: parsed.data.title } });
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },
-    create: { userId: req.userId!, externalEventId: req.params.eventId, ignored: true },
-    update: { ignored: true, linkedAsanaTaskGid: null, linkedTaskName: null, linkedTaskPermalinkUrl: null },
+    create: { userId: req.userId!, externalEventId: req.params.eventId, ignored: true, title: parsed.data.title },
+    update: { ignored: true, title: parsed.data.title, linkedAsanaTaskGid: null, linkedTaskName: null, linkedTaskPermalinkUrl: null },
+  });
+  res.status(204).end();
+});
+
+/// "Do not automatically ignore" on the client's ignore-title prompt —
+/// records that this title was actually asked about and declined, so a
+/// later ignore of another instance of the same title doesn't ask again
+/// (see ignoredTitleCount/alreadyDeclinedAutoIgnore on /ignore above).
+/// Distinct from just closing the prompt ("Decide later"), which leaves no
+/// record and *will* ask again next time.
+calendarRouter.post('/events/:eventId/decline-auto-ignore-title', async (req, res) => {
+  const parsed = ignoreTitleSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  await prisma.declinedAutoIgnoreTitle.upsert({
+    where: { userId_title: { userId: req.userId!, title: parsed.data.title } },
+    create: { userId: req.userId!, title: parsed.data.title },
+    update: {},
   });
   res.status(204).end();
 });
@@ -304,6 +347,13 @@ calendarRouter.post('/events/:eventId/unignore-title', async (req, res) => {
 const addTaskSchema = z.object({
   title: z.string().min(1),
   target: z.union([z.object({ projectGid: z.string().min(1) }), z.object({ parentGid: z.string().min(1) })]),
+  // The calendar entry's own end time/duration — always sent by the
+  // client for this flow (see store.svelte.ts's eventDurationHours), so a
+  // task/subtask created from a meeting starts out already due and
+  // estimated instead of landing bare in the queue until the user notices
+  // and fills both in by hand.
+  dueAt: z.string().datetime(),
+  hours: z.number().min(0).max(200),
 });
 
 calendarRouter.post('/events/:eventId/add-task', async (req, res) => {
@@ -314,11 +364,11 @@ calendarRouter.post('/events/:eventId/add-task', async (req, res) => {
   }
   const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
   const settings = await getOrCreateSettings(req.userId!);
-  const { title, target } = parsed.data;
+  const { title, target, dueAt, hours } = parsed.data;
   const created =
     'projectGid' in target
-      ? await createTaskInProject(accessToken, target.projectGid, title, settings.timezone)
-      : await createSubtask(accessToken, target.parentGid, title, settings.timezone);
+      ? await createTaskInProject(accessToken, target.projectGid, title, settings.timezone, { dueAt, hours })
+      : await createSubtask(accessToken, target.parentGid, title, settings.timezone, { dueAt, hours });
 
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },

@@ -24,6 +24,8 @@
   import DayFull from './lib/screens/DayFull.svelte';
   import SlotConflict from './lib/screens/SlotConflict.svelte';
   import EventLinkConflict from './lib/screens/EventLinkConflict.svelte';
+  import EventHoursConflict from './lib/screens/EventHoursConflict.svelte';
+  import IgnoreTitlePrompt from './lib/screens/IgnoreTitlePrompt.svelte';
   import BreakName from './lib/screens/BreakName.svelte';
   import BreakTime from './lib/screens/BreakTime.svelte';
   import BreakDuration from './lib/screens/BreakDuration.svelte';
@@ -322,6 +324,10 @@
       <SlotConflict />
     {:else if planner.screen === 'eventLinkConflict'}
       <EventLinkConflict />
+    {:else if planner.screen === 'eventHoursConflict'}
+      <EventHoursConflict />
+    {:else if planner.screen === 'ignoreTitlePrompt'}
+      <IgnoreTitlePrompt />
     {:else if planner.screen === 'breakName'}
       <BreakName />
     {:else if planner.screen === 'breakTime'}

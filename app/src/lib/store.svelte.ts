@@ -4,6 +4,8 @@ import type {
   OutlookBlock,
   PendingActionDto,
   PendingEventLink,
+  PendingHoursConflict,
+  PendingIgnoreTitlePrompt,
   PendingPlan,
   PendingSlotPlan,
   Project,
@@ -371,6 +373,8 @@ class PlannerStore {
   pendingSlotPlan: PendingSlotPlan | null = $state(null);
   conflictItems: ConflictItem[] = $state([]);
   pendingEventLink: PendingEventLink | null = $state(null);
+  pendingHoursConflict: PendingHoursConflict | null = $state(null);
+  pendingIgnoreTitlePrompt: PendingIgnoreTitlePrompt | null = $state(null);
 
   toastMsg: string | null = $state(null);
 
@@ -2150,9 +2154,22 @@ class PlannerStore {
   private commitPlanLocally(task: Task, dueAtIso: string, toastMsg: string, dayKey: string) {
     const previousDueOn = task.dueOn;
     const previousDueAt = task.dueAt;
+    // Planning a task *for later* removes it from today's queue entirely
+    // (justPlannedIds below), so whatever the focusIndex setter's own
+    // auto-follow lands on next is just wherever the flat, all-days queue
+    // happens to continue — often a different day entirely, which used to
+    // silently drag the whole screen forward to that day. The day being
+    // triaged shouldn't change just because one task on it got moved
+    // elsewhere — Triage already renders a same-day empty state
+    // ("taskMatchesActiveDate") when focus ends up pointing past today, so
+    // pinning activeDate back here is enough to keep the user on today
+    // (showing whatever's left, or that empty state if nothing is) rather
+    // than jumping to wherever the just-moved task (or its neighbors) live.
+    const activeDateBeforeCommit = this.activeDate;
     this.setTaskDueDateLocally(task.id, dueAtIso);
     if (!this.justPlannedIds.includes(task.id)) this.justPlannedIds = [...this.justPlannedIds, task.id];
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+    this.activeDate = activeDateBeforeCommit;
     // A real completion, not a cancel — lands on Triage same as always
     // rather than returnFromPlanLater's "go back to where this detour
     // started" (see openTaskInPlanLater), and clears it so it can't apply
@@ -2453,17 +2470,29 @@ class PlannerStore {
     const task = this.focusTaskRaw;
     if (!task) return;
     this.editingHours = false;
-    await this.patchHours(task.id, task.name, this.hoursDraft);
+    this.patchHours(task.id, task.name, this.hoursDraft);
   }
 
-  private async patchHours(taskId: string, name: string, hours: number) {
-    try {
-      await api.patch(`/api/tasks/${encodeURIComponent(taskId)}`, { hours, name });
-      this.showToast('Updated estimate · synced to Asana');
-      await this.refreshTasks();
-    } catch (err) {
+  /// The PATCH endpoint only ever *enqueues* the Asana write — a background
+  /// worker applies it, polling every 10s (see pendingActionQueue.ts) — so
+  /// a refetch right after the PATCH call almost always lands before the
+  /// worker has actually run and shows the *old* hours right back, on both
+  /// this card and the calendar-view block size (DayCalendar reads the same
+  /// focusTaskRaw.hours). Updates local state immediately instead, the same
+  /// optimistic pattern setTaskDueDateLocally already uses for due-date
+  /// edits, and fires the write without waiting on it.
+  private setTaskHoursLocally(taskId: string, hours: number) {
+    const patch = (list: Task[]) => list.map((t) => (t.id === taskId ? { ...t, hours } : t));
+    this.tasks = patch(this.tasks);
+    this.tasksWithoutDueDate = patch(this.tasksWithoutDueDate);
+  }
+
+  private patchHours(taskId: string, name: string, hours: number) {
+    this.setTaskHoursLocally(taskId, hours);
+    this.showToast('Updated estimate · syncing to Asana');
+    api.patch(`/api/tasks/${encodeURIComponent(taskId)}`, { hours, name }).catch((err) => {
       this.reportError(err, 'Could not update the estimate');
-    }
+    });
   }
 
   // --- estimate editing (up-next rows) ---
@@ -2481,11 +2510,11 @@ class PlannerStore {
     const n = parseFloat(v);
     this.restHoursDraft = v === '' ? 0 : isNaN(n) ? 0 : n;
   }
-  async confirmRestHours(id: string) {
+  confirmRestHours(id: string) {
     const task = this.tasks.find((t) => t.id === id);
     this.editingRestId = null;
     if (!task) return;
-    await this.patchHours(task.id, task.name, this.restHoursDraft);
+    this.patchHours(task.id, task.name, this.restHoursDraft);
   }
 
   // --- split into a part wizard ---
@@ -2800,12 +2829,22 @@ class PlannerStore {
   /// calendarViewOutlookEvents (a specific day's free-slots call), never
   /// through `events` at all. Checked in both places rather than requiring
   /// one to be a superset of the other.
-  private eventInfo(eventId: string): { title: string; dateStr: string } | undefined {
+  private eventInfo(eventId: string): { title: string; dateStr: string; start: string; end: string } | undefined {
     const e = this.events.find((e) => e.id === eventId) ?? this.calendarViewOutlookEvents.find((e) => e.id === eventId);
-    return e ? { title: e.title, dateStr: this.toLocalDateStr(e.start) } : undefined;
+    return e ? { title: e.title, dateStr: this.toLocalDateStr(e.start), start: e.start, end: e.end } : undefined;
   }
   private eventTitle(eventId: string): string | undefined {
     return this.eventInfo(eventId)?.title;
+  }
+  /// A task created or linked *from* a calendar entry (see
+  /// addEventAsTaskWithProject/addEventAsSubtask/linkEventToTask) always
+  /// takes the entry's own end time as its due instant and — when nothing
+  /// more specific applies — its duration as the estimate, both rounded to
+  /// a single decimal since that's the granularity the Stepper/title
+  /// bracket convention actually uses (parseDurationFromTitle, server-side).
+  private eventDurationHours(start: string, end: string): number {
+    const ms = new Date(end).getTime() - new Date(start).getTime();
+    return Math.round((ms / 3_600_000) * 10) / 10;
   }
   /// The best guesses for which existing task a calendar event should link
   /// to — a task due the same calendar day as the event is very often
@@ -2835,21 +2874,20 @@ class PlannerStore {
   /// Dismisses an event from the Overview list — persisted server-side
   /// (see routes/calendar.ts), not just hidden client-side, so it stays
   /// gone across reloads.
+  /// Dismisses just this one instance, always — the "always ignore this
+  /// title" offer (see ignoreTitlePrompt) only ever comes up *after*, once
+  /// the server-reported count shows this exact title has genuinely been
+  /// ignored before, not on every single ignore regardless of whether
+  /// there's any real pattern yet.
   async ignoreEvent(eventId: string) {
     const title = this.eventTitle(eventId);
     if (!title) return;
-    // A daily recurring meeting (the motivating case: a lunch invite that
-    // repeats every workday) gets a distinct externalEventId per Outlook
-    // occurrence, so a plain single-instance ignore only ever dismisses the
-    // one day tapped — asking here, every time, is what actually lets
-    // someone opt into "every one of these, not just today's."
-    if (confirm(`Ignore any event titled "${title}"?`)) {
-      await this.ignoreEventByTitle(eventId, title);
-      return;
-    }
     const removedFromEvents = this.events.find((e) => e.id === eventId);
     try {
-      await api.post(`/api/calendar/events/${encodeURIComponent(eventId)}/ignore`, {});
+      const res = await api.post<{ ignoredTitleCount: number; alreadyDeclinedAutoIgnore: boolean }>(
+        `/api/calendar/events/${encodeURIComponent(eventId)}/ignore`,
+        { title },
+      );
       this.events = this.events.filter((e) => e.id !== eventId);
       this.patchCalendarViewEvent(eventId, { ignored: true, linked: false, linkedName: null, linkedTaskGid: null, linkedTaskPermalinkUrl: null });
       this.closeEventPopup();
@@ -2864,12 +2902,63 @@ class PlannerStore {
           });
         },
       });
+      // A daily recurring meeting (the motivating case: a lunch invite that
+      // repeats every workday) gets a distinct externalEventId per Outlook
+      // occurrence, so a plain single-instance ignore only ever dismisses
+      // the one day tapped — this is what actually lets someone opt into
+      // "every one of these, not just today's," once ignoring the same
+      // title a second time shows it's worth asking about (and only if
+      // they haven't already said no once — see alreadyDeclinedAutoIgnore).
+      if (res.ignoredTitleCount >= 2 && !res.alreadyDeclinedAutoIgnore) {
+        this.pendingIgnoreTitlePrompt = {
+          eventId,
+          title,
+          count: res.ignoredTitleCount,
+          returnScreen: this.screen === 'overview' ? 'overview' : this.screen === 'calendarView' ? 'calendarView' : 'triage',
+        };
+        this.screen = 'ignoreTitlePrompt';
+      }
     } catch (err) {
       this.reportError(err, 'Could not ignore this event');
     }
   }
-  /// "Ignore any event titled ..." — see ignoreEvent's confirm prompt.
-  /// Unlike the single-instance path above, this can remove several
+  /// "Decide later" on ignoreTitlePrompt — just closes it. No record is
+  /// kept, unlike resolveIgnoreTitlePromptDecline below, so the next ignore
+  /// of this same title asks again.
+  resolveIgnoreTitlePromptDecideLater() {
+    const p = this.pendingIgnoreTitlePrompt;
+    this.pendingIgnoreTitlePrompt = null;
+    this.screen = p?.returnScreen ?? 'triage';
+  }
+  /// "Do not automatically ignore" — records the decline server-side so
+  /// future ignores of this same title stop asking (see
+  /// alreadyDeclinedAutoIgnore above), distinct from "Decide later"'s
+  /// no-record close.
+  async resolveIgnoreTitlePromptDecline() {
+    const p = this.pendingIgnoreTitlePrompt;
+    this.pendingIgnoreTitlePrompt = null;
+    if (!p) return;
+    this.screen = p.returnScreen;
+    try {
+      await api.post(`/api/calendar/events/${encodeURIComponent(p.eventId)}/decline-auto-ignore-title`, { title: p.title });
+    } catch (err) {
+      this.reportError(err, 'Could not save that preference');
+    }
+  }
+  /// "Ignore always" — the instance itself is already ignored (see
+  /// ignoreEvent above); this just adds the standing title rule on top,
+  /// same as ignoreEventByTitle always has.
+  async resolveIgnoreTitlePromptAlways() {
+    const p = this.pendingIgnoreTitlePrompt;
+    this.pendingIgnoreTitlePrompt = null;
+    if (!p) return;
+    this.screen = p.returnScreen;
+    await this.ignoreEventByTitle(p.eventId, p.title);
+  }
+  /// Called only from resolveIgnoreTitlePromptAlways above now — "Ignore
+  /// always" used to be offered as a native confirm() on every single
+  /// ignore; it's reached exclusively through ignoreTitlePrompt these days.
+  /// Unlike the single-instance path, this can remove several
   /// entries from `events` at once (every future occurrence of the same
   /// recurring meeting already in the current 7-day window), so it
   /// refetches rather than patching one id out of the array by hand — the
@@ -2926,12 +3015,15 @@ class PlannerStore {
   }
 
   async addEventAsTaskWithProject(eventId: string, projectGid: string, projectName: string) {
-    const title = this.eventTitle(eventId);
-    if (!title) return;
+    const info = this.eventInfo(eventId);
+    if (!info) return;
+    const { title } = info;
     try {
       const created = await api.post<{ gid: string; name: string; permalinkUrl: string }>(`/api/calendar/events/${encodeURIComponent(eventId)}/add-task`, {
         title,
         target: { projectGid },
+        dueAt: info.end,
+        hours: this.eventDurationHours(info.start, info.end),
       });
       this.showToast(`Added "${title}" to ${projectName} · synced to Asana`);
       this.closeSearchPanel();
@@ -2957,12 +3049,15 @@ class PlannerStore {
   /// surfaced anywhere — exactly the reported "selecting it doesn't do
   /// anything, the menu stays open" bug.
   async addEventAsSubtask(eventId: string, parentTaskId: string, parentTaskName: string, parentPermalinkUrl: string) {
-    const title = this.eventTitle(eventId);
-    if (!title) return;
+    const info = this.eventInfo(eventId);
+    if (!info) return;
+    const { title } = info;
     try {
       const created = await api.post<{ gid: string; name: string; permalinkUrl: string }>(`/api/calendar/events/${encodeURIComponent(eventId)}/add-task`, {
         title,
         target: { parentGid: parentTaskId },
+        dueAt: info.end,
+        hours: this.eventDurationHours(info.start, info.end),
       });
       // The subtask itself is new, so there's nothing ambiguous about it —
       // it's the *parent*, picked from typeahead's name-only results, that's
@@ -3012,9 +3107,81 @@ class PlannerStore {
       this.screen = 'eventLinkConflict';
       return;
     }
-    await this.commitEventLink(eventId, taskId, taskName, permalinkUrl);
+    await this.linkEventToTaskAfterConflictCheck(eventId, taskId, taskName, permalinkUrl);
   }
-  private async commitEventLink(eventId: string, taskId: string, taskName: string, permalinkUrl: string) {
+  /// Looks up a task's *current* hours/hasExplicitHours/clean name — from
+  /// already-loaded state when it's there, otherwise a live single-task
+  /// fetch (see refreshTasksByGid server-side), since a task picked via
+  /// typeahead (see searchResultsFor) can be anything in the workspace, not
+  /// just one already loaded into `tasks`/`tasksWithoutDueDate`. Null means
+  /// the task couldn't be verified at all (typically: deleted moments ago)
+  /// — callers treat that the same as "no explicit hours", since there's
+  /// nothing real left to compare the calendar entry's duration against.
+  private async resolveCurrentTaskInfo(taskId: string): Promise<{ hours: number; hasExplicitHours: boolean; cleanName: string } | null> {
+    const local = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
+    if (local) return { hours: local.hours, hasExplicitHours: local.hasExplicitHours, cleanName: local.name };
+    try {
+      const res = await api.post<{ tasks: Record<string, { name: string; hours: number; hasExplicitHours: boolean } | null> }>(
+        '/api/tasks/refresh-by-gid',
+        { gids: [taskId] },
+      );
+      const fresh = res.tasks[taskId];
+      return fresh ? { hours: fresh.hours, hasExplicitHours: fresh.hasExplicitHours, cleanName: fresh.name } : null;
+    } catch {
+      return null;
+    }
+  }
+  /// The shared continuation for both a clean link (no eventLinkConflict
+  /// hit) and "Link anyway" (the conflict was already resolved) — every
+  /// link takes the calendar entry's own end time as the task's new due
+  /// instant, and reconciles hours: a task with no *real* estimate silently
+  /// adopts the entry's duration, one already estimated the same amount
+  /// needs no change, and one estimated *differently* asks first (see
+  /// eventHoursConflict) rather than silently overwriting a number the user
+  /// chose on purpose.
+  private async linkEventToTaskAfterConflictCheck(eventId: string, taskId: string, taskName: string, permalinkUrl: string) {
+    const info = this.eventInfo(eventId);
+    if (!info) return;
+    const eventHours = this.eventDurationHours(info.start, info.end);
+    const current = await this.resolveCurrentTaskInfo(taskId);
+    if (!current?.hasExplicitHours) {
+      await this.commitEventLink(eventId, taskId, taskName, permalinkUrl, info.end, eventHours, current?.cleanName ?? taskName);
+      return;
+    }
+    if (Math.round(current.hours * 10) / 10 === eventHours) {
+      await this.commitEventLink(eventId, taskId, taskName, permalinkUrl, info.end, null, current.cleanName);
+      return;
+    }
+    this.pendingHoursConflict = {
+      eventId,
+      eventTitle: info.title,
+      taskId,
+      taskName,
+      permalinkUrl,
+      cleanName: current.cleanName,
+      dueAtIso: info.end,
+      taskHours: current.hours,
+      eventHours,
+      returnScreen: this.screen === 'overview' ? 'overview' : this.screen === 'calendarView' ? 'calendarView' : 'triage',
+    };
+    this.screen = 'eventHoursConflict';
+  }
+  /// `hoursToSet` is null for "leave the task's own estimate alone" (either
+  /// it already matches, or the user chose "keep" on eventHoursConflict) —
+  /// anything else actually rewrites the estimate bracket, which is why
+  /// `cleanName` (not the possibly-raw-from-typeahead taskName) is what
+  /// gets sent to the PATCH: setTaskHours server-side rebuilds the bracket
+  /// from whatever name it's given, and a stray existing bracket in a raw
+  /// typeahead name would otherwise double up.
+  private async commitEventLink(
+    eventId: string,
+    taskId: string,
+    taskName: string,
+    permalinkUrl: string,
+    dueAtIso: string,
+    hoursToSet: number | null,
+    cleanName: string,
+  ) {
     const title = this.eventTitle(eventId);
     if (!title) return;
     try {
@@ -3040,10 +3207,51 @@ class PlannerStore {
       this.showToast(`Linked "${title}" to "${taskName}"`, { label: 'Open task', href: permalinkUrl });
       this.closeSearchPanel();
       this.patchCalendarViewEvent(eventId, { linked: true, linkedName: taskName, linkedTaskGid: taskId, linkedTaskPermalinkUrl: permalinkUrl, ignored: false });
+      this.applyLinkedTaskUpdates(taskId, dueAtIso, hoursToSet, cleanName);
       await this.refreshEvents();
     } catch (err) {
       this.reportError(err, 'Could not link the event');
     }
+  }
+  /// Updates local state immediately and fires the actual Asana write in
+  /// the background — same optimistic pattern as patchHours/
+  /// setTaskDueDateLocally elsewhere, combined into one PATCH call since
+  /// the due date and (optionally) the estimate are both changing together
+  /// here. `hoursToSet` null means only the due date actually changed.
+  private applyLinkedTaskUpdates(taskId: string, dueAtIso: string, hoursToSet: number | null, cleanName: string) {
+    this.setTaskDueDateLocally(taskId, dueAtIso);
+    if (hoursToSet !== null) this.setTaskHoursLocally(taskId, hoursToSet);
+    const body: { dueAt: string; hours?: number; name?: string } = { dueAt: dueAtIso };
+    if (hoursToSet !== null) {
+      body.hours = hoursToSet;
+      body.name = cleanName;
+    }
+    api.patch(`/api/tasks/${encodeURIComponent(taskId)}`, body).catch((err) => {
+      this.reportError(err, 'Could not update the linked task in Asana');
+    });
+  }
+  /// "Skip" on eventHoursConflict — the link never happened at all (unlike
+  /// "keep"/"update" below, both of which still link, just differing on
+  /// what happens to the estimate), so there's nothing to commit, just the
+  /// screen to close.
+  resolveHoursConflictSkip() {
+    const p = this.pendingHoursConflict;
+    this.pendingHoursConflict = null;
+    this.screen = p?.returnScreen ?? 'triage';
+  }
+  async resolveHoursConflictKeep() {
+    const p = this.pendingHoursConflict;
+    this.pendingHoursConflict = null;
+    if (!p) return;
+    this.screen = p.returnScreen;
+    await this.commitEventLink(p.eventId, p.taskId, p.taskName, p.permalinkUrl, p.dueAtIso, null, p.cleanName);
+  }
+  async resolveHoursConflictUpdate() {
+    const p = this.pendingHoursConflict;
+    this.pendingHoursConflict = null;
+    if (!p) return;
+    this.screen = p.returnScreen;
+    await this.commitEventLink(p.eventId, p.taskId, p.taskName, p.permalinkUrl, p.dueAtIso, p.eventHours, p.cleanName);
   }
   /// "Choose a different task" (or closing the conflict screen) — the
   /// search panel underneath was never touched, so going back to
@@ -3071,7 +3279,7 @@ class PlannerStore {
     }
     this.screen = p.returnScreen;
     this.pendingEventLink = null;
-    await this.commitEventLink(p.eventId, p.taskId, p.taskName, p.permalinkUrl);
+    await this.linkEventToTaskAfterConflictCheck(p.eventId, p.taskId, p.taskName, p.permalinkUrl);
   }
 }
 

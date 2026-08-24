@@ -11,6 +11,15 @@ export interface RemoteTask {
   name: string;
   project: string;
   hours: number;
+  /// Whether `hours` came from an actual bracket in the task's title
+  /// (parseDurationFromTitle) or is just the "no bracket at all" default —
+  /// both look identical as a plain number (a bracket-less task defaults to
+  /// 1h), so anything that needs to tell "genuinely estimated at 1h" apart
+  /// from "never estimated at all" (see routes/calendar.ts's link flow —
+  /// linking a task with no real estimate silently adopts the calendar
+  /// entry's own duration, one *with* a real, differing estimate asks
+  /// first) needs this alongside `hours` itself.
+  hasExplicitHours: boolean;
   /// "HH:MM" in the task's due_at, or null if only a due_on date (no time)
   /// or no due date at all was set.
   dueHour: string | null;

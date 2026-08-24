@@ -2,6 +2,7 @@ import { env } from '../lib/env.js';
 import { cleanTitle, parseDurationFromTitle, titleWithDuration } from '../lib/titleDuration.js';
 import { recordChange } from '../lib/changeLog.js';
 import { addDaysToDateStr, dateStrInTz, hmInTz } from '../lib/tz.js';
+import { prisma } from '../lib/prisma.js';
 import type { OAuthTokenSet, RemoteTask } from './types.js';
 
 const AUTHORIZE_URL = 'https://app.asana.com/-/oauth_authorize';
@@ -267,6 +268,7 @@ function toRemoteTask(dto: AsanaTaskDto, timezone: string): RemoteTask & { proje
     project: dto.projects?.[0]?.name ?? 'No project',
     projectGid: dto.projects?.[0]?.gid ?? null,
     hours: parseDurationFromTitle(dto.name) ?? 1,
+    hasExplicitHours: parseDurationFromTitle(dto.name) !== null,
     dueHour,
     dueAt: dto.due_at,
     dueOn: dto.due_on,
@@ -411,12 +413,51 @@ export async function getTaskDetails(accessToken: string, gid: string): Promise<
 const workspaceCache = new Map<string, { workspaces: { gid: string; name: string }[]; expiresAt: number }>();
 const WORKSPACE_CACHE_TTL_MS = 10 * 60_000;
 
-export async function listWorkspaces(accessToken: string): Promise<{ gid: string; name: string }[]> {
+/// A generous TTL for the *durable* copy (see `db` below) — deliberately
+/// much longer than WORKSPACE_CACHE_TTL_MS above, since real workspace
+/// membership essentially never changes; this is a backstop against it
+/// genuinely changing (a new workspace added, e.g.), not a freshness
+/// requirement the boot path actually needs day to day.
+const WORKSPACE_DB_CACHE_TTL_MS = 7 * 24 * 60 * 60_000;
+
+/// `db`, when passed, backs this with a persisted copy (OAuthAccount's
+/// workspacesJson) in addition to the in-memory cache above — confirmed
+/// live, twice, that the underlying /users/me call this exists to avoid can
+/// take 15-25+ seconds on Asana's own side, which no client-side retry
+/// budget can paper over without a very long worst case. The in-memory
+/// cache alone only helps within one still-running process; this is what
+/// actually keeps a *normal* boot (a server that's been up for hours, well
+/// past any 10-minute in-memory TTL) off that call's critical path at all.
+/// Omitted entirely by this file's own tests, which have no real database
+/// to read — those exercise the in-memory path exactly as before.
+export async function listWorkspaces(accessToken: string, db?: { userId: string }): Promise<{ gid: string; name: string }[]> {
   const cached = workspaceCache.get(accessToken);
   if (cached && cached.expiresAt > Date.now()) return cached.workspaces;
+
+  if (db) {
+    const account = await prisma.oAuthAccount.findUnique({
+      where: { userId_provider: { userId: db.userId, provider: 'ASANA' } },
+      select: { workspacesJson: true, workspacesCachedAt: true },
+    });
+    const freshEnough = account?.workspacesCachedAt && Date.now() - account.workspacesCachedAt.getTime() < WORKSPACE_DB_CACHE_TTL_MS;
+    if (account?.workspacesJson && freshEnough) {
+      const workspaces = account.workspacesJson as { gid: string; name: string }[];
+      workspaceCache.set(accessToken, { workspaces, expiresAt: Date.now() + WORKSPACE_CACHE_TTL_MS });
+      return workspaces;
+    }
+  }
+
   const me = await asanaFetch(accessToken, '/users/me?opt_fields=workspaces.gid,workspaces.name');
   const workspaces = me.workspaces ?? [];
   workspaceCache.set(accessToken, { workspaces, expiresAt: Date.now() + WORKSPACE_CACHE_TTL_MS });
+  if (db) {
+    // Best-effort — a failure to persist shouldn't fail the caller, who
+    // already has a perfectly good live result; it just means the next
+    // cold call pays for another live fetch instead of reading this one.
+    prisma.oAuthAccount
+      .updateMany({ where: { userId: db.userId, provider: 'ASANA' }, data: { workspacesJson: workspaces, workspacesCachedAt: new Date() } })
+      .catch(() => {});
+  }
   return workspaces;
 }
 
@@ -433,8 +474,9 @@ export async function typeahead(
   accessToken: string,
   resourceType: 'task' | 'project',
   query: string,
+  userId: string,
 ): Promise<{ gid: string; name: string; permalinkUrl: string }[]> {
-  const workspaces = await listWorkspaces(accessToken);
+  const workspaces = await listWorkspaces(accessToken, { userId });
   const results = await Promise.all(
     workspaces.map((ws) =>
       asanaFetch(
@@ -545,6 +587,10 @@ export async function listIncompleteAssignedTasks(
     // don't all need updating for an unrelated concern; every real caller
     // passes the acting user's actual zone explicitly.
     timezone?: string;
+    /// Enables the durable (DB-backed) workspace cache — see listWorkspaces'
+    /// own `db` param. Optional so this file's own tests (no real database)
+    /// can keep calling this without it, same as today.
+    userId?: string;
   },
 ): Promise<TaskListResult> {
   const existing = inFlightTaskFetches.get(accessToken);
@@ -595,10 +641,11 @@ async function fetchAllIncompleteTasks(
     onPhase?: OnPhase;
     onPageMs?: OnPageMs;
     timezone?: string;
+    userId?: string;
   },
 ): Promise<TaskListResult> {
   const timezone = options?.timezone ?? 'UTC';
-  const workspaces = await listWorkspaces(accessToken);
+  const workspaces = await listWorkspaces(accessToken, options?.userId ? { userId: options.userId } : undefined);
   // Keyed by gid rather than a plain array so the full-fetch pass below can
   // *overwrite* a search-sourced entry, not just skip re-adding it — Asana's
   // Search API is only eventually consistent (see searchNearTermTasks), so
@@ -719,19 +766,47 @@ export async function setTaskHours(accessToken: string, taskGid: string, cleanNa
   });
 }
 
-export async function createTaskInProject(accessToken: string, projectGid: string, name: string, timezone: string): Promise<AsanaTaskDto> {
+/// `dueAt`/`hours` are optional — the plain refile/create panel (see
+/// routes/tasks.ts's own createSchema-backed route) has neither a due
+/// instant nor an estimate to offer, only a name, and omitting both here
+/// leaves a task exactly as bare as `createTaskInProject`/`createSubtask`
+/// always used to create it. A calendar-derived creation (routes/
+/// calendar.ts's add-task) passes both, taking the entry's own end time and
+/// duration — see store.svelte.ts's eventDurationHours. `assignee: 'me'`
+/// is unconditional: this app only ever deals with tasks assigned to the
+/// acting user, so a task it creates should already be one of them rather
+/// than landing unassigned until the user notices and fixes it themselves.
+export async function createTaskInProject(
+  accessToken: string,
+  projectGid: string,
+  name: string,
+  timezone: string,
+  options?: { dueAt?: string; hours?: number },
+): Promise<AsanaTaskDto> {
+  const finalName = options?.hours !== undefined ? titleWithDuration(name, options.hours) : name;
+  const data: Record<string, unknown> = { name: finalName, projects: [projectGid], assignee: 'me' };
+  if (options?.dueAt) data.due_at = options.dueAt;
   const created = await asanaFetch(accessToken, '/tasks?opt_fields=name,permalink_url', {
     method: 'POST',
-    body: JSON.stringify({ data: { name, projects: [projectGid] } }),
+    body: JSON.stringify({ data }),
   });
   recordChange({ action: 'Create task', taskLink: created.permalink_url, nameAfter: created.name, timezone });
   return created;
 }
 
-export async function createSubtask(accessToken: string, parentTaskGid: string, name: string, timezone: string): Promise<AsanaTaskDto> {
+export async function createSubtask(
+  accessToken: string,
+  parentTaskGid: string,
+  name: string,
+  timezone: string,
+  options?: { dueAt?: string; hours?: number },
+): Promise<AsanaTaskDto> {
+  const finalName = options?.hours !== undefined ? titleWithDuration(name, options.hours) : name;
+  const data: Record<string, unknown> = { name: finalName, assignee: 'me' };
+  if (options?.dueAt) data.due_at = options.dueAt;
   const created = await asanaFetch(accessToken, `/tasks/${parentTaskGid}/subtasks?opt_fields=name,permalink_url`, {
     method: 'POST',
-    body: JSON.stringify({ data: { name } }),
+    body: JSON.stringify({ data }),
   });
   recordChange({ action: 'Create subtask', taskLink: created.permalink_url, nameAfter: created.name, timezone });
   return created;
@@ -802,8 +877,14 @@ function dueInSevenDays(timezone: string): string {
 /// best-effort calls each — assignee alone is enough for the report to
 /// exist and be seen, so a follower add failing (e.g. the test account's
 /// workspace not matching the real one) never loses the report itself.
-export async function createBugReportTask(accessToken: string, description: string, submitterGid: string | null, timezone: string): Promise<AsanaTaskDto> {
-  const workspaces = await listWorkspaces(accessToken);
+export async function createBugReportTask(
+  accessToken: string,
+  description: string,
+  submitterGid: string | null,
+  timezone: string,
+  userId: string,
+): Promise<AsanaTaskDto> {
+  const workspaces = await listWorkspaces(accessToken, { userId });
   const workspace = workspaces[0];
   if (!workspace) throw new Error('No Asana workspace found to file the report in');
   const firstLine = description.split('\n')[0].trim().slice(0, 100) || 'Bug report';

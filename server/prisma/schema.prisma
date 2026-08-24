@@ -33,6 +33,7 @@ model User {
   eventLinks CalendarEventLink[]
   pendingActions PendingAction[]
   ignoredEventTitles IgnoredEventTitle[]
+  declinedAutoIgnoreTitles DeclinedAutoIgnoreTitle[]
 }
 
 /// One row per connected provider account (Asana and/or Outlook) for a user.
@@ -56,6 +57,17 @@ model OAuthAccount {
 
   /// Provider account identity, for display only (e.g. email/name) — never a secret.
   accountLabel String?
+
+  /// Cached Asana workspace membership (gid/name pairs) — see
+  /// providers/asana.ts's listWorkspaces. Persisted (not just kept in that
+  /// file's own in-memory cache) because the live /users/me call it backs
+  /// has been confirmed, twice, to occasionally take 15-25+ seconds — real
+  /// latency on Asana's side this app can't fix by retrying faster, only by
+  /// calling it as rarely as workspace membership (which essentially never
+  /// changes for a real user) actually requires. Only ever set for
+  /// provider = ASANA; left null for OUTLOOK rows.
+  workspacesJson     Json?
+  workspacesCachedAt DateTime?
 
   createdAt DateTime @updatedAt
   updatedAt DateTime @default(now())
@@ -137,9 +149,34 @@ model CalendarEventLink {
   /// The user dismissed this event from the Overview list without linking
   /// it to anything.
   ignored            Boolean  @default(false)
+  /// The event's own title, stored only when ignored — lets a single-
+  /// instance ignore be counted by title (see routes/calendar.ts's
+  /// ignoreEventTitleCount) to notice "you've ignored this exact meeting
+  /// title before" and offer the always-ignore rule at that point, instead
+  /// of asking on every single ignore regardless of whether it's the
+  /// user's first time seeing this title at all.
+  title              String?
   createdAt          DateTime @default(now())
 
   @@unique([userId, externalEventId])
+}
+
+/// A title the user was asked "always ignore events titled X?" for and
+/// said no to — checked alongside IgnoredEventTitle so that "no" actually
+/// sticks instead of asking again on every subsequent ignore of the same
+/// title. Distinct from IgnoredEventTitle itself (which means the *opposite*
+/// — always auto-ignore) rather than reusing it with a status flag, since
+/// the two are checked at completely different points (this one only ever
+/// gates whether to *ask*, never filters an event list the way
+/// IgnoredEventTitle does).
+model DeclinedAutoIgnoreTitle {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, title])
 }
 
 /// A standing "always ignore this" rule by exact event title, for a

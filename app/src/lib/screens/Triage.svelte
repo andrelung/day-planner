@@ -61,31 +61,53 @@
   // "the" task for this screen when its due date actually matches.
   // Backlog tasks have no due date to match, so they're always shown.
   const taskMatchesActiveDate = $derived(planner.reviewingBacklog || (!!focusRaw && focusRaw.dueOn === planner.activeDate));
-  // The queue is an ordered list with focusIndex as the current pointer —
-  // "Up next" is everything still ahead of it, not "everything but the
-  // focused task" (that included already-passed tasks above the focus,
-  // which made clicking one further down look like a swap instead of a
-  // jump-to). Tapping a row earlier deliberately skips whatever was before
-  // it (see selectFocus).
-  const restTasks = $derived(hasFocusTask ? planner.queueTasks.slice(planner.focusIndex + 1) : []);
+  // The full queue, not just what's ahead of focusIndex — this used to be
+  // sliced to only the tasks still to come, which meant the list shrank
+  // toward nothing the further you swiped and gave no way back to a task
+  // you'd already passed except the day-nav arrows. Already-passed tasks
+  // stay listed (scrolled past, above the current one — see
+  // scrollCurrentIntoView) so scrolling back up and tapping one is a direct
+  // way back if a string of swipes/plans overshot into the far future.
+  // selectFocus itself was always index-agnostic (a plain findIndex by id),
+  // so no change was needed there — only what's actually rendered.
+  const restTasks = $derived(hasFocusTask ? planner.queueTasks : []);
+  // The header count is still "how many are ahead", not the full list's
+  // length now that past tasks are included in it too — showing the total
+  // there would read as "N tasks left" when most of them are already done.
+  const aheadCount = $derived(hasFocusTask ? Math.max(0, planner.queueTasks.length - planner.focusIndex - 1) : 0);
 
   // Up next is chronological, so a day boundary only ever needs one header
   // when the label actually changes from the row before it — not a full
   // group-by, just a "does this differ from the last one" scan.
-  type UpNextItem = { kind: 'header'; label: string } | { kind: 'task'; task: (typeof restTasks)[number] };
+  type UpNextItem = { kind: 'header'; label: string } | { kind: 'task'; task: (typeof restTasks)[number]; index: number };
   const restItems = $derived.by(() => {
     const items: UpNextItem[] = [];
     let lastLabel: string | null = null;
-    for (const t of restTasks) {
+    restTasks.forEach((t, index) => {
       const label = planner.dayLabelFor(t.dueOn);
       if (label !== lastLabel) {
         items.push({ kind: 'header', label });
         lastLabel = label;
       }
-      items.push({ kind: 'task', task: t });
-    }
+      items.push({ kind: 'task', task: t, index });
+    });
     return items;
   });
+
+  /// Keeps the current row in view as focus moves (swiping, planning,
+  /// tapping a row) — with the full queue now rendered (see restTasks),
+  /// nothing else would otherwise keep the list scrolled to "where you
+  /// are" the way the old sliced-to-only-what's-ahead list did implicitly.
+  /// Only fires on the row whose isCurrent value actually changes to true
+  /// (Svelte re-invokes `update` for every row on each focusIndex change,
+  /// but the other rows' own value stays false and no-ops here).
+  function scrollIntoViewWhenCurrent(node: HTMLElement, isCurrent: boolean) {
+    function apply(current: boolean) {
+      if (current) node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+    apply(isCurrent);
+    return { update: apply };
+  }
 
   // --- pull to refresh, on the Up Next list ---
   // Only engages when the list is already scrolled to its very top (so it
@@ -252,7 +274,7 @@
     <div class="up-next-inner" style="transform:translateY({pullY}px); transition:{pulling ? 'none' : 'transform 200ms ease-out'};">
       {#if hasFocusTask}
         <button class="section-label section-label--toggle" onclick={() => planner.toggleUpNextCollapsed()}>
-          <span>Up next ({restTasks.length})</span>
+          <span>Up next ({aheadCount})</span>
           <span class="section-label__chevron" style="transform:rotate({planner.upNextCollapsed ? 0 : 90}deg);">
             <Icon name="chevron-right" size={14} color="var(--color-text-muted)" />
           </span>
@@ -265,7 +287,8 @@
             <div class="day-divider">{item.label}</div>
           {:else}
             {@const t = item.task}
-            <div class="up-next-row">
+            {@const isCurrent = item.index === planner.focusIndex}
+            <div class="up-next-row" class:up-next-row--current={isCurrent} use:scrollIntoViewWhenCurrent={isCurrent}>
               <div
                 class="up-next-row__main"
                 role="button"
@@ -329,6 +352,16 @@
       <div class="focus-card">
         <div class="focus-card__top">
           <Badge tone="neutral">Calendar event</Badge>
+          {#if currentEvent.linked && currentEvent.linkedTaskPermalinkUrl}
+            <IconButton
+              icon="external-link"
+              title="Open linked task"
+              size={32}
+              iconSize={16}
+              color="var(--color-text-muted)"
+              href={currentEvent.linkedTaskPermalinkUrl}
+            />
+          {/if}
         </div>
 
         <div class="focus-card__name">{currentEvent.title}</div>
@@ -678,6 +711,14 @@
   .up-next-row {
     padding: 12px 4px;
     border-bottom: 1px solid var(--color-border);
+  }
+  .up-next-row--current {
+    background: var(--color-bg-surface);
+    margin: 0 -12px;
+    padding: 12px;
+    border-radius: var(--radius-md);
+    border-bottom-color: transparent;
+    box-shadow: inset 3px 0 0 var(--color-brand-primary);
   }
   .up-next-row__main {
     display: flex;

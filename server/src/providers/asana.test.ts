@@ -11,6 +11,7 @@ process.env.ASANA_CLIENT_ID ??= 'test-client-id';
 process.env.ASANA_CLIENT_SECRET ??= 'test-client-secret';
 
 const { listIncompleteAssignedTasks, listWorkspaces, refreshTasksByGid, refreshAsanaToken } = await import('./asana.js');
+const { prisma } = await import('../lib/prisma.js');
 
 /// What Node's fetch actually throws when AbortSignal.timeout fires — used
 /// below to simulate the exact transient failure fetchWithRetry (asana.ts)
@@ -724,6 +725,57 @@ void test('listWorkspaces caches by access token instead of refetching /users/me
     assert.equal(callCount, 2);
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+/// A regression test for a real production issue: the in-memory cache
+/// above only helps within one still-running process — every server
+/// restart (or just the in-memory TTL expiring, long before a real user's
+/// next boot typically happens) puts a live /users/me call back on the
+/// boot path, and that call has been confirmed, twice, to occasionally
+/// take 15-25+ seconds. Passing `db` should read a fresh persisted copy
+/// instead of hitting the network at all, and — on a genuine cache miss —
+/// persist whatever it did fetch so the *next* cold call doesn't have to.
+void test('listWorkspaces reads a fresh persisted copy instead of calling Asana when `db` is passed', async () => {
+  const originalFetch = global.fetch;
+  const originalFindUnique = prisma.oAuthAccount.findUnique;
+  const originalUpdateMany = prisma.oAuthAccount.updateMany;
+  let fetchCalls = 0;
+  let updateManyArgs: unknown = null;
+
+  global.fetch = (async () => {
+    fetchCalls++;
+    return jsonResponse({ data: { workspaces: [{ gid: 'live-ws', name: 'Live Workspace' }] } });
+  }) as typeof fetch;
+
+  try {
+    // A fresh persisted copy (well within the 7-day TTL) — should be read
+    // straight from this fake instead of ever touching global.fetch.
+    prisma.oAuthAccount.findUnique = (async () => ({
+      workspacesJson: [{ gid: 'db-ws', name: 'DB Workspace' }],
+      workspacesCachedAt: new Date(),
+    })) as unknown as typeof prisma.oAuthAccount.findUnique;
+
+    const workspaces = await listWorkspaces('fake-token-db-fresh', { userId: 'user-1' });
+    assert.deepEqual(workspaces, [{ gid: 'db-ws', name: 'DB Workspace' }]);
+    assert.equal(fetchCalls, 0);
+
+    // A genuine miss (nothing persisted yet) falls through to the live
+    // call, same as without `db` at all — and persists the result.
+    prisma.oAuthAccount.findUnique = (async () => null) as unknown as typeof prisma.oAuthAccount.findUnique;
+    prisma.oAuthAccount.updateMany = (async (args: unknown) => {
+      updateManyArgs = args;
+      return { count: 1 };
+    }) as typeof prisma.oAuthAccount.updateMany;
+
+    const live = await listWorkspaces('fake-token-db-miss', { userId: 'user-2' });
+    assert.deepEqual(live, [{ gid: 'live-ws', name: 'Live Workspace' }]);
+    assert.equal(fetchCalls, 1);
+    assert.ok(updateManyArgs, 'expected the fresh result to be persisted back');
+  } finally {
+    global.fetch = originalFetch;
+    prisma.oAuthAccount.findUnique = originalFindUnique;
+    prisma.oAuthAccount.updateMany = originalUpdateMany;
   }
 });
 

@@ -27,7 +27,7 @@ workloadRouter.get('/', async (req, res) => {
 
   if (asanaAccount) {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
-    tasks = await listIncompleteAssignedTasks(accessToken, { timezone: settings.timezone });
+    tasks = await listIncompleteAssignedTasks(accessToken, { timezone: settings.timezone, userId: req.userId! });
     const links = await prisma.calendarEventLink.findMany({
       where: { userId: req.userId!, ignored: false, linkedAsanaTaskGid: { not: null } },
       select: { linkedAsanaTaskGid: true },
