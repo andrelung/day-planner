@@ -738,6 +738,16 @@ class PlannerStore {
     void this.refreshEvents();
     this.scheduleMidnightRefresh();
     this.schedulePeriodicTaskRefresh();
+    // Tried making this fire-and-forget (rendering Triage immediately,
+    // populating tasks in place) — worse in practice: a real device that
+    // hit a genuine slow/stalled fetch landed on a Triage screen that
+    // *looked* functional but had nothing in it, with no obvious "this is
+    // still loading, here's why" the way the dedicated loading screen's
+    // bootStatus/stuck-retry affordance gives. A single API call not
+    // blocking the app is the right instinct, but the actual fix for the
+    // underlying slowness is removing the redundant work causing it (see
+    // asana.ts's inFlightTaskFetches), not hiding the wait behind a screen
+    // that can't clearly say anything went wrong.
     await this.bootRefreshTasks();
   }
 
@@ -879,7 +889,12 @@ class PlannerStore {
   private streamTasks(): Promise<void> {
     const STALL_TIMEOUT_MS = 20_000;
     return new Promise((resolve, reject) => {
-      const es = new EventSource('/api/tasks/stream');
+      // Passing the timezone the client already has (from /api/me, read
+      // moments earlier in the same boot sequence) lets the server skip
+      // re-querying Settings for the exact same value a second time — see
+      // resolveTimezone's own comment server-side. Falls back to a real
+      // lookup there if this is ever missing.
+      const es = new EventSource(`/api/tasks/stream?timezone=${encodeURIComponent(this.timezone)}`);
       let settled = false;
       let lastActivity = Date.now();
       const watchdog = setInterval(() => {
@@ -1053,13 +1068,21 @@ class PlannerStore {
     }
   }
 
+  /// Mirrors workloadLoading above — lets the boot loading screen say
+  /// whether this is what's still outstanding (see App.svelte's
+  /// loadingStuck block), not just whatever phase the separate tasks
+  /// stream happens to be reporting.
+  eventsLoading = $state(false);
   async refreshEvents() {
     if (!this.outlookConnected) return;
+    this.eventsLoading = true;
     try {
       const res = await api.get<{ events: CalendarEvent[] }>('/api/calendar/events');
       this.events = res.events;
     } catch (err) {
       this.reportError(err, 'Could not load calendar events');
+    } finally {
+      this.eventsLoading = false;
     }
   }
 

@@ -173,16 +173,44 @@
   // actual button, since the whole point is not leaving them with nothing
   // to do but wait.
   let loadingStuck = $state(false);
+  // Shown alongside the concurrent-fetch status below once loadingStuck
+  // fires — a bare "still loading" is nothing to go on in a bug report;
+  // "still loading, 34s" plus which of the boot-time fetches (tasks,
+  // workload, calendar) actually resolved by then narrows it down to
+  // roughly the same place these diagnostics take a server-side log to
+  // find (see asana.ts's inFlightTaskFetches for the last thing that
+  // narrowing actually caught).
+  let loadingElapsedSec = $state(0);
   $effect(() => {
     if (planner.screen !== 'loading') {
       loadingStuck = false;
+      loadingElapsedSec = 0;
       return;
     }
-    const id = setTimeout(() => {
+    const startedAt = Date.now();
+    const stuckId = setTimeout(() => {
       loadingStuck = true;
     }, 10_000);
-    return () => clearTimeout(id);
+    const tickId = setInterval(() => {
+      loadingElapsedSec = Math.round((Date.now() - startedAt) / 1000);
+    }, 1_000);
+    return () => {
+      clearTimeout(stuckId);
+      clearInterval(tickId);
+    };
   });
+  // workloadLoading/eventsLoading come from refreshWorkload()/refreshEvents()
+  // — fired alongside the tasks fetch (see store.svelte.ts's enterTriage),
+  // not gating this screen the way the tasks fetch does, so bootStatus above
+  // never mentions them at all. Whichever one is still "loading" once this
+  // screen has genuinely been stuck a while is exactly the kind of thing a
+  // bug report needs and a plain "Connecting to Asana…" can't say on its
+  // own — confirmed live: the actual timeout on a stuck boot turned out to
+  // be inside the workload fetch, not the one this screen was reporting on.
+  const loadingDiagnosticsLabel = $derived(
+    `${loadingElapsedSec}s · Workload: ${planner.workloadLoading ? 'still loading' : 'done'}` +
+      (planner.outlookConnected ? ` · Calendar: ${planner.eventsLoading ? 'still loading' : 'done'}` : ''),
+  );
 
   // Detection and dialog rendering are entirely the library's job — this
   // component only hands it whatever beforeinstallprompt event main.ts
@@ -243,6 +271,7 @@
               <p class="loading__progress">{planner.loadingProgressLabel}</p>
             {/if}
             {#if loadingStuck}
+              <p class="loading__diagnostics">{loadingDiagnosticsLabel}</p>
               <button class="loading__stuck-retry" onclick={() => planner.reloadForUpdate()}>Taking a while — tap to reload</button>
             {/if}
           {/if}
@@ -387,6 +416,13 @@
     font-weight: var(--font-weight-normal);
     font-variant-numeric: tabular-nums;
     opacity: 0.75;
+  }
+  .loading__diagnostics {
+    margin-top: 4px;
+    font-size: 11px;
+    font-weight: var(--font-weight-normal);
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-muted);
   }
   .loading__stuck-retry {
     margin-top: 8px;

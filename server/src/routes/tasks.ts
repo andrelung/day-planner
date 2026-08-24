@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { requireAuth } from '../lib/auth.js';
 import { getValidAccessToken } from '../lib/tokens.js';
 import { deriveQueue } from '../lib/taskQueue.js';
-import { getOrCreateSettings } from '../lib/settings.js';
+import { getOrCreateSettings, resolveTimezone } from '../lib/settings.js';
 import { enqueueAction } from '../lib/pendingActionQueue.js';
 import { prisma } from '../lib/prisma.js';
 import {
@@ -58,7 +58,7 @@ tasksRouter.get('/', async (req, res) => {
   try {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
     const settings = await getOrCreateSettings(req.userId!);
-    const raw = await listIncompleteAssignedTasks(accessToken, { withBreadcrumbs: true, timezone: settings.timezone });
+    const raw = await listIncompleteAssignedTasks(accessToken, { timezone: settings.timezone });
     res.json(buildTasksPayload(raw));
   } catch (err) {
     logTaskLoadFailure({
@@ -224,15 +224,19 @@ tasksRouter.get('/stream', async (req, res) => {
     const accessToken = await getValidAccessToken(req.userId!, 'ASANA', (ms) => {
       tokenRefreshMs = ms;
     });
-    markStage('getOrCreateSettings');
-    const settings = await getOrCreateSettings(req.userId!);
-    // No markStage here — listIncompleteAssignedTasks' onPhase fires with
-    // 'Looking for upcoming tasks…' as its very first line, before any
-    // await, so that closes out 'getOrCreateSettings' itself a moment
-    // later with a negligible (near-zero) gap folded in.
+    // The client already knows its own timezone — it read it from /api/me
+    // moments earlier in the same boot sequence — so it's passed straight
+    // through here instead of this route re-querying Settings for the same
+    // value a second time. That redundant read was a real, confirmed
+    // contributor to boot slowness (see settings.ts's own comment); this
+    // removes it from this route's path entirely rather than trying to
+    // make it faster. Still falls back to a real lookup if the param is
+    // missing/invalid — a defensive path for any other caller of this
+    // route, not the one boot() actually takes.
+    markStage('resolveTimezone');
+    const timezone = await resolveTimezone(req.userId!, req.query.timezone);
     const raw = await listIncompleteAssignedTasks(accessToken, {
-      withBreadcrumbs: true,
-      timezone: settings.timezone,
+      timezone,
       onBatch: (tasksSoFar, totalSoFar) => {
         res.write(`event: progress\ndata: ${JSON.stringify({ count: totalSoFar, ...buildTasksPayload(tasksSoFar) })}\n\n`);
       },

@@ -7,8 +7,18 @@ process.env.DATABASE_URL ??= 'postgresql://user:pass@localhost:5432/db';
 process.env.TOKEN_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString('base64');
 process.env.SESSION_JWT_SECRET ??= 'test-secret';
 process.env.PUBLIC_APP_URL ??= 'http://localhost:3000';
+process.env.ASANA_CLIENT_ID ??= 'test-client-id';
+process.env.ASANA_CLIENT_SECRET ??= 'test-client-secret';
 
-const { listIncompleteAssignedTasks, listWorkspaces, refreshTasksByGid } = await import('./asana.js');
+const { listIncompleteAssignedTasks, listWorkspaces, refreshTasksByGid, refreshAsanaToken } = await import('./asana.js');
+
+/// What Node's fetch actually throws when AbortSignal.timeout fires — used
+/// below to simulate the exact transient failure fetchWithRetry (asana.ts)
+/// is meant to recover from, rather than a generic Error a real timeout
+/// would never actually produce.
+function timeoutError(): DOMException {
+  return new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+}
 
 interface Call {
   url: string;
@@ -68,10 +78,11 @@ void test('listIncompleteAssignedTasks follows next_page.uri across multiple pag
 });
 
 /// Subtasks don't carry `projects` themselves — only an ancestor task does.
-/// `withBreadcrumbs` should resolve the project through the parent chain:
-/// one hop for free (parent.projects.* requested in the same list call),
-/// and a live lookup for a deeper hop (grandparent).
-void test('listIncompleteAssignedTasks resolves subtask project via the parent chain when withBreadcrumbs is set', async () => {
+/// Breadcrumb resolution (always on, see inFlightTaskFetches' own comment)
+/// resolves the project through the parent chain: one hop for free
+/// (parent.projects.* requested in the same list call), and a live lookup
+/// for a deeper hop (grandparent).
+void test('listIncompleteAssignedTasks resolves subtask project via the parent chain', async () => {
   const originalFetch = global.fetch;
 
   global.fetch = (async (url: string) => {
@@ -117,7 +128,7 @@ void test('listIncompleteAssignedTasks resolves subtask project via the parent c
   }) as typeof fetch;
 
   try {
-    const tasks = await listIncompleteAssignedTasks('fake-token-breadcrumbs', { withBreadcrumbs: true });
+    const tasks = await listIncompleteAssignedTasks('fake-token-breadcrumbs');
     const byGid = new Map(tasks.map((t) => [t.gid, t]));
     assert.equal(byGid.get('sub1')?.project, 'Project One › Parent task');
     assert.equal(byGid.get('sub2')?.project, 'Project Two › Grandparent two › Parent two');
@@ -126,30 +137,164 @@ void test('listIncompleteAssignedTasks resolves subtask project via the parent c
   }
 });
 
-/// The default (no options) must not pay for breadcrumb resolution at all —
-/// latency-sensitive callers like the slot-conflict check rely on this.
-void test('listIncompleteAssignedTasks leaves subtasks as "No project" when withBreadcrumbs is not set', async () => {
+/// A regression test for a real production bug: boot fires the tasks
+/// stream and workload's own hours computation concurrently, and both used
+/// to independently run a full pagination sweep for the same access token
+/// at once — doubling Asana's own request volume right at boot, which was
+/// confirmed live to trip a real Asana-side timeout (see
+/// inFlightTaskFetches' own comment). Two truly concurrent calls for the
+/// same token must now share one underlying fetch instead.
+void test('listIncompleteAssignedTasks shares one fetch between two concurrent calls for the same access token', async () => {
   const originalFetch = global.fetch;
-  const calls: string[] = [];
+  let calls = 0;
 
   global.fetch = (async (url: string) => {
-    calls.push(String(url));
+    calls++;
     if (String(url).includes('/users/me')) {
       return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
     }
     return jsonResponse({
-      data: [{ gid: 'sub1', name: 'Subtask one', due_on: null, due_at: null, permalink_url: 'https://x/sub1', projects: [], parent: { gid: 'parent1', name: 'Parent task', projects: [] } }],
+      data: [{ gid: 't1', name: 'Task one', due_on: null, due_at: null, permalink_url: 'https://x/1', projects: [] }],
       next_page: null,
     });
   }) as typeof fetch;
 
   try {
-    const tasks = await listIncompleteAssignedTasks('fake-token-no-breadcrumbs');
-    assert.equal(tasks[0].project, 'No project');
-    // workspaces + the near-term search pass (this mock answers it with the
-    // same fixture, deduped below) + the one list page — no extra parent
-    // lookups, since withBreadcrumbs isn't set.
-    assert.equal(calls.length, 3);
+    const [a, b] = await Promise.all([
+      listIncompleteAssignedTasks('fake-token-dedup'),
+      listIncompleteAssignedTasks('fake-token-dedup'),
+    ]);
+    assert.deepEqual(a.map((t) => t.gid), ['t1']);
+    assert.deepEqual(b.map((t) => t.gid), ['t1']);
+    // A solo call makes exactly 3 requests (workspaces, near-term search,
+    // the one list page — same shape as the "no extra parent lookups" case
+    // above). Two *concurrent* calls sharing one fetch stay at 3; without
+    // the dedup this would be 6.
+    assert.equal(calls, 3);
+    // A call made only *after* both of the above have settled must still
+    // hit the network fresh — proving the in-flight entry was actually
+    // cleared once done, not left permanently short-circuiting this token.
+    await listIncompleteAssignedTasks('fake-token-dedup');
+    // +2, not +3: workspaces now comes from listWorkspaces' own cache
+    // (see its own test below), leaving just the search + list page.
+    assert.equal(calls, 5);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// A regression test for a real production bug in the dedup itself: a
+/// joining call used to get nothing but the final result, silently missing
+/// every onPhase/onBatch update the *leader* was seeing — which on a real
+/// device meant a boot's tasks-stream request that lost the race to become
+/// the leader sat frozen on its very first phase label for the fetch's
+/// entire ~17s duration despite the fetch genuinely succeeding the whole
+/// time. A joiner must see the same progress the leader does, live, not
+/// just an eventual result.
+void test('a joining call receives live onPhase progress from the fetch it joined, not just the final result', async () => {
+  const originalFetch = global.fetch;
+  let releaseGate: (() => void) | undefined;
+  // Blocks the very first request (workspace lookup) so the joiner below
+  // is guaranteed to have registered *before* anything else fires — proving
+  // it sees every phase from the start, not just whatever's left once it
+  // happens to attach.
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) {
+      await gate;
+      return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    }
+    if (u.includes('/tasks/search')) {
+      return jsonResponse({ data: [] });
+    }
+    return jsonResponse({
+      data: [{ gid: 't1', name: 'Task one', due_on: null, due_at: null, permalink_url: 'https://x/1', projects: [] }],
+      next_page: null,
+    });
+  }) as typeof fetch;
+
+  const leaderPhases: string[] = [];
+  const joinerPhases: string[] = [];
+
+  try {
+    const leaderPromise = listIncompleteAssignedTasks('fake-token-broadcast', { onPhase: (label) => leaderPhases.push(label) });
+    const joinerPromise = listIncompleteAssignedTasks('fake-token-broadcast', { onPhase: (label) => joinerPhases.push(label) });
+    releaseGate!();
+    const [leaderResult, joinerResult] = await Promise.all([leaderPromise, joinerPromise]);
+    assert.deepEqual(leaderResult.map((t) => t.gid), ['t1']);
+    assert.deepEqual(joinerResult.map((t) => t.gid), ['t1']);
+    assert.ok(leaderPhases.length > 0);
+    // Joined before the gate ever released, so it must have caught
+    // everything the leader did — an identical sequence, not a subset.
+    assert.deepEqual(joinerPhases, leaderPhases);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// A regression test for a real production failure: a boot's ~20-request
+/// pagination sweep failed outright because exactly one HTTP call inside it
+/// hit ASANA_FETCH_TIMEOUT_MS, discarding every page already fetched. GETs
+/// (listWorkspaces here) now get bounded retries for exactly this failure
+/// (see asana.ts's fetchWithRetry).
+void test('listWorkspaces retries a transient timeout instead of failing on the first attempt', async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+
+  global.fetch = (async () => {
+    calls++;
+    if (calls < 3) throw timeoutError();
+    return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+  }) as typeof fetch;
+
+  try {
+    const workspaces = await listWorkspaces('fake-token-retry-succeeds');
+    assert.deepEqual(workspaces, [{ gid: 'ws1', name: 'Workspace 1' }]);
+    assert.equal(calls, 3); // 2 failed attempts, then a third that succeeds
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+void test('listWorkspaces gives up after exhausting retries on a persistent timeout', async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+
+  global.fetch = (async () => {
+    calls++;
+    throw timeoutError();
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(() => listWorkspaces('fake-token-retry-exhausted'));
+    assert.equal(calls, 3); // the initial attempt plus 2 retries, then give up
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+/// A timeout doesn't prove Asana never received/processed the request —
+/// only that the response was lost. Retrying a write blind risks a
+/// duplicate (a second POST /tasks creating two tasks, e.g.), so only GETs
+/// are retried (see fetchWithRetry's own comment). refreshAsanaToken's POST
+/// is a convenient exported write path to prove that restriction actually
+/// holds, without needing a real access token or hitting recordChange.
+void test('refreshAsanaToken does not retry a transient failure on its POST', async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+
+  global.fetch = (async () => {
+    calls++;
+    throw timeoutError();
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(() => refreshAsanaToken('some-refresh-token'));
+    assert.equal(calls, 1); // no retry attempted
   } finally {
     global.fetch = originalFetch;
   }

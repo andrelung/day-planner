@@ -2,6 +2,7 @@ import { prisma } from './prisma.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { refreshAsanaToken } from '../providers/asana.js';
 import { refreshOutlookToken } from '../providers/outlook.js';
+import { timedRead } from './dbTiming.js';
 import type { Provider } from '../generated/prisma/enums.js';
 
 export class ProviderNotConnectedError extends Error {
@@ -18,7 +19,9 @@ export class ProviderNotConnectedError extends Error {
 /// reason" (a slow DB, e.g.) without adding that distinction for every
 /// caller that doesn't care.
 export async function getValidAccessToken(userId: string, provider: Provider, onRefresh?: (ms: number) => void): Promise<string> {
-  const account = await prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId, provider } } });
+  const account = await timedRead('getValidAccessToken.read', userId, () =>
+    prisma.oAuthAccount.findUnique({ where: { userId_provider: { userId, provider } } }),
+  );
   if (!account) throw new ProviderNotConnectedError(provider);
 
   const expiringSoon = account.expiresAt ? account.expiresAt.getTime() - Date.now() < 60_000 : false;

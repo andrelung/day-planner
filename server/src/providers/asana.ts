@@ -22,6 +22,46 @@ const API_BASE = 'https://app.asana.com/api/1.0';
 /// unbounded hung fetch masked by a live heartbeat looks like.
 const ASANA_FETCH_TIMEOUT_MS = 15_000;
 
+/// A single slow/stalled Asana call shouldn't take down an entire
+/// multi-request operation with it — confirmed live: a boot's ~20-request
+/// pagination sweep failed outright because exactly one HTTP call inside it
+/// exceeded ASANA_FETCH_TIMEOUT_MS, even though every other call in that
+/// same sweep completed in well under a second, and the only recovery this
+/// app had was retrying the *entire* sweep from page one, discarding the 19
+/// pages that had already succeeded. Every raw fetch to Asana below goes
+/// through this instead of calling fetch() directly, so a transient stall
+/// gets one/two bounded retries right where it happened.
+///
+/// Deliberately narrow about what counts as retryable, on two axes:
+/// - Only a GET is ever retried. asanaFetch (below) is shared by both reads
+///   and writes (setTaskDueAt, createTaskInProject, ...); a timeout means
+///   the *response* was lost, not necessarily that Asana never received or
+///   processed the request — retrying a POST/PUT blind risks a duplicate
+///   task or a double-submitted mutation. A GET has no such risk.
+/// - Only a genuine transient failure: a timeout (AbortSignal firing — a
+///   DOMException) or the connection itself failing (Node's fetch throws a
+///   TypeError for a real network-level failure, e.g. connection
+///   reset/DNS). A real HTTP error response (4xx/5xx) isn't transient and
+///   retrying can't fix it — callers rely on seeing it immediately
+///   (searchNearTermTasks' 402-on-free-plan handling, e.g.), so that path
+///   is untouched, still a normal rejection on the first attempt.
+const ASANA_FETCH_RETRIES = 2;
+const ASANA_FETCH_RETRY_DELAY_MS = 300;
+
+async function fetchWithRetry(url: string, init?: RequestInit): Promise<Response> {
+  // No explicit method means GET, same as the Fetch spec's own default.
+  const retryable = (init?.method ?? 'GET').toUpperCase() === 'GET';
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetch(url, { ...init, signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS) });
+    } catch (err) {
+      const transient = err instanceof DOMException || err instanceof TypeError;
+      if (!retryable || !transient || attempt >= ASANA_FETCH_RETRIES) throw err;
+      await new Promise((resolve) => setTimeout(resolve, ASANA_FETCH_RETRY_DELAY_MS));
+    }
+  }
+}
+
 function requireCredentials() {
   if (!env.ASANA_CLIENT_ID || !env.ASANA_CLIENT_SECRET) {
     throw new ProviderNotConfiguredError('asana');
@@ -72,11 +112,10 @@ interface AsanaTokenResponse {
 }
 
 async function tokenRequest(body: Record<string, string>): Promise<AsanaTokenResponse> {
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithRetry(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(body),
-    signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Asana token request failed: ${res.status} ${await res.text()}`);
@@ -127,14 +166,13 @@ export async function refreshAsanaToken(refreshToken: string): Promise<OAuthToke
 }
 
 async function asanaFetch(accessToken: string, path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetchWithRetry(`${API_BASE}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
       ...init?.headers,
     },
-    signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Asana API ${path} failed: ${res.status} ${await res.text()}`);
@@ -170,7 +208,7 @@ async function asanaFetchAllPages(
   let url: string | null = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}limit=100`;
   while (url) {
     const pageStart = Date.now();
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS) });
+    const res = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) {
       throw new Error(`Asana API ${url} failed: ${res.status} ${await res.text()}`);
     }
@@ -302,9 +340,8 @@ async function resolveBreadcrumbs(
 /// network/auth error, which should still throw rather than be silently
 /// read as "deleted" too.
 async function fetchTaskOrNull(accessToken: string, gid: string): Promise<AsanaTaskDto | null> {
-  const res = await fetch(`${API_BASE}/tasks/${gid}?opt_fields=${TASK_OPT_FIELDS}`, {
+  const res = await fetchWithRetry(`${API_BASE}/tasks/${gid}?opt_fields=${TASK_OPT_FIELDS}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS),
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Asana API /tasks/${gid} failed: ${res.status} ${await res.text()}`);
@@ -351,9 +388,8 @@ export interface TaskDetails {
   createdAt: string;
 }
 export async function getTaskDetails(accessToken: string, gid: string): Promise<TaskDetails | null> {
-  const res = await fetch(`${API_BASE}/tasks/${gid}?opt_fields=notes,followers.name,created_at`, {
+  const res = await fetchWithRetry(`${API_BASE}/tasks/${gid}?opt_fields=notes,followers.name,created_at`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(ASANA_FETCH_TIMEOUT_MS),
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Asana API /tasks/${gid} failed: ${res.status} ${await res.text()}`);
@@ -444,30 +480,64 @@ async function searchNearTermTasks(accessToken: string, workspaceGid: string, du
   }
 }
 
+/// Boot fires several concurrent requests that each need the caller's
+/// *entire* task list — the tasks stream itself, and workload's own hours/
+/// capacity computation (routes/workload.ts) — and each used to run its own
+/// independent full multi-page Asana pagination sweep (asanaFetchAllPages)
+/// to get it. Confirmed live as a real, load-bearing bug rather than a
+/// latency nuisance: doubling Asana's own per-account request volume at the
+/// exact moment of boot caused a genuine Asana-side timeout on one of the
+/// two concurrent sweeps (a 15s AbortSignal.timeout tripping on
+/// listWorkspaces, deep inside the *other* concurrent call), and Node's
+/// single thread parsing/reconciling two ~2000-task JSON payloads at once
+/// stalled unrelated in-flight work for multiple seconds (an otherwise
+/// inexplicable multi-second gap in a route that touches neither Asana nor
+/// the DB during that window). Keyed by access token so a refreshed token
+/// (a new key) naturally starts a fresh entry rather than serving something
+/// fetched under a token that's since rotated; cleared once the fetch
+/// settles either way, so the next independent call (the 15-minute
+/// periodic refresh, e.g.) always gets a fresh one.
+type TaskListResult = (RemoteTask & { projectGid: string | null })[];
+type OnBatch = (tasksSoFar: TaskListResult, totalSoFar: number) => void;
+type OnPhase = (label: string) => void;
+type OnPageMs = (ms: number) => void;
+
+interface InFlightFetch {
+  promise: Promise<TaskListResult>;
+  onBatchListeners: Set<OnBatch>;
+  onPhaseListeners: Set<OnPhase>;
+  onPageMsListeners: Set<OnPageMs>;
+}
+const inFlightTaskFetches = new Map<string, InFlightFetch>();
+
 /// Fetches every incomplete task assigned to the caller, across all of their
-/// workspaces. Asana's API requires querying one workspace at a time.
-/// `withBreadcrumbs` resolves subtasks' project via their parent chain (see
-/// resolveBreadcrumbs) — opt-in and off by default since it can mean extra
-/// Asana API calls, so latency-sensitive callers that don't display the
-/// project (slot-conflict checks, free-slot busy calculations) can skip it.
+/// workspaces, de-duplicating against another concurrent call for the same
+/// access token instead of running a second redundant sweep (see
+/// inFlightTaskFetches's own comment). `onBatch` fires after each page with
+/// everything fetched *so far* (cumulative, across workspaces) plus a
+/// running total — lets a caller like the boot-time stream hand the client
+/// a usable queue well before the whole fetch finishes. `onPhase` fires
+/// with a short human-readable label at each real transition (workspace
+/// lookup done, near-term search, full fetch, breadcrumb resolution).
 ///
-/// `onBatch` fires after each page with everything fetched *so far*
-/// (cumulative, across workspaces) plus a running total — lets a caller
-/// like the boot-time stream hand the client a usable (if not yet fully
-/// breadcrumb-resolved) queue well before the whole fetch finishes, rather
-/// than making them wait for the entire — possibly paginated many times
-/// over — result. `onPhase` fires with a short human-readable label at each
-/// real transition (workspace lookup done, near-term search, full fetch,
-/// breadcrumb resolution) — every label names something actually happening
-/// at that moment, not a decorative placeholder.
+/// A caller that joins a fetch already in flight (rather than starting it)
+/// still gets its own onBatch/onPhase/onPageMs firing live, from the moment
+/// it joins — every current caller for a token is registered as a listener
+/// on the one real fetch, not just whichever caller happened to start it.
+/// Confirmed live why this matters: without it, a boot's tasks-stream
+/// request that lost the race to become the "leader" (workload's own call
+/// getting there first, e.g.) saw literally none of its own progress
+/// events — the fetch was genuinely succeeding server-side the whole time,
+/// but the loading screen had no way to know and sat on its very first
+/// phase label for the entire ~17s duration, indistinguishable from
+/// actually being stuck.
 export async function listIncompleteAssignedTasks(
   accessToken: string,
   options?: {
-    withBreadcrumbs?: boolean;
-    onBatch?: (tasksSoFar: (RemoteTask & { projectGid: string | null })[], totalSoFar: number) => void;
-    onPhase?: (label: string) => void;
+    onBatch?: OnBatch;
+    onPhase?: OnPhase;
     /// Diagnostic-only — see asanaFetchAllPages' onPageMs.
-    onPageMs?: (ms: number) => void;
+    onPageMs?: OnPageMs;
     // The acting user's own configured Settings.timezone — not the server
     // process's ambient clock (see workload.ts's identical reasoning).
     // Defaults to UTC purely so the many existing tests below that don't
@@ -476,7 +546,57 @@ export async function listIncompleteAssignedTasks(
     // passes the acting user's actual zone explicitly.
     timezone?: string;
   },
-): Promise<(RemoteTask & { projectGid: string | null })[]> {
+): Promise<TaskListResult> {
+  const existing = inFlightTaskFetches.get(accessToken);
+  if (existing) {
+    if (options?.onBatch) existing.onBatchListeners.add(options.onBatch);
+    if (options?.onPhase) existing.onPhaseListeners.add(options.onPhase);
+    if (options?.onPageMs) existing.onPageMsListeners.add(options.onPageMs);
+    try {
+      return await existing.promise;
+    } finally {
+      // A joiner's listener is only ever meaningful for the one fetch it
+      // joined — removed once that settles rather than left registered,
+      // since the *next* fetch for this token (this same caller included)
+      // goes through this same function again and re-registers fresh.
+      if (options?.onBatch) existing.onBatchListeners.delete(options.onBatch);
+      if (options?.onPhase) existing.onPhaseListeners.delete(options.onPhase);
+      if (options?.onPageMs) existing.onPageMsListeners.delete(options.onPageMs);
+    }
+  }
+
+  const onBatchListeners = new Set<OnBatch>(options?.onBatch ? [options.onBatch] : []);
+  const onPhaseListeners = new Set<OnPhase>(options?.onPhase ? [options.onPhase] : []);
+  const onPageMsListeners = new Set<OnPageMs>(options?.onPageMs ? [options.onPageMs] : []);
+  const promise = fetchAllIncompleteTasks(accessToken, {
+    ...options,
+    onBatch: (tasksSoFar, totalSoFar) => {
+      for (const listener of onBatchListeners) listener(tasksSoFar, totalSoFar);
+    },
+    onPhase: (label) => {
+      for (const listener of onPhaseListeners) listener(label);
+    },
+    onPageMs: (ms) => {
+      for (const listener of onPageMsListeners) listener(ms);
+    },
+  });
+  inFlightTaskFetches.set(accessToken, { promise, onBatchListeners, onPhaseListeners, onPageMsListeners });
+  try {
+    return await promise;
+  } finally {
+    inFlightTaskFetches.delete(accessToken);
+  }
+}
+
+async function fetchAllIncompleteTasks(
+  accessToken: string,
+  options?: {
+    onBatch?: OnBatch;
+    onPhase?: OnPhase;
+    onPageMs?: OnPageMs;
+    timezone?: string;
+  },
+): Promise<TaskListResult> {
   const timezone = options?.timezone ?? 'UTC';
   const workspaces = await listWorkspaces(accessToken);
   // Keyed by gid rather than a plain array so the full-fetch pass below can
@@ -544,10 +664,14 @@ export async function listIncompleteAssignedTasks(
   // done) is a stale search hit — drop it.
   for (const gid of pendingSearchOnly) byGid.delete(gid);
   const reconciled = [...byGid.values()];
-  if (options?.withBreadcrumbs) {
-    options?.onPhase?.('Organizing your tasks…');
-    await resolveBreadcrumbs(accessToken, reconciled);
-  }
+  // Always resolved, not opt-in — since a call here can now be shared with
+  // a concurrent caller that *does* need it (see inFlightTaskFetches/
+  // listIncompleteAssignedTasks above), there's no single "this caller
+  // doesn't need breadcrumbs" to opt out on behalf of. In practice this
+  // costs nothing extra for the common case anyway: resolveBreadcrumbs
+  // itself skips straight past any task that already has a project.
+  options?.onPhase?.('Organizing your tasks…');
+  await resolveBreadcrumbs(accessToken, reconciled);
   return reconciled.map((e) => e.task);
 }
 

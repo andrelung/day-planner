@@ -1,11 +1,6 @@
-import { prisma, queryEventsSince } from './prisma.js';
+import { prisma } from './prisma.js';
 import { env } from './env.js';
-import { logAnomaly } from './anomalyLog.js';
-
-/// Anything past this is worth a closer look — a single indexed lookup by
-/// primary key should be single-digit milliseconds on any remotely
-/// healthy Postgres.
-const SLOW_READ_THRESHOLD_MS = 300;
+import { timedRead } from './dbTiming.js';
 
 /// Gets a user's Settings row, creating it with defaults on first access.
 /// The only non-schema default here is timezone: the Prisma-level default
@@ -23,23 +18,7 @@ const SLOW_READ_THRESHOLD_MS = 300;
 /// itself never actually changes on a returning user. A plain read has no
 /// lock to contend with.
 export async function getOrCreateSettings(userId: string) {
-  const readStart = Date.now();
-  const existing = await prisma.settings.findUnique({ where: { userId } });
-  const wallMs = Date.now() - readStart;
-  if (wallMs > SLOW_READ_THRESHOLD_MS) {
-    // engineMs is every query the Prisma engine itself reported executing
-    // during this exact window (including ones from other concurrent
-    // requests) — if those durations are themselves small, the time went
-    // to queueing for a pool connection before this query ever started,
-    // not to Postgres actually running it.
-    const engineMs = queryEventsSince(readStart);
-    logAnomaly({
-      area: 'getOrCreateSettings.slowRead',
-      message: `findUnique took ${wallMs}ms wall-clock for a single indexed lookup`,
-      userId,
-      context: { wallMs, engineMs },
-    });
-  }
+  const existing = await timedRead('getOrCreateSettings.read', userId, () => prisma.settings.findUnique({ where: { userId } }));
   if (existing) {
     // Backfill: a row created before TZ was configured (or before this
     // feature existed) is stuck on the Prisma-level "UTC" default forever
@@ -62,5 +41,30 @@ export async function getOrCreateSettings(userId: string) {
     const settledByRace = await prisma.settings.findUnique({ where: { userId } });
     if (settledByRace) return settledByRace;
     throw err;
+  }
+}
+
+/// Used by the boot-time task stream (see tasks.ts's /stream route) —
+/// the client already knows its own timezone by the time it opens that
+/// stream (read from /api/me earlier in the same boot sequence), so it's
+/// passed straight through instead of this route re-reading Settings for
+/// the exact same value a second time. That redundant read sat directly
+/// in the boot critical path and was a confirmed contributor to boot
+/// slowness — this removes it from that path entirely rather than trying
+/// to make it faster. Falls back to a real lookup if the param is
+/// missing or isn't a real IANA zone, so any other caller of that route
+/// still gets a correct answer.
+export async function resolveTimezone(userId: string, queryParam: unknown): Promise<string> {
+  if (typeof queryParam === 'string' && isValidTimeZone(queryParam)) return queryParam;
+  const settings = await getOrCreateSettings(userId);
+  return settings.timezone;
+}
+
+function isValidTimeZone(tz: string): boolean {
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
   }
 }
