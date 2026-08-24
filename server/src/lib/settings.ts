@@ -1,5 +1,11 @@
-import { prisma } from './prisma.js';
+import { prisma, queryEventsSince } from './prisma.js';
 import { env } from './env.js';
+import { logAnomaly } from './anomalyLog.js';
+
+/// Anything past this is worth a closer look — a single indexed lookup by
+/// primary key should be single-digit milliseconds on any remotely
+/// healthy Postgres.
+const SLOW_READ_THRESHOLD_MS = 300;
 
 /// Gets a user's Settings row, creating it with defaults on first access.
 /// The only non-schema default here is timezone: the Prisma-level default
@@ -17,7 +23,23 @@ import { env } from './env.js';
 /// itself never actually changes on a returning user. A plain read has no
 /// lock to contend with.
 export async function getOrCreateSettings(userId: string) {
+  const readStart = Date.now();
   const existing = await prisma.settings.findUnique({ where: { userId } });
+  const wallMs = Date.now() - readStart;
+  if (wallMs > SLOW_READ_THRESHOLD_MS) {
+    // engineMs is every query the Prisma engine itself reported executing
+    // during this exact window (including ones from other concurrent
+    // requests) — if those durations are themselves small, the time went
+    // to queueing for a pool connection before this query ever started,
+    // not to Postgres actually running it.
+    const engineMs = queryEventsSince(readStart);
+    logAnomaly({
+      area: 'getOrCreateSettings.slowRead',
+      message: `findUnique took ${wallMs}ms wall-clock for a single indexed lookup`,
+      userId,
+      context: { wallMs, engineMs },
+    });
+  }
   if (existing) {
     // Backfill: a row created before TZ was configured (or before this
     // feature existed) is stuck on the Prisma-level "UTC" default forever

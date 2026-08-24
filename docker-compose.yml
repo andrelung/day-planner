@@ -51,7 +51,17 @@ services:
       # where the user can actually open it in Excel. See CHANGE_LOG_PATH.
       - .:/host-root
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-dayplanner}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dayplanner}?schema=public
+      # connection_limit is explicit rather than left to Prisma's own
+      # default (num_cpus*2+1) — on a small production host that can
+      # resolve to as few as 3-5, which a bursty request like boot
+      # (workload/events/the tasks stream all fire concurrently, each
+      # running a couple of quick queries) can genuinely queue behind.
+      # Confirmed live: getOrCreateSettings went bimodal — near-instant
+      # most of the time, several *seconds* other times, with nothing in
+      # between — the signature of queuing for a pool slot rather than
+      # gradual contention. Postgres' own default ceiling is 100, so 20
+      # here costs nothing.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dayplanner}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dayplanner}?schema=public&connection_limit=20
       TOKEN_ENCRYPTION_KEY: '${TOKEN_ENCRYPTION_KEY:?set TOKEN_ENCRYPTION_KEY in .env, e.g. openssl rand -base64 32}'
       SESSION_JWT_SECRET: '${SESSION_JWT_SECRET:?set SESSION_JWT_SECRET in .env, e.g. openssl rand -base64 32}'
       PORT: ${PORT:-3000}
