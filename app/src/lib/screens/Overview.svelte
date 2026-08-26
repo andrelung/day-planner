@@ -131,6 +131,9 @@
                 {/each}
               </div>
             {/if}
+            {#if mode === 'add'}
+              <button class="search-panel__bare-task" onclick={() => planner.addEventAsBareTask(e.id)}>Create "{e.title}" without a project</button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -335,6 +338,25 @@
     max-height: 160px;
     overflow-y: auto;
     margin-top: 8px;
+  }
+  /* The edge-case "create without a project" option — deliberately quieter
+     than the search results above it, so it reads as the fallback it is. */
+  .search-panel__bare-task {
+    display: block;
+    width: 100%;
+    text-align: center;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--color-border);
+    background: none;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    cursor: pointer;
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-muted);
   }
   .search-loading {
     display: flex;

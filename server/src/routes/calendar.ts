@@ -6,7 +6,7 @@ import { getValidAccessToken } from '../lib/tokens.js';
 import { computeFreeSlots } from '../lib/freeSlots.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { listEvents } from '../providers/outlook.js';
-import { createSubtask, createTaskInProject } from '../providers/asana.js';
+import { createBareTask, createSubtask, createTaskInProject } from '../providers/asana.js';
 import { recordMatch } from '../lib/matchLog.js';
 import { addDaysToDateStr, dateStrInTz, hmInTz, weekdayNameOfDateStr, zonedMidnightUtc } from '../lib/tz.js';
 
@@ -346,7 +346,10 @@ calendarRouter.post('/events/:eventId/unignore-title', async (req, res) => {
 
 const addTaskSchema = z.object({
   title: z.string().min(1),
-  target: z.union([z.object({ projectGid: z.string().min(1) }), z.object({ parentGid: z.string().min(1) })]),
+  // `bare` is the edge-case third option (see createBareTask) — a task
+  // filed nowhere at all, for a quick note from a meeting that doesn't
+  // obviously belong under a project or existing task yet.
+  target: z.union([z.object({ projectGid: z.string().min(1) }), z.object({ parentGid: z.string().min(1) }), z.object({ bare: z.literal(true) })]),
   // The calendar entry's own end time/duration — always sent by the
   // client for this flow (see store.svelte.ts's eventDurationHours), so a
   // task/subtask created from a meeting starts out already due and
@@ -368,7 +371,9 @@ calendarRouter.post('/events/:eventId/add-task', async (req, res) => {
   const created =
     'projectGid' in target
       ? await createTaskInProject(accessToken, target.projectGid, title, settings.timezone, { dueAt, hours })
-      : await createSubtask(accessToken, target.parentGid, title, settings.timezone, { dueAt, hours });
+      : 'parentGid' in target
+        ? await createSubtask(accessToken, target.parentGid, title, settings.timezone, { dueAt, hours })
+        : await createBareTask(accessToken, title, settings.timezone, req.userId!, { dueAt, hours });
 
   await prisma.calendarEventLink.upsert({
     where: { userId_externalEventId: { userId: req.userId!, externalEventId: req.params.eventId } },

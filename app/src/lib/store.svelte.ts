@@ -3039,6 +3039,35 @@ class PlannerStore {
       this.reportError(err, 'Could not add the task in Asana');
     }
   }
+  /// The edge-case third option below the project/subtask search (see
+  /// addEventAsTaskWithProject/addEventAsSubtask above) — a task filed
+  /// nowhere at all, for a quick note from a meeting that doesn't obviously
+  /// belong under a project or existing task yet.
+  async addEventAsBareTask(eventId: string) {
+    const info = this.eventInfo(eventId);
+    if (!info) return;
+    const { title } = info;
+    try {
+      const created = await api.post<{ gid: string; name: string; permalinkUrl: string }>(`/api/calendar/events/${encodeURIComponent(eventId)}/add-task`, {
+        title,
+        target: { bare: true },
+        dueAt: info.end,
+        hours: this.eventDurationHours(info.start, info.end),
+      });
+      this.showToast(`Added "${title}" · synced to Asana`);
+      this.closeSearchPanel();
+      this.patchCalendarViewEvent(eventId, {
+        linked: true,
+        linkedName: created.name,
+        linkedTaskGid: created.gid,
+        linkedTaskPermalinkUrl: created.permalinkUrl,
+        ignored: false,
+      });
+      await Promise.all([this.refreshEvents(), this.refreshTasks()]);
+    } catch (err) {
+      this.reportError(err, 'Could not add the task in Asana');
+    }
+  }
   /// Takes the parent task's name directly rather than looking it up in
   /// `this.tasks` — that list is only ever "incomplete, assigned to me,
   /// has a due date" (see buildTasksPayload server-side), but typeahead

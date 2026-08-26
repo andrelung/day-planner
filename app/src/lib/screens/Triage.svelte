@@ -94,16 +94,19 @@
     return items;
   });
 
-  /// Keeps the current row in view as focus moves (swiping, planning,
-  /// tapping a row) — with the full queue now rendered (see restTasks),
-  /// nothing else would otherwise keep the list scrolled to "where you
-  /// are" the way the old sliced-to-only-what's-ahead list did implicitly.
-  /// Only fires on the row whose isCurrent value actually changes to true
-  /// (Svelte re-invokes `update` for every row on each focusIndex change,
-  /// but the other rows' own value stays false and no-ops here).
+  /// Keeps the current row pinned to the *top* of the list as focus moves
+  /// (swiping, planning, tapping a row) — with the full queue now rendered
+  /// (see restTasks), nothing else would otherwise keep the list scrolled
+  /// to "where you are" the way the old sliced-to-only-what's-ahead list
+  /// did implicitly. 'start' rather than 'nearest': the whole point is
+  /// always seeing what's up next below it at a glance, not just confirming
+  /// the current row is somewhere on screen. Only fires on the row whose
+  /// isCurrent value actually changes to true (Svelte re-invokes `update`
+  /// for every row on each focusIndex change, but the other rows' own value
+  /// stays false and no-ops here).
   function scrollIntoViewWhenCurrent(node: HTMLElement, isCurrent: boolean) {
     function apply(current: boolean) {
-      if (current) node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      if (current) node.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
     apply(isCurrent);
     return { update: apply };
@@ -393,6 +396,11 @@
                   </button>
                 {/each}
               </div>
+            {/if}
+            {#if eventPanelMode === 'add'}
+              <button class="search-panel__bare-task" onclick={() => planner.addEventAsBareTask(currentEvent.id)}>
+                Create "{currentEvent.title}" without a project
+              </button>
             {/if}
           </div>
         {:else}
@@ -1019,6 +1027,27 @@
     max-height: 160px;
     overflow-y: auto;
     margin-top: 8px;
+  }
+  /* The edge-case "create without a project" option — deliberately quieter
+     than the search results above it (no background, muted text), so it
+     reads as the fallback it is rather than competing with an actual
+     project/subtask pick. */
+  .search-panel__bare-task {
+    display: block;
+    width: 100%;
+    text-align: center;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--color-border);
+    background: none;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    cursor: pointer;
+    font-family: var(--font-family-base);
+    font-size: 13px;
+    font-weight: var(--font-weight-bold);
+    color: var(--color-text-muted);
   }
   .search-loading {
     display: flex;

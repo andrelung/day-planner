@@ -812,6 +812,37 @@ export async function createSubtask(
   return created;
 }
 
+/// A task filed nowhere — no project, no parent — landing straight in the
+/// assignee's own My Tasks, same as createBugReportTask already does.
+/// Deliberately the edge-case option alongside createTaskInProject/
+/// createSubtask: routes/calendar.ts's add-task offers it as a third,
+/// lesser choice below the project/subtask search, for a quick note from a
+/// meeting that doesn't obviously belong anywhere yet. Needs a workspace to
+/// create *into* even so — Asana has no bare, workspace-less task — so
+/// this picks the first one the same way createBugReportTask does, on the
+/// assumption (true for every account this app has actually seen) that
+/// there's only one that matters.
+export async function createBareTask(
+  accessToken: string,
+  name: string,
+  timezone: string,
+  userId: string,
+  options?: { dueAt?: string; hours?: number },
+): Promise<AsanaTaskDto> {
+  const workspaces = await listWorkspaces(accessToken, { userId });
+  const workspace = workspaces[0];
+  if (!workspace) throw new Error('No Asana workspace found to create the task in');
+  const finalName = options?.hours !== undefined ? titleWithDuration(name, options.hours) : name;
+  const data: Record<string, unknown> = { name: finalName, workspace: workspace.gid, assignee: 'me' };
+  if (options?.dueAt) data.due_at = options.dueAt;
+  const created = await asanaFetch(accessToken, '/tasks?opt_fields=name,permalink_url', {
+    method: 'POST',
+    body: JSON.stringify({ data }),
+  });
+  recordChange({ action: 'Create task', taskLink: created.permalink_url, nameAfter: created.name, timezone });
+  return created;
+}
+
 /// Re-files an *existing* task into a different project — additive, same
 /// as Asana's own "Add to project": a task can belong to several projects
 /// at once, so this doesn't touch whatever it was already in. See
