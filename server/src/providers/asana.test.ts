@@ -779,6 +779,63 @@ void test('listWorkspaces reads a fresh persisted copy instead of calling Asana 
   }
 });
 
+/// A large account's breadcrumb pass used to be a bare Promise.all over
+/// every subtask, launching the whole fan-out at once. Node's fetch pool
+/// then queues nearly all of it while each queued request's
+/// AbortSignal.timeout is already counting down, so the queue times out
+/// from the back and every timeout gets retried into the same queue — a
+/// storm that on a slow Asana day never drains, which is what "boot never
+/// finishes" looked like. This asserts the window stays bounded.
+void test('resolveBreadcrumbs keeps its ancestor lookups to a bounded number in flight', async () => {
+  const SUBTASKS = 60;
+  const originalFetch = global.fetch;
+  let inFlight = 0;
+  let peakInFlight = 0;
+
+  // Every subtask has a distinct parent, so none of them can be served by
+  // the shared ancestor cache — each genuinely needs its own lookup.
+  const subtasks = Array.from({ length: SUBTASKS }, (_, i) => ({
+    gid: `sub${i}`,
+    name: `Subtask ${i}`,
+    due_on: '2026-08-26',
+    due_at: null,
+    permalink_url: `https://x/sub${i}`,
+    completed: false,
+    projects: [],
+    parent: { gid: `parent${i}`, name: `Parent ${i}`, projects: [] },
+  }));
+
+  global.fetch = (async (url: string) => {
+    const u = String(url);
+    if (u.includes('/users/me')) return jsonResponse({ data: { workspaces: [{ gid: 'ws1', name: 'Workspace 1' }] } });
+    if (u.includes('/workspaces/') && u.includes('/tasks/search')) return jsonResponse({ data: [] });
+    if (u.includes('/tasks?assignee=me')) return jsonResponse({ data: subtasks, next_page: null });
+
+    // An ancestor lookup: hold the connection briefly so overlapping calls
+    // are actually observable, and record the high-water mark.
+    inFlight++;
+    peakInFlight = Math.max(peakInFlight, inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+    const gid = u.split('/tasks/')[1].split('?')[0];
+    return jsonResponse({ data: { gid, name: `Parent ${gid}`, projects: [{ gid: 'p1', name: 'Some Project' }], parent: null } });
+  }) as typeof fetch;
+
+  try {
+    const tasks = await listIncompleteAssignedTasks('fake-token-breadcrumb-concurrency');
+    assert.equal(tasks.length, SUBTASKS);
+    // Every breadcrumb still resolved — bounding the window must not cost
+    // correctness, only peak concurrency.
+    for (const t of tasks) {
+      assert.equal(t.project, `Some Project › Parent ${t.gid.replace('sub', '')}`);
+    }
+    assert.ok(peakInFlight > 1, `expected some parallelism, saw ${peakInFlight}`);
+    assert.ok(peakInFlight <= 6, `expected at most 6 ancestor lookups in flight, saw ${peakInFlight}`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }

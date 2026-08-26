@@ -243,7 +243,15 @@ tasksRouter.get('/stream', async (req, res) => {
         res.write(`event: progress\ndata: ${JSON.stringify({ count: totalSoFar, ...buildTasksPayload(tasksSoFar) })}\n\n`);
       },
       onPhase: (label) => {
-        markStage(label);
+        // The breadcrumb phase re-emits its label with a running count
+        // appended ("Organizing your tasks… 125/300") to keep the client's
+        // status line and stall watchdog alive through a long quiet
+        // stretch. Those are all one stage for timing purposes — bucketing
+        // each count separately would fill `stages` with dozens of
+        // millisecond-sized entries and lose the total that actually
+        // matters, so the counter is stripped before marking.
+        const stage = label.replace(/ \d+\/\d+$/, '');
+        if (stage !== stageLabel) markStage(stage);
         res.write(`event: phase\ndata: ${JSON.stringify({ label })}\n\n`);
       },
       onPageMs: (ms) => pageMs.push(ms),
@@ -347,16 +355,27 @@ tasksRouter.patch('/:gid', async (req, res) => {
   res.status(204).end();
 });
 
-const resetDaySchema = z.object({ taskGids: z.array(z.string().min(1)).min(1) });
+const resetDaySchema = z.object({
+  // Each entry carries the due *date* to keep, not just a gid — see the
+  // route below for why this stopped being a plain clear.
+  tasks: z.array(z.object({ gid: z.string().min(1), dueOn: z.string().min(1) })).min(1),
+});
 
 /// Clears due_at (and due_on, per setTaskDueAt's existing "remove due date"
 /// behavior) for a caller-supplied set of tasks — used by Settings' "Reset
-/// today's plan". The frontend already knows exactly which of its loaded
-/// tasks are due today (same data queueLabel's own count is built from), so
-/// it sends those gids directly rather than the server re-deriving "today's
-/// tasks" via another full Asana fetch. Each clear is queued individually
-/// (see pendingActionQueue.ts) rather than awaited, so resetting a large
-/// day doesn't block on N sequential/parallel Asana writes.
+/// today's plan (keep due dates, reset slots)". The frontend already knows
+/// exactly which of its loaded tasks are due today (same data queueLabel's
+/// own count is built from), so it sends those directly rather than the
+/// server re-deriving "today's tasks" via another full Asana fetch. Each
+/// write is queued individually (see pendingActionQueue.ts) rather than
+/// awaited, so resetting a large day doesn't block on N sequential/parallel
+/// Asana writes.
+///
+/// A `dateOnly` write per task, not a `clear`: clear wipes due_on along
+/// with due_at, which took every task out of the day entirely and into
+/// "Tasks without Due Date" rather than back into today's queue as
+/// unplanned. Each task's due date is preserved by echoing back the dueOn
+/// the client already holds for it.
 tasksRouter.post('/reset-day', async (req, res) => {
   const parsed = resetDaySchema.safeParse(req.body);
   if (!parsed.success) {
@@ -365,11 +384,16 @@ tasksRouter.post('/reset-day', async (req, res) => {
   }
   const settings = await getOrCreateSettings(req.userId!);
   await Promise.all(
-    parsed.data.taskGids.map((gid) =>
-      enqueueAction(req.userId!, "Clear a task's due time", { kind: 'setTaskDueAt', taskGid: gid, due: { kind: 'clear' }, timezone: settings.timezone }),
+    parsed.data.tasks.map(({ gid, dueOn }) =>
+      enqueueAction(req.userId!, "Clear a task's due time", {
+        kind: 'setTaskDueAt',
+        taskGid: gid,
+        due: { kind: 'dateOnly', dueOn },
+        timezone: settings.timezone,
+      }),
     ),
   );
-  res.json({ queued: parsed.data.taskGids.length });
+  res.json({ queued: parsed.data.tasks.length });
 });
 
 const createSchema = z.union([

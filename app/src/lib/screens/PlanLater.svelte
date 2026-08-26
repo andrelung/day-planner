@@ -40,7 +40,7 @@
 
   <div class="footer">
     <Button variant="secondary" size="md" invertedBorder onclick={() => planner.closeFlow()}>back</Button>
-    <Button variant="secondary" size="md" invertedBorder onclick={() => planner.removeDueDate()}>Remove due date</Button>
+    <Button variant="secondary" size="md" invertedBorder onclick={() => planner.removeDueDateFromPlanFlow()}>Remove due date</Button>
   </div>
 </div>
 

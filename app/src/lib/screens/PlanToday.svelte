@@ -24,10 +24,10 @@
         <div class="slots-loading__spinner"></div>
         <p>Loading free slots…</p>
       </div>
-    {:else if todayDate && planner.focusTaskRaw}
+    {:else if todayDate && planner.planFlowTask}
       <DayCalendar
         date={todayDate}
-        excludeTaskId={planner.focusTaskRaw.id}
+        excludeTaskId={planner.planFlowTask.id}
         outlookEvents={planner.todayOutlookEvents}
         suggestedStartTime={planner.earliestTodaySlotStart}
         onPickTime={(hhmm) => planner.tryPlanTodaySlot(hhmm)}

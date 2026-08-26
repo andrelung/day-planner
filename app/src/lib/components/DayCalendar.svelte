@@ -272,7 +272,7 @@
   let pendingMin: number | null = $state(
     untrack(() => (suggestedStartTime ? clampMin(snap(toMinutes(suggestedStartTime))) : null)),
   );
-  const focusHours = $derived(planner.focusTaskRaw?.hours ?? 1);
+  const focusHours = $derived(planner.planFlowTask?.hours ?? 1);
   /// The task's own duration, in px — can be shorter than PENDING_MIN_HEIGHT
   /// (the box's actual rendered height, below), which exists purely so a
   /// short task's Confirm/Remove row has room. Tracked separately so the
@@ -330,6 +330,17 @@
   let expandedBlockId: string | null = $state(null);
 
   function beginDrag(e: PointerEvent, target: DragTarget, origTop: number, height: number) {
+    // A button inside a draggable block is never a drag handle. Without
+    // this, setPointerCapture below redirects every later pointer event —
+    // and, with a mouse, the synthesized `click` along with them — to the
+    // capturing block instead of the button that was actually pressed, so
+    // the button's own onclick never runs at all. That's why the pending
+    // block's Confirm/Remove did nothing on desktop Chrome: the click
+    // landed on .pending-block, whose handler only stops propagation.
+    // (Touch didn't show it, which is why it survived on-device testing.)
+    // The task blocks' own icon buttons each stop pointerdown themselves;
+    // this guard covers every button in here, including future ones.
+    if ((e.target as HTMLElement).closest('button')) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragTarget = target;
     dragStartY = e.clientY;
@@ -490,7 +501,7 @@
           <div class="pending-block__pad" style="top:{pendingRealHeight}px;"></div>
         {/if}
         <div class="pending-block__text">
-          <div class="pending-block__name">{planner.focusTaskRaw?.name ?? ''}</div>
+          <div class="pending-block__name">{planner.planFlowTask?.name ?? ''}</div>
           <div class="pending-block__time">{pendingHHMM}–{pendingEndHHMM}</div>
         </div>
         <div class="pending-block__actions">

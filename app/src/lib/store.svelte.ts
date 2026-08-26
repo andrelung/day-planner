@@ -21,6 +21,7 @@ import { fmtHours, slotStartTime } from './format';
 import { BUILD_ID } from './version';
 import { stringSimilarity } from 'string-similarity-js';
 import { addDaysToDateStr, dateStrInTz, hhmmInTz, monthDayOfDateStr, weekdayNameOfDateStr, weekdayOfDateStr, zonedMidnightUtc } from './tz';
+import { sortedQueueOrder } from './taskOrder';
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let toastRetryInterval: ReturnType<typeof setInterval> | undefined;
@@ -434,7 +435,11 @@ class PlannerStore {
   /// Every task whose due date has already passed — the same definition
   /// navigableDates uses, exposed directly for Overview's "Past days" row
   /// (see focusPastDays).
-  get overdueTasks(): Task[] {
+  /// Return type keeps the non-null `dueOn` the filter below establishes —
+  /// declaring it as a plain Task[] threw that narrowing away, leaving
+  /// every caller (navigableDates, focusPastDays) to either re-assert it
+  /// with a `!` or fail to compile.
+  get overdueTasks(): (Task & { dueOn: string })[] {
     const todayStr = this.todayDateStr;
     return this.tasks.filter((t): t is Task & { dueOn: string } => !!t.dueOn && t.dueOn < todayStr);
   }
@@ -506,7 +511,7 @@ class PlannerStore {
     return this.workloadDays.find((d) => d.key === this.laterDayKey)?.label ?? '';
   }
   get planTargetLabel() {
-    const t = this.focusTaskRaw;
+    const t = this.planFlowTask;
     return t ? `${t.name} · needs ${fmtHours(t.hours)}` : '';
   }
 
@@ -613,6 +618,66 @@ class PlannerStore {
     window.dispatchEvent(new Event('day-planner:force-repaint'));
   }
 
+  // --- render-error recovery ---
+  /// Svelte treats an error thrown while *rendering* as fatal to that part
+  /// of the tree: the update batch it was in is discarded, so the DOM stays
+  /// frozen on whatever it last showed while the store happily keeps
+  /// changing underneath. The result is a screen that looks alive, whose
+  /// buttons still run their handlers (against state that has already moved
+  /// on), and that never updates again until the app is force-reloaded —
+  /// exactly the "stuck screen" reports this release is about, and why
+  /// their signature was always a *stale* screen plus working buttons
+  /// rather than an unresponsive one.
+  ///
+  /// The concrete trigger found was a duplicate key in Triage's "Up next"
+  /// (each_key_duplicate — see sortedQueueOrder), now fixed at the source
+  /// and again at the key. This is the layer behind both: a
+  /// <svelte:boundary> in App.svelte routes any future render error here
+  /// instead of letting it wedge the app, so the worst case becomes a
+  /// blink and a server-side log entry naming the actual error.
+  renderErrorMessage: string | null = $state(null);
+  private lastRenderErrorAt = 0;
+  /// Returns whether to attempt a silent automatic recovery. A single
+  /// isolated failure is worth recovering from without bothering anyone;
+  /// a second one right behind it means recovery isn't working, and
+  /// retrying in a loop would be worse than showing the user a real
+  /// "reload" button.
+  noteRenderError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    this.renderErrorMessage = message;
+    this.logAnomaly('render.boundary', 'A screen threw while rendering', {
+      message,
+      screen: this.screen,
+      stack: error instanceof Error ? error.stack?.slice(0, 2000) : undefined,
+    });
+    const now = Date.now();
+    const isolated = now - this.lastRenderErrorAt > 30_000;
+    this.lastRenderErrorAt = now;
+    return isolated;
+  }
+  /// Puts the store back into a shape a fresh render can plausibly succeed
+  /// from before the boundary re-renders: re-establish the queue ordering
+  /// every keyed list depends on, drop any half-finished flow, and land on
+  /// Triage. Deliberately does *not* clear justPlannedIds — that's a
+  /// visible, meaningful part of the session, and now that the ordering is
+  /// repaired here it's no longer the hazard it was.
+  recoverFromRenderError() {
+    this.planFlowTaskId = null;
+    this.pendingPlan = null;
+    this.pendingSlotPlan = null;
+    this.returnFromPlanLater = null;
+    this.activePanelEventId = null;
+    this.activePanelMode = null;
+    this.activeEventPopupId = null;
+    this.pinnedEventId = null;
+    this.tasks = sortedQueueOrder(this.tasks);
+    this.tasksWithoutDueDate = sortedQueueOrder(this.tasksWithoutDueDate);
+    this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+    // A boot that hasn't finished, or an unauthenticated session, has no
+    // Triage to fall back to — those screens stay where they are.
+    if (this.screen !== 'loading' && this.screen !== 'login' && this.screen !== 'loginSecondary') this.screen = 'triage';
+  }
+
   // --- boot ---
   // Surfaced on the loading screen (see App.svelte) so the wait between
   // "app opened" and "first task visible" always shows *something*
@@ -688,8 +753,63 @@ class PlannerStore {
     window.location.href = url.toString();
   }
 
+  /// Settings' "Clear app caches & reload" — the last-resort "turn it off
+  /// and on again" for a device whose stored state has gone bad, short of
+  /// deleting and reinstalling the home-screen app (which on iOS is
+  /// otherwise the only way to clear a standalone PWA's storage at all —
+  /// there's no address bar and no site-settings UI to reach).
+  ///
+  /// Deliberately safe to press: everything that matters lives in Asana or
+  /// on the server behind a session cookie, and cookies are *not* touched
+  /// here — this must not log anyone out. What it drops is local-only:
+  /// preferences (collapsed "Up next", dismissed day-full warnings, the
+  /// backlog explainer), the boot-progress baselines, the HTTP/asset
+  /// caches, and the service worker registration — so the next load
+  /// fetches a genuinely fresh build rather than whatever a wedged cache
+  /// was serving.
+  ///
+  /// Every step is individually guarded: an older browser without
+  /// caches/serviceWorker, or a privacy mode that throws on storage
+  /// access, must not stop the rest of the cleanup or the reload.
+  async clearAppCaches() {
+    const failures: string[] = [];
+    const attempt = async (label: string, fn: () => void | Promise<unknown>) => {
+      try {
+        await fn();
+      } catch {
+        failures.push(label);
+      }
+    };
+    await attempt('local storage', () => localStorage.clear());
+    await attempt('session storage', () => sessionStorage.clear());
+    await attempt('asset caches', async () => {
+      if (!('caches' in window)) return;
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    });
+    await attempt('service worker', async () => {
+      if (!('serviceWorker' in navigator)) return;
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    });
+    if (failures.length > 0) {
+      // Reload anyway — a partial clear is still very likely to help, and
+      // the whole point of this button is to be the thing that always does
+      // *something*. Say what didn't work rather than claiming success.
+      this.showToast(`Couldn't clear: ${failures.join(', ')} · reloading anyway`);
+      setTimeout(() => this.reloadForUpdate(), 1200);
+      return;
+    }
+    this.reloadForUpdate();
+  }
+
   async boot() {
     this.bootStatus = 'Starting app…';
+    // Measured across the whole boot, not just the task stream — /api/me,
+    // the token refresh and the workload/calendar fetches all happen in
+    // here too, and any of them can be the slow one. See recordBootDuration.
+    this.bootStartedAt = Date.now();
+    this.slowBootReported = false;
     this.scheduleUpdateCheck();
     const params = new URLSearchParams(window.location.search);
     const onboarding = params.get('onboarding') === 'secondary';
@@ -812,11 +932,91 @@ class PlannerStore {
   loadingTasksCount = $state(0);
   loadingTasksEstimate: number | null = $state(null);
 
+  // --- "this is slower than usual" ---
+  /// Asana's own API has slow spells (confirmed by the official Asana app
+  /// being sluggish at the same time), and from inside the loading screen
+  /// a slow morning is indistinguishable from a hung boot — the spinner
+  /// looks identical either way. A flat "taking a while" timer can't tell
+  /// them apart either: 25 seconds is alarming on an account that normally
+  /// boots in four, and unremarkable on one that normally takes twenty.
+  ///
+  /// So the threshold is this device's own history: the last few
+  /// *successful* boot durations, compared against the one in progress.
+  /// Median rather than mean, so a single pathological boot (exactly the
+  /// kind this exists to flag) doesn't quietly raise the bar for every
+  /// boot after it.
+  private static readonly BOOT_SAMPLES = 5;
+  private bootStartedAt: number | null = null;
+  private bootDurationsMs: number[] = this.readBootDurations();
+  private readBootDurations(): number[] {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('bootDurationsMs') || '[]');
+      return Array.isArray(parsed) ? parsed.filter((n) => typeof n === 'number' && n > 0) : [];
+    } catch {
+      return [];
+    }
+  }
+  private recordBootDuration() {
+    if (this.bootStartedAt === null) return;
+    const elapsed = Date.now() - this.bootStartedAt;
+    this.bootStartedAt = null;
+    this.bootDurationsMs = [...this.bootDurationsMs, elapsed].slice(-PlannerStore.BOOT_SAMPLES);
+    try {
+      localStorage.setItem('bootDurationsMs', JSON.stringify(this.bootDurationsMs));
+    } catch {
+      // storage full or blocked — the warning just falls back to its
+      // no-baseline default next time, which is not worth failing a boot over
+    }
+  }
+  /// Null until there are at least two samples to call "usual" — one boot
+  /// is an anecdote, and warning against it would fire on the second-ever
+  /// launch of the app.
+  get typicalBootSeconds(): number | null {
+    if (this.bootDurationsMs.length < 2) return null;
+    const sorted = [...this.bootDurationsMs].sort((a, b) => a - b);
+    return Math.max(1, Math.round(sorted[Math.floor(sorted.length / 2)] / 1000));
+  }
+  /// Twice the usual, or eight seconds over it, whichever is later — then
+  /// clamped so it can neither nag on a fast baseline (a 2s boot must not
+  /// warn at 4s) nor stay silent forever on a slow one. With no baseline
+  /// at all it falls back to a flat 20s, comfortably past the 10s at which
+  /// the reload button already appears.
+  get slowBootThresholdSeconds(): number {
+    const typical = this.typicalBootSeconds;
+    if (typical === null) return 20;
+    return Math.min(60, Math.max(12, typical * 2, typical + 8));
+  }
+  /// Fired once per boot, the moment it crosses the threshold — so a slow
+  /// morning leaves a trace in the same log the other boot diagnostics
+  /// land in, instead of only existing as something the user noticed.
+  private slowBootReported = false;
+  reportSlowBoot(elapsedSec: number) {
+    if (this.slowBootReported) return;
+    this.slowBootReported = true;
+    this.logAnomaly('boot.slowerThanUsual', 'Boot passed this device’s slow-boot threshold', {
+      elapsedSec,
+      thresholdSec: this.slowBootThresholdSeconds,
+      typicalSec: this.typicalBootSeconds,
+      bootStatus: this.bootStatus,
+      tasksLoaded: this.loadingTasksCount,
+      workloadLoading: this.workloadLoading,
+      eventsLoading: this.eventsLoading,
+    });
+  }
+
+  /// The estimate is only ever a hint from the previous boot, so this has
+  /// to behave sanely when the real count blows past it — a "1934 / ~294
+  /// tasks · 100%" was reported live, from an estimate that had been
+  /// measured against a different quantity entirely (see bootRefreshTasks).
+  /// A percentage that has visibly stopped meaning anything is worse than
+  /// no percentage: once the count exceeds the estimate, this drops the
+  /// ratio and just reports the honest running count.
   get loadingProgressLabel(): string | null {
     if (this.loadingTasksCount <= 0) return null;
-    if (this.loadingTasksEstimate && this.loadingTasksEstimate > 0) {
-      const pct = Math.min(100, Math.round((this.loadingTasksCount / this.loadingTasksEstimate) * 100));
-      return `${this.loadingTasksCount} / ~${this.loadingTasksEstimate} tasks · ${pct}%`;
+    const estimate = this.loadingTasksEstimate;
+    if (estimate && estimate > 0 && this.loadingTasksCount <= estimate) {
+      const pct = Math.round((this.loadingTasksCount / estimate) * 100);
+      return `${this.loadingTasksCount} / ~${estimate} tasks · ${pct}%`;
     }
     return `${this.loadingTasksCount} tasks loaded`;
   }
@@ -842,11 +1042,20 @@ class PlannerStore {
     }
     this.bootStatus = 'Connecting to Asana…';
     this.loadingTasksCount = 0;
-    const cached = localStorage.getItem('lastTaskCount');
-    this.loadingTasksEstimate = cached ? parseInt(cached, 10) : null;
+    // Both sides of this ratio have to count the same thing. They didn't:
+    // the stream's running count is every incomplete task assigned to you
+    // (the server's own byGid.size, no due-date filter), while what got
+    // stored here afterwards was this.tasks.length — the *queue*, i.e. only
+    // the due-dated subset. On a real backlog that's off by an order of
+    // magnitude, which is where the reported "1934 / ~294 tasks · 100%"
+    // came from. Persisting loadingTasksCount keeps the estimate measured
+    // against the same quantity it's compared to.
+    const cached = Number(localStorage.getItem('lastTaskCount'));
+    this.loadingTasksEstimate = Number.isFinite(cached) && cached > 0 ? cached : null;
     try {
       await this.streamTasks();
-      localStorage.setItem('lastTaskCount', String(this.tasks.length));
+      if (this.loadingTasksCount > 0) localStorage.setItem('lastTaskCount', String(this.loadingTasksCount));
+      this.recordBootDuration();
     } catch (err) {
       this.logTaskLoadFailure('boot', err);
       this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.bootRefreshTasks());
@@ -1045,8 +1254,12 @@ class PlannerStore {
       const res = await api.post<{ tasks: Record<string, Task | null> }>('/api/tasks/refresh-by-gid', { gids });
       const focusId = this.focusTaskRaw?.id ?? null;
       const apply = (list: Task[]) => list.map((t) => (gids.includes(t.id) ? (res.tasks[t.id] ?? null) : t)).filter((t): t is Task => t !== null);
+      // Replaced in place, so a task whose due date changed in Asana while
+      // we were away keeps its old slot in the list — leaving the array in
+      // an order that contradicts its own due dates, which is a crash and
+      // not a cosmetic wrinkle (see sortedQueueOrder).
       if (this.reviewingBacklog) this.tasksWithoutDueDate = apply(this.tasksWithoutDueDate);
-      else this.tasks = apply(this.tasks);
+      else this.tasks = sortedQueueOrder(apply(this.tasks));
       this.resyncFocus(focusId);
     } catch {
       // Best-effort top-up — refreshTasks() alongside this one already has
@@ -1342,28 +1555,44 @@ class PlannerStore {
     }
   }
 
-  /// "Reset today's plan" in Settings — un-schedules every task due today
-  /// that has a specific due *time* (tasks due today with only a date and
-  /// no time have nothing to reset). Confirmed by the caller before this
-  /// runs, since it's a bulk, hard-to-undo-by-hand action. The clears are
-  /// queued (not awaited) — see pendingActionQueue.ts — so this doesn't
-  /// block on N Asana writes; check Settings' pending-actions lookup (or
-  /// just refresh) to see them actually land.
+  /// "Reset today's plan (keep due dates, reset slots)" in Settings — drops
+  /// the specific due *time* from every task due today that has one, so
+  /// they land back in today's queue as unplanned and can be re-triaged.
+  /// Tasks due today with only a date and no time have nothing to reset.
+  ///
+  /// It used to send `clear`, which wipes due_on alongside due_at — so
+  /// every task didn't just lose its slot, it lost today as its due date
+  /// and dropped out of the day entirely into "Tasks without Due Date".
+  /// That contradicted both the button's own confirmation text ("they'll
+  /// go back to unplanned") and any reasonable reading of "reset today's
+  /// plan"; a bulk action that silently unschedules a whole day's work
+  /// from the calendar is not the same thing as clearing its time slots.
+  /// Now a `dateOnly` write per task, keeping each one's existing due date.
+  ///
+  /// Confirmed by the caller before this runs, since it's a bulk,
+  /// hard-to-undo-by-hand action. The writes are queued (not awaited) —
+  /// see pendingActionQueue.ts — so this doesn't block on N Asana calls;
+  /// check Settings' pending-actions lookup (or just refresh) to see them
+  /// actually land.
   async resetToday() {
-    const targets = this.tasksDueToday.filter((t): t is Task & { dueAt: string } => !!t.dueAt).map((t) => ({ id: t.id, previousDueAt: t.dueAt }));
+    const targets = this.tasksDueToday
+      .filter((t): t is Task & { dueAt: string; dueOn: string } => !!t.dueAt && !!t.dueOn)
+      .map((t) => ({ id: t.id, dueOn: t.dueOn, previousDueAt: t.dueAt }));
     if (targets.length === 0) {
       this.showToast('No tasks scheduled today');
       return;
     }
     try {
-      const res = await api.post<{ queued: number }>('/api/tasks/reset-day', { taskGids: targets.map((t) => t.id) });
-      for (const t of targets) this.setTaskDueDateLocally(t.id, null);
+      const res = await api.post<{ queued: number }>('/api/tasks/reset-day', {
+        tasks: targets.map((t) => ({ gid: t.id, dueOn: t.dueOn })),
+      });
+      for (const t of targets) this.setTaskDueFieldsLocally(t.id, t.dueOn, null);
       this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
       this.showToast(`Queued ${res.queued} task${res.queued === 1 ? '' : 's'} to reset`, {
         label: 'Undo',
         onClick: () => {
           for (const t of targets) {
-            this.setTaskDueDateLocally(t.id, t.previousDueAt);
+            this.setTaskDueFieldsLocally(t.id, t.dueOn, t.previousDueAt);
             this.enqueueDueWrite(t.id, t.previousDueAt);
           }
         },
@@ -1493,6 +1722,7 @@ class PlannerStore {
   /// falls through to openPlanToday — today is the earliest day anything
   /// can actually be planned for, matching planTodayButtonLabel above.
   openPlanTodayOrDate() {
+    this.beginPlanFlow();
     const day = this.workloadDays.find((d) => d.date === this.activeDate);
     if (day && day.key !== 'today') this.selectLaterDay(day.key);
     else this.openPlanToday();
@@ -1537,7 +1767,7 @@ class PlannerStore {
   /// fetch still filling in) without anything else invalidating it.
   async loadTodaySlots() {
     const date = this.dateFor('today');
-    const focus = this.focusTaskRaw;
+    const focus = this.planFlowTask;
     if (!date || !focus) return;
     this.todaySlotsLoading = true;
     try {
@@ -1559,7 +1789,7 @@ class PlannerStore {
   /// placed; the user will see it obviously conflicts and can drag it.
   get earliestTodaySlotStart(): string | null {
     const date = this.dateFor('today');
-    const focus = this.focusTaskRaw;
+    const focus = this.planFlowTask;
     const clean = date && focus ? this.firstFreeSlotStart(this.planTodaySlots, date, focus.hours, focus.id) : null;
     if (clean) return clean;
     if (this.todaySlotsLoading) return null;
@@ -1573,7 +1803,62 @@ class PlannerStore {
     return this.prefStartTime;
   }
 
+  // --- the one task a planning flow is about ---
+  /// Every screen between "Plan today"/"Plan later" and the actual commit
+  /// used to re-read focusTaskRaw at the moment its button was tapped.
+  /// That's only ever right if focus can't move while those screens are
+  /// up — and it can: a commit advances it (justPlannedIds), and a stale
+  /// tap on a screen that already resolved underneath (the stuck-frame
+  /// symptom this release is mostly about) fires its handler against
+  /// whatever focus points at *now*. Reported live: shifting one task on
+  /// "When later?", then tapping again on the same still-visible screen,
+  /// shifted a *different* task — with no way to tell which, since the
+  /// screen never showed the change. Double-tapping a control that looks
+  /// dead is exactly what people do, so this is a data-loss hazard, not a
+  /// cosmetic one.
+  ///
+  /// Pinned at flow entry instead, and cleared the moment the flow
+  /// commits or is closed. SlotConflict's pendingSlotPlan already pins its
+  /// own taskId the same way for the same reason (see
+  /// resolveConflictAnyway) — this extends that fix back to the start of
+  /// the flow, so every step in between operates on one task and only one.
+  private planFlowTaskId: string | null = $state(null);
+  private beginPlanFlow() {
+    this.planFlowTaskId = this.focusTaskRaw?.id ?? null;
+  }
+  private lookupTask(id: string): Task | null {
+    return this.tasks.find((t) => t.id === id) ?? this.tasksWithoutDueDate.find((t) => t.id === id) ?? null;
+  }
+  /// What the planning screens *display* (labels, free-slot queries, which
+  /// task the day calendar excludes from its own blocks). Falls back to
+  /// focusTaskRaw when nothing is pinned so a screen reached some way that
+  /// didn't go through beginPlanFlow still renders something sensible —
+  /// committing actions deliberately don't get that fallback, see below.
+  get planFlowTask(): Task | null {
+    return this.planFlowTaskId ? this.lookupTask(this.planFlowTaskId) : this.focusTaskRaw;
+  }
+  /// What a *committing* action in the flow must act on — no focusTaskRaw
+  /// fallback: a missing pin means this call is a duplicate of one that
+  /// already committed (or the task is gone), and the one thing it must
+  /// not do is quietly apply itself to whatever task focus has since moved
+  /// to. Closes the flow instead, so a screen that's stopped responding
+  /// still has a way out rather than swallowing taps forever.
+  private planFlowTaskForCommit(action: string): Task | null {
+    const id = this.planFlowTaskId;
+    const task = id ? this.lookupTask(id) : null;
+    if (!task) {
+      this.logAnomaly(`${action}.noPlanFlowTask`, 'Committing action with no pinned task — duplicate/stale invocation, or the task is gone', {
+        screen: this.screen,
+        planFlowTaskId: id,
+      });
+      this.closeFlow();
+      return null;
+    }
+    return task;
+  }
+
   openPlanLater() {
+    this.beginPlanFlow();
     this.screen = 'planLater';
   }
   /// Clears pendingPlan up front, same reasoning as resolveConflictAnyway's
@@ -1590,7 +1875,7 @@ class PlannerStore {
     this.pendingPlan = null;
     if (!p) {
       this.logAnomaly('onPlanAnyway.noPendingPlan', 'Called with no pendingPlan — likely a duplicate/stale invocation', { screen: this.screen });
-      this.screen = 'triage';
+      this.closeFlow();
       return;
     }
     if (p.type === 'today') {
@@ -1621,6 +1906,9 @@ class PlannerStore {
   closeFlow() {
     const ret = this.returnFromPlanLater;
     this.returnFromPlanLater = null;
+    this.planFlowTaskId = null;
+    this.pendingPlan = null;
+    this.pendingSlotPlan = null;
     if (ret) {
       if (ret.focusTaskId) this.selectFocus(ret.focusTaskId);
       this.screen = ret.screen;
@@ -1645,6 +1933,13 @@ class PlannerStore {
     }
     this.selectFocus(taskId);
     this.openPlanLater();
+    // openPlanLater pins whatever focus ended up on — but selectFocus can't
+    // always land on this task: it searches queueTasks, which filters out
+    // anything in justPlannedIds, and a task placed a moment ago on this
+    // very calendar is exactly that. It would then quietly fall back to
+    // index 0, i.e. a different task entirely. Pin the one the arrow was
+    // actually tapped on.
+    if (this.lookupTask(taskId)) this.planFlowTaskId = taskId;
   }
   backToPlanLater() {
     this.screen = 'planLater';
@@ -1794,7 +2089,7 @@ class PlannerStore {
   /// target — pulling it in — not a redundant option, so it's only left
   /// out when the task actually is already due today.
   get laterDays() {
-    const focusDueOn = this.focusTaskRaw?.dueOn ?? null;
+    const focusDueOn = this.planFlowTask?.dueOn ?? null;
     const alreadyToday = focusDueOn === this.todayDateStr;
     return this.workloadDaysForDisplay
       .filter((d) => d.key !== 'today' || !alreadyToday)
@@ -1982,14 +2277,21 @@ class PlannerStore {
   /// comment) purely for its "set these exact due fields and write through"
   /// mechanics — this isn't an undo, just the same field-setting shape.
   deferToWeek(key: string) {
-    const task = this.focusTaskRaw;
     const opt = this.weekDeferOptions.find((w) => w.key === key);
-    if (!task || !opt) return;
+    if (!opt) return;
+    // The pinned task this flow was opened for, not whatever focus points
+    // at now — see planFlowTaskForCommit. This is the exact call site the
+    // "tapped 'When later?' twice, two different tasks moved" report came
+    // from.
+    const task = this.planFlowTaskForCommit('deferToWeek');
+    if (!task) return;
+    this.planFlowTaskId = null;
     const previousDueOn = task.dueOn;
     const previousDueAt = task.dueAt;
     this.restoreTaskDueFieldsLocally(task.id, opt.date, null);
     if (!this.justPlannedIds.includes(task.id)) this.justPlannedIds = [...this.justPlannedIds, task.id];
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+    this.returnFromPlanLater = null;
     this.screen = 'triage';
     this.showToast(`Moved "${task.name}" to ${opt.label} · syncing to Asana`, {
       label: 'Undo',
@@ -2054,7 +2356,10 @@ class PlannerStore {
     };
     this.tasks = this.tasks.filter((t) => t.id !== taskId);
     this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
-    if (dueAtIso) this.tasks = [...this.tasks, updated];
+    // Re-sorted, not just appended — see sortedQueueOrder for why a list
+    // whose order no longer matches its own due dates is a hard crash
+    // rather than a cosmetic wrinkle.
+    if (dueAtIso) this.tasks = sortedQueueOrder([...this.tasks, updated]);
     else this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, updated];
   }
 
@@ -2066,42 +2371,42 @@ class PlannerStore {
   /// and writes through as a genuine "date only" update when that's the
   /// state being restored — see enqueueDueWrite.
   private restoreTaskDueFieldsLocally(taskId: string, previousDueOn: string | null, previousDueAt: string | null) {
+    this.setTaskDueFieldsLocally(taskId, previousDueOn, previousDueAt);
+    this.enqueueDueWrite(taskId, previousDueAt, previousDueOn);
+  }
+  /// The local half of the above, without the write-through — for the one
+  /// caller that batches its own single bulk request instead of one PATCH
+  /// per task (resetToday).
+  private setTaskDueFieldsLocally(taskId: string, dueOn: string | null, dueAt: string | null) {
     const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
     if (!existing) return;
-    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? this.toLocalTimeStr(previousDueAt) : null };
+    const updated: Task = { ...existing, dueOn, dueAt, dueHour: dueAt ? this.toLocalTimeStr(dueAt) : null };
     this.tasks = this.tasks.filter((t) => t.id !== taskId);
     this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
-    if (previousDueOn) this.tasks = [...this.tasks, updated];
+    if (dueOn) this.tasks = sortedQueueOrder([...this.tasks, updated]);
     else this.tasksWithoutDueDate = [...this.tasksWithoutDueDate, updated];
-    this.enqueueDueWrite(taskId, previousDueAt, previousDueOn);
   }
 
   /// Every "undo" that wants the user looking at the restored task again
   /// (plan/defer/remove-due-date's Undo) needs more than
-  /// restoreTaskDueFieldsLocally + selectFocus: that plain combination put
-  /// the restored task at the *end* of `tasks` (appended, same as any
-  /// other restore) and then pointed focusIndex at that last slot — and
-  /// since Triage's "Up next" is everything *after* focusIndex (see
-  /// Triage.svelte), focusing the very last task makes Up next render
-  /// empty. This is the actual bug report: undoing "remove due date"
-  /// looked like it wiped the queue, but the queue was fine — the focused
-  /// task had just silently become the last one in it. Re-inserting at the
-  /// *front* instead keeps every other task visible in Up next, same as
-  /// undo landing on any other task would.
+  /// restoreTaskDueFieldsLocally + selectFocus: the task has to be put back
+  /// where its restored due date actually belongs *and* refocused there.
+  /// This used to splice it in at a fixed position instead — first the end
+  /// of the list, which made focusing it render an empty "Up next" (the
+  /// original bug report: undoing "remove due date" looked like it wiped
+  /// the queue), then the front, which fixed that but left `tasks` in an
+  /// order contradicting its own due dates — the crash sortedQueueOrder
+  /// exists to prevent. Sorting it into place solves both at once, and Up
+  /// next renders the whole queue now anyway, so there's no longer any
+  /// position that can make it look empty.
   ///
   /// Callers must clear the task from justPlannedIds (if applicable)
   /// *before* calling this — this reads queueTasks to find the task's new
   /// index, which excludes anything still in justPlannedIds.
   private restoreTaskDueFieldsAndRefocus(taskId: string, previousDueOn: string | null, previousDueAt: string | null) {
-    const existing = this.tasks.find((t) => t.id === taskId) ?? this.tasksWithoutDueDate.find((t) => t.id === taskId);
-    if (!existing) return;
-    const updated: Task = { ...existing, dueOn: previousDueOn, dueAt: previousDueAt, dueHour: previousDueAt ? this.toLocalTimeStr(previousDueAt) : null };
-    this.tasks = this.tasks.filter((t) => t.id !== taskId);
-    this.tasksWithoutDueDate = this.tasksWithoutDueDate.filter((t) => t.id !== taskId);
-    if (previousDueOn) this.tasks = [updated, ...this.tasks];
-    else this.tasksWithoutDueDate = [updated, ...this.tasksWithoutDueDate];
-    this.enqueueDueWrite(taskId, previousDueAt, previousDueOn);
-    this.focusIndex = Math.max(0, this.queueTasks.findIndex((t) => t.id === taskId));
+    this.restoreTaskDueFieldsLocally(taskId, previousDueOn, previousDueAt);
+    const idx = this.queueTasks.findIndex((t) => t.id === taskId);
+    if (idx !== -1) this.focusIndex = idx;
   }
 
   /// Fires the actual Asana write without making the caller wait on it —
@@ -2173,8 +2478,11 @@ class PlannerStore {
     // A real completion, not a cancel — lands on Triage same as always
     // rather than returnFromPlanLater's "go back to where this detour
     // started" (see openTaskInPlanLater), and clears it so it can't apply
-    // to some later, unrelated close.
+    // to some later, unrelated close. Clearing the flow's pinned task is
+    // what makes a second, stale tap on the screen that just committed a
+    // no-op instead of a silent second commit (see planFlowTaskForCommit).
     this.returnFromPlanLater = null;
+    this.planFlowTaskId = null;
     this.screen = 'triage';
     this.bumpWorkloadLocally(dayKey, task.hours);
     this.enqueueDueWrite(task.id, dueAtIso);
@@ -2225,9 +2533,10 @@ class PlannerStore {
   }
 
   tryPlanTodaySlot(slot: string) {
-    const task = this.focusTaskRaw;
     const date = this.dateFor('today');
-    if (!task || !date) return;
+    if (!date) return;
+    const task = this.planFlowTaskForCommit('tryPlanTodaySlot');
+    if (!task) return;
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
     const conflicts = this.findConflicts(dueAtIso, task.hours, task.id);
     if (conflicts.length && this.confirmDoubleBooking) {
@@ -2243,7 +2552,7 @@ class PlannerStore {
   /// FreeSlotsLater.svelte's $effect.
   async loadLaterSlots(dayKey: string) {
     const date = this.dateFor(dayKey);
-    const focus = this.focusTaskRaw;
+    const focus = this.planFlowTask;
     if (!date || !focus) return;
     this.laterSlotsLoading = true;
     try {
@@ -2260,7 +2569,7 @@ class PlannerStore {
   /// DayCalendar.
   get earliestLaterSlotStart(): string | null {
     const date = this.chosenDate;
-    const focus = this.focusTaskRaw;
+    const focus = this.planFlowTask;
     const clean = date && focus ? this.firstFreeSlotStart(this.laterSlots, date, focus.hours, focus.id) : null;
     if (clean) return clean;
     if (this.laterSlotsLoading) return null;
@@ -2302,10 +2611,11 @@ class PlannerStore {
   }
 
   tryPlanLaterSlot(slot: string) {
-    const task = this.focusTaskRaw;
     const dayKey = this.laterDayKey;
     const date = dayKey ? this.dateFor(dayKey) : null;
-    if (!task || !dayKey || !date) return;
+    if (!dayKey || !date) return;
+    const task = this.planFlowTaskForCommit('tryPlanLaterSlot');
+    if (!task) return;
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(slot));
     const conflicts = this.findConflicts(dueAtIso, task.hours, task.id);
     if (conflicts.length && this.confirmDoubleBooking) {
@@ -2336,6 +2646,12 @@ class PlannerStore {
       this.logAnomaly('resolveConflictAnyway.noPendingPlan', 'Called with no pendingSlotPlan — likely a duplicate/stale invocation', {
         screen: this.screen,
       });
+      // Used to just return, leaving this screen up with nothing behind
+      // it: both "Double-book anyway" and "Don't warn me again" (which
+      // routes through here) then did nothing at all on every tap, which
+      // is the reported "stuck on the double-book screen, no action
+      // possible". A guard that can't act must still hand back a way out.
+      this.closeFlow();
       return;
     }
     this.pendingSlotPlan = null;
@@ -2346,16 +2662,23 @@ class PlannerStore {
     // Pinned at conflict-detection time (see tryPlanTodaySlot/
     // tryPlanLaterSlot) rather than re-reading focusTaskRaw here — see the
     // method comment above for why that distinction is the actual fix.
-    const task = this.tasks.find((t) => t.id === p.taskId);
+    // lookupTask, not a plain this.tasks lookup: a task being planned out
+    // of the backlog ("Tasks without Due Date") lives in
+    // tasksWithoutDueDate until this commits, so searching only `tasks`
+    // failed it with "that task is no longer available" on every
+    // double-booked backlog placement.
+    const task = this.lookupTask(p.taskId);
     if (!task) {
-      this.logAnomaly('resolveConflictAnyway.taskMissing', 'Pinned task no longer in this.tasks', { taskId: p.taskId, kind: p.kind });
+      this.logAnomaly('resolveConflictAnyway.taskMissing', 'Pinned task no longer in tasks or tasksWithoutDueDate', { taskId: p.taskId, kind: p.kind });
       this.reportError(new Error('missing task'), 'Could not double-book — that task is no longer available');
+      this.closeFlow(); // same reasoning as the guard above — never leave this screen up with nothing behind it
       return;
     }
     const dayKey = p.kind === 'today' ? 'today' : p.dayKey;
     const date = this.dateFor(dayKey);
     if (!date) {
       this.logAnomaly('resolveConflictAnyway.noDate', 'dateFor(dayKey) returned null', { dayKey });
+      this.closeFlow(); // same reasoning as the guards above
       return;
     }
     const dueAtIso = this.toIsoDateTime(date, this.slotStart(p.slot));
@@ -2378,7 +2701,7 @@ class PlannerStore {
       this.logAnomaly('resolveConflictChooseAnother.noPendingPlan', 'Called with no pendingSlotPlan — likely a duplicate/stale invocation', {
         screen: this.screen,
       });
-      this.screen = 'triage';
+      this.closeFlow();
       return;
     }
     if (p.kind === 'today') {
@@ -2420,12 +2743,35 @@ class PlannerStore {
     this.removeDueDate();
     this.screen = 'triage';
   }
+  /// "When later?"'s own "Remove due date" footer button. Deliberately not
+  /// removeDueDate() itself, which Triage's Backlog action calls with
+  /// Triage already on screen and focus as its subject.
+  ///
+  /// Called from here, that version left the flow screen up and operating
+  /// on focusTaskRaw — and clearing a due date takes the task straight out
+  /// of the queue (see setTaskDueDateLocally), so focus immediately landed
+  /// on a *different* task with "When later?" still showing. Tapping again
+  /// then cleared that task's due date too. This is one half of the
+  /// reported "shifted one task, screen stayed open, tapping again shifted
+  /// another" — the pinned task fixes which task, and closing the flow
+  /// fixes the screen staying up at all.
+  removeDueDateFromPlanFlow() {
+    const task = this.planFlowTaskForCommit('removeDueDateFromPlanFlow');
+    if (!task) return;
+    this.planFlowTaskId = null;
+    if (task.dueOn) this.removeDueDateOn(task);
+    this.returnFromPlanLater = null;
+    this.screen = 'triage';
+  }
   /// Same reasoning as clearOtherTaskDueDate — no due date at all takes a
   /// task out of the server's queue entirely, so it moves to
   /// tasksWithoutDueDate locally rather than staying in `tasks`.
   removeDueDate() {
     const task = this.focusTaskRaw;
     if (!task || !task.dueOn) return; // already has no due date (e.g. reviewing the backlog) — nothing to remove
+    this.removeDueDateOn(task);
+  }
+  private removeDueDateOn(task: Task) {
     const previousDueOn = task.dueOn;
     const previousDueAt = task.dueAt;
     this.setTaskDueDateLocally(task.id, null);

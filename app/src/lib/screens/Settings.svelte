@@ -94,10 +94,25 @@
     <button
       class="row"
       onclick={() => {
-        if (confirm("Remove today's due times from all of today's tasks? They'll go back to unplanned.")) planner.resetToday();
+        if (confirm("Remove today's due times from all of today's tasks? They keep today as their due date and go back to unplanned.")) planner.resetToday();
       }}
     >
-      <div class="row__label row__label--danger">Reset today's plan</div>
+      <div class="row__label row__label--danger">Reset today's plan (keep due dates, reset slots)</div>
+    </button>
+    <!-- Below the reset row, above "Report a bug": a last-resort "turn it
+         off and on again" for a device whose stored state has gone bad,
+         without needing to delete and reinstall the home-screen app. Not
+         marked danger — nothing it drops is unrecoverable (see
+         clearAppCaches) — but still behind a confirm, since it does lose
+         local preferences. -->
+    <button
+      class="row"
+      onclick={() => {
+        if (confirm('Clear all cached data on this device and reload? Your tasks and settings live in Asana and on the server, so nothing is lost — only local preferences (collapsed sections, dismissed warnings) reset.'))
+          void planner.clearAppCaches();
+      }}
+    >
+      <div class="row__label">Clear app caches &amp; reload</div>
     </button>
     <button class="row" onclick={() => planner.toggleBugReportOpen()}>
       <div class="row__label">Report a bug</div>

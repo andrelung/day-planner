@@ -79,17 +79,27 @@
   // Up next is chronological, so a day boundary only ever needs one header
   // when the label actually changes from the row before it — not a full
   // group-by, just a "does this differ from the last one" scan.
-  type UpNextItem = { kind: 'header'; label: string } | { kind: 'task'; task: (typeof restTasks)[number]; index: number };
+  //
+  // Each item carries its own `key` rather than the {#each} deriving one
+  // from the item's contents: a header's label alone is only unique while
+  // the queue really is grouped by day, and a keyed {#each} that ever sees
+  // the same key twice throws (each_key_duplicate) mid-render — which
+  // aborts the whole update batch and leaves the app frozen on stale DOM
+  // whose handlers still fire. `tasks` is kept in day order for real (see
+  // sortedQueueOrder in store.svelte.ts); qualifying the header key with
+  // the index its run starts at means even a list that somehow isn't
+  // ordered degrades into a repeated header rather than a dead screen.
+  type UpNextItem = { key: string; kind: 'header'; label: string } | { key: string; kind: 'task'; task: (typeof restTasks)[number]; index: number };
   const restItems = $derived.by(() => {
     const items: UpNextItem[] = [];
     let lastLabel: string | null = null;
     restTasks.forEach((t, index) => {
       const label = planner.dayLabelFor(t.dueOn);
       if (label !== lastLabel) {
-        items.push({ kind: 'header', label });
+        items.push({ key: `day:${index}:${label}`, kind: 'header', label });
         lastLabel = label;
       }
-      items.push({ kind: 'task', task: t, index });
+      items.push({ key: `task:${t.id}`, kind: 'task', task: t, index });
     });
     return items;
   });
@@ -284,7 +294,7 @@
         </button>
       {/if}
       {#if restTasks.length > 0 && !planner.upNextCollapsed}
-        {#each restItems as item (item.kind === 'header' ? `day:${item.label}` : item.task.id)}
+        {#each restItems as item (item.key)}
         <div animate:flip={{ duration: 220 }}>
           {#if item.kind === 'header'}
             <div class="day-divider">{item.label}</div>

@@ -283,9 +283,30 @@ function toRemoteTask(dto: AsanaTaskDto, timezone: string): RemoteTask & { proje
 /// since siblings usually share a parent) until it finds an ancestor that's
 /// actually in a project, and rewrites `task.project` to a breadcrumb trail
 /// like "Marketing Site › Q3 Campaign › Design Review".
+///
+/// Bounded concurrency, not a bare Promise.all over every entry. On a real
+/// backlog `entries` runs to a couple of thousand, and each subtask without
+/// a project can walk up to five ancestors — a plain Promise.all launches
+/// the whole fan-out at once. Node's fetch pool then queues almost all of
+/// it, while each queued request's AbortSignal.timeout is already counting
+/// down from the moment fetch() was *called* rather than from when it got
+/// a connection. So the queue times out from the back, every timeout is
+/// retried (see fetchWithRetry), and the retries re-enter the same queue:
+/// a self-sustaining storm that gets dramatically worse whenever Asana is
+/// having a slow spell. That is the "boot never finishes, only the reload
+/// button gets me out" report. A small window keeps every in-flight
+/// request genuinely in flight, so its timeout measures Asana's latency
+/// and nothing else.
+///
+/// `onProgress` reports resolved/total so this phase — easily the longest
+/// on a large account, and previously a single silent step after the task
+/// counter had already reached its final value — can say it's still moving.
+const BREADCRUMB_CONCURRENCY = 6;
+
 async function resolveBreadcrumbs(
   accessToken: string,
   entries: { dto: AsanaTaskDto; task: RemoteTask & { projectGid: string | null } }[],
+  onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
   const known = new Map<string, AsanaTaskDto>(entries.map((e) => [e.dto.gid, e.dto]));
   const fetching = new Map<string, Promise<AsanaTaskDto | null>>();
@@ -305,15 +326,22 @@ async function resolveBreadcrumbs(
     return p;
   };
 
-  await Promise.all(
-    entries.map(async ({ dto, task }) => {
-      if (dto.projects?.length || !dto.parent) return;
-      if (dto.parent.projects?.length) {
-        task.project = `${dto.parent.projects[0].name} › ${dto.parent.name}`;
+  // Filtered up front so the progress denominator means something: the
+  // vast majority of entries already have a project and need no work at
+  // all, and counting them would report near-instant completion of a phase
+  // that has barely started.
+  const needsWalk = entries.filter(({ dto }) => !dto.projects?.length && dto.parent);
+  let done = 0;
+  onProgress?.(0, needsWalk.length);
+
+  await mapWithConcurrency(needsWalk, BREADCRUMB_CONCURRENCY, async ({ dto, task }) => {
+    try {
+      if (dto.parent!.projects?.length) {
+        task.project = `${dto.parent!.projects[0].name} › ${dto.parent!.name}`;
         return;
       }
-      const chain = [dto.parent.name];
-      let currentGid: string | null = dto.parent.gid;
+      const chain = [dto.parent!.name];
+      let currentGid: string | null = dto.parent!.gid;
       let projectName: string | null = null;
       // Capped depth: a real ancestry this deep would be unusual, and this
       // guards against ever looping indefinitely on bad/cyclic data.
@@ -331,8 +359,28 @@ async function resolveBreadcrumbs(
       // chain was built closest-ancestor-first while walking up; a
       // breadcrumb reads root-to-leaf, so flip it before joining.
       if (projectName) task.project = [projectName, ...chain.reverse()].join(' › ');
-    }),
-  );
+    } finally {
+      // A breadcrumb is a nicety; one that can't be resolved leaves the
+      // task showing "No project" and must never take the whole boot with
+      // it. Reporting from `finally` also keeps the progress count honest
+      // when a walk gives up partway.
+      onProgress?.(++done, needsWalk.length);
+    }
+  });
+}
+
+/// Runs `fn` over `items` with at most `limit` in flight at once. Deliberately
+/// hand-rolled rather than pulling in a dependency: N workers pulling from a
+/// shared cursor, which is the whole of it.
+async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      const item = items[cursor++];
+      await fn(item);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 /// A single task by gid, or null if it's gone — deleted, or a 404 for any
@@ -718,7 +766,15 @@ async function fetchAllIncompleteTasks(
   // costs nothing extra for the common case anyway: resolveBreadcrumbs
   // itself skips straight past any task that already has a project.
   options?.onPhase?.('Organizing your tasks…');
-  await resolveBreadcrumbs(accessToken, reconciled);
+  // Re-emitted every 25 resolutions rather than every one: this drives an
+  // SSE event per call, and on a large account that would be thousands of
+  // writes for a label nobody can read that fast. Frequent enough to look
+  // alive, and — because each one resets the client's stall watchdog — to
+  // prove the boot is still moving during what is otherwise the longest
+  // silent stretch of the whole fetch.
+  await resolveBreadcrumbs(accessToken, reconciled, (done, total) => {
+    if (total > 0 && (done % 25 === 0 || done === total)) options?.onPhase?.(`Organizing your tasks… ${done}/${total}`);
+  });
   return reconciled.map((e) => e.task);
 }
 

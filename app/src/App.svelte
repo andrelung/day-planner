@@ -6,6 +6,7 @@
   import { DEV_NOTES, VERSION_LABEL } from './lib/version';
   import Toast from './lib/components/Toast.svelte';
   import UpdateNotice from './lib/components/UpdateNotice.svelte';
+  import RenderErrorFallback from './lib/components/RenderErrorFallback.svelte';
   import Celebration from './lib/components/Celebration.svelte';
   import Icon from './lib/components/Icon.svelte';
   import Login from './lib/screens/Login.svelte';
@@ -51,15 +52,31 @@
   // two rAFs, not one: the first callback fires before the *next* paint,
   // the second fires only after that paint has actually happened — that's
   // the real frame boundary the single-rAF version was missing.
+  //
+  // Worth reading with hindsight: the stale-tap evidence above (handlers
+  // firing against state that had already moved on, nothing visible ever
+  // catching up) turned out to be the signature of a Svelte render error
+  // discarding the update batch, not of WebKit failing to paint — see
+  // sortedQueueOrder in store.svelte.ts and the boundary in the markup
+  // below, which are the actual fix. This is kept as the cheap mitigation
+  // it always was for the genuine WKWebView resume case, no longer as the
+  // explanation for it.
+  //
+  // The revert is also backstopped by a timer, not left to rAF alone: rAF
+  // callbacks don't run while a PWA is backgrounded (and iOS throttles
+  // them under memory pressure), and a transform stranded on the root
+  // element is not a harmless leftover — it makes <html> the containing
+  // block for everything fixed-positioned inside it. A repaint nudge must
+  // not be able to become its own stuck state.
   function forceRepaint() {
     const el = document.documentElement;
     el.style.transform = 'translateZ(0)';
     void el.offsetHeight; // force a synchronous layout flush before reverting
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        el.style.transform = '';
-      });
-    });
+    const revert = () => {
+      el.style.transform = '';
+    };
+    requestAnimationFrame(() => requestAnimationFrame(revert));
+    setTimeout(revert, 250);
   }
 
   // On an iOS home-screen PWA specifically, a screen transition can leave
@@ -214,6 +231,23 @@
       (planner.outlookConnected ? ` · Calendar: ${planner.eventsLoading ? 'still loading' : 'done'}` : ''),
   );
 
+  // "Slower than usual" measured against this device's own boot history
+  // rather than a flat timer — see slowBootThresholdSeconds. Asana's API
+  // has genuinely slow spells (the official Asana app drags at the same
+  // time), and from in here that is indistinguishable from a hung boot
+  // unless the app says which one it thinks is happening.
+  const bootSlowerThanUsual = $derived(planner.screen === 'loading' && loadingElapsedSec >= planner.slowBootThresholdSeconds);
+  const bootSlowLabel = $derived(
+    planner.typicalBootSeconds === null
+      ? 'Asana is taking longer than expected to respond.'
+      : `Asana is responding slower than usual — loading normally takes about ${planner.typicalBootSeconds}s here.`,
+  );
+  // Logged once per boot, alongside showing it, so a slow morning leaves a
+  // trace in the diagnostics rather than only in someone's memory.
+  $effect(() => {
+    if (bootSlowerThanUsual) planner.reportSlowBoot(loadingElapsedSec);
+  });
+
   // Detection and dialog rendering are entirely the library's job — this
   // component only hands it whatever beforeinstallprompt event main.ts
   // caught before this even mounted, and reveals it on demand (Login,
@@ -257,6 +291,18 @@
       use-local-storage
       manifest-url="/manifest.webmanifest"
     ></pwa-install>
+    <!-- An error thrown while rendering is fatal to the update batch it
+         happens in: Svelte discards that batch, so the DOM freezes on
+         whatever it last painted while the store keeps changing
+         underneath. That is precisely the "screen is stuck, but its
+         buttons still do things" class of bug — a duplicate "Up next" day
+         header key (see sortedQueueOrder in store.svelte.ts) could take
+         the whole app down that way, permanently, until a force-reload.
+         The key and the ordering are both fixed at the source now; this
+         boundary is the layer behind them, so a future one degrades into
+         a blink plus a server-side log naming the real error instead of a
+         dead app. -->
+    <svelte:boundary>
     {#if planner.screen === 'loading'}
       <div class="loading">
         <div class="loading__body">
@@ -271,6 +317,9 @@
             <p>{planner.bootStatus}</p>
             {#if planner.loadingProgressLabel}
               <p class="loading__progress">{planner.loadingProgressLabel}</p>
+            {/if}
+            {#if bootSlowerThanUsual}
+              <p class="loading__slow">{bootSlowLabel}</p>
             {/if}
             {#if loadingStuck}
               <p class="loading__diagnostics">{loadingDiagnosticsLabel}</p>
@@ -339,6 +388,10 @@
     {:else if planner.screen === 'backlogExplainer'}
       <BacklogExplainer />
     {/if}
+    {#snippet failed(error, reset)}
+      <RenderErrorFallback {error} {reset} />
+    {/snippet}
+    </svelte:boundary>
     <Toast />
     <UpdateNotice />
     {#if planner.celebrationKey > 0}
@@ -422,6 +475,14 @@
     font-weight: var(--font-weight-normal);
     font-variant-numeric: tabular-nums;
     opacity: 0.75;
+  }
+  .loading__slow {
+    margin: 4px 0 0;
+    max-width: 300px;
+    font-size: 12px;
+    font-weight: var(--font-weight-bold);
+    line-height: 1.35;
+    color: var(--color-feedback-wrong);
   }
   .loading__diagnostics {
     margin-top: 4px;
