@@ -17,6 +17,11 @@ meRouter.get('/', requireAuth, async (req, res) => {
   const settings = await getOrCreateSettings(req.userId!);
   const asana = user.accounts.find((a) => a.provider === 'ASANA');
   const outlook = user.accounts.find((a) => a.provider === 'OUTLOOK');
+  // accountLabel is always "Name <email>" (see providers/asana.ts) — pulled
+  // back apart here so the client has the bare address on its own, e.g. to
+  // identify the user to analytics without shipping a label-parsing regex
+  // to the frontend.
+  const asanaEmail = asana?.accountLabel?.match(/<(.+)>/)?.[1] ?? null;
   res.json({
     primaryProvider: user.primaryProvider,
     asanaConnected: !!asana,
@@ -26,6 +31,7 @@ meRouter.get('/', requireAuth, async (req, res) => {
     // provider" screen, so it's clear the first sign-in actually worked).
     asanaAccountLabel: asana?.accountLabel ?? null,
     outlookAccountLabel: outlook?.accountLabel ?? null,
+    asanaEmail,
     settings: {
       prefStartTime: settings.prefStartTime,
       prefEndTime: settings.prefEndTime,

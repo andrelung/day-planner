@@ -17,6 +17,7 @@ import type {
   WorkloadDay,
 } from './types';
 import { api, ApiError } from './api';
+import { setAnalyticsUserId, trackEvent } from './analytics';
 import { fmtHours, roundHours, slotStartTime } from './format';
 import { BUILD_ID } from './version';
 import { stringSimilarity } from 'string-similarity-js';
@@ -138,6 +139,7 @@ interface MeResponse {
   outlookConnected: boolean;
   asanaAccountLabel: string | null;
   outlookAccountLabel: string | null;
+  asanaEmail: string | null;
   settings: {
     prefStartTime: string;
     prefEndTime: string;
@@ -150,7 +152,19 @@ interface MeResponse {
 }
 
 class PlannerStore {
-  screen: Screen = $state('loading');
+  private _screen: Screen = $state('loading');
+  /// Every screen change is a navigation the user made (or an automatic
+  /// step in a flow they triggered), so this is tracked as a Matomo event
+  /// on every actual change — see analytics.ts — rather than instrumenting
+  /// each of the 60+ individual call sites that assign `screen` below.
+  get screen(): Screen {
+    return this._screen;
+  }
+  set screen(v: Screen) {
+    if (this._screen === v) return;
+    this._screen = v;
+    trackEvent('Screen', 'View', v);
+  }
   bootError: string | null = $state(null);
 
   primaryProvider: 'ASANA' | 'OUTLOOK' | null = $state(null);
@@ -326,6 +340,7 @@ class PlannerStore {
     const name = this.tasks.find((t) => t.id === taskId)?.name ?? this.tasksWithoutDueDate.find((t) => t.id === taskId)?.name ?? 'task';
     try {
       await api.post(`/api/tasks/${encodeURIComponent(taskId)}/refile`, { target: { projectGid } });
+      trackEvent('Task', 'Refiled to Project');
       this.closeSearchPanel();
       await this.refreshRefiledTask(taskId);
       this.showToast(`Added "${name}" to ${projectName} · synced to Asana`);
@@ -337,6 +352,7 @@ class PlannerStore {
     const name = this.tasks.find((t) => t.id === taskId)?.name ?? this.tasksWithoutDueDate.find((t) => t.id === taskId)?.name ?? 'task';
     try {
       await api.post(`/api/tasks/${encodeURIComponent(taskId)}/refile`, { target: { parentGid } });
+      trackEvent('Task', 'Refiled as Subtask');
       this.closeSearchPanel();
       await this.refreshRefiledTask(taskId);
       this.showToast(`Moved "${name}" under "${parentName}" · synced to Asana`);
@@ -841,6 +857,7 @@ class PlannerStore {
     this.outlookConnected = me.outlookConnected;
     this.asanaAccountLabel = me.asanaAccountLabel;
     this.outlookAccountLabel = me.outlookAccountLabel;
+    setAnalyticsUserId(me.asanaEmail);
     this.prefStartTime = me.settings.prefStartTime;
     this.prefEndTime = me.settings.prefEndTime;
     this.bufferMinutes = me.settings.bufferMinutes;
@@ -1192,6 +1209,7 @@ class PlannerStore {
   /// something, not silently no-op if detection hasn't settled yet.
   installPromptRequestId = $state(0);
   requestInstallPrompt() {
+    trackEvent('App', 'Install Prompted');
     this.installPromptRequestId++;
   }
 
@@ -1421,6 +1439,7 @@ class PlannerStore {
   /// Up Next, not filtered out the way an actually-handled task is.
   skipTask() {
     if (!this.hasFocusTask) return;
+    trackEvent('Task', 'Skipped');
     this.focusIndex = Math.min(this.focusIndex + 1, this.queueTasks.length - 1);
   }
 
@@ -1451,13 +1470,16 @@ class PlannerStore {
     const path = provider === 'ASANA' ? 'asana' : 'outlook';
     try {
       const res = await api.delete<{ loggedOut: boolean; primaryProvider?: 'ASANA' | 'OUTLOOK' }>(`/auth/${path}`);
+      trackEvent('Account', 'Disconnected', provider);
       if (res.loggedOut) {
+        setAnalyticsUserId(null);
         window.location.href = '/';
         return;
       }
       if (provider === 'ASANA') {
         this.asanaConnected = false;
         this.asanaAccountLabel = null;
+        setAnalyticsUserId(null);
       } else {
         this.outlookConnected = false;
         this.outlookAccountLabel = null;
@@ -1561,6 +1583,7 @@ class PlannerStore {
     this.bugReportSubmitting = true;
     try {
       await api.post('/api/tasks/bug-report', { description });
+      trackEvent('Support', 'Bug Report Submitted');
       this.bugReportOpen = false;
       this.bugReportDraft = '';
       this.showToast('Bug report filed in Asana');
@@ -1602,6 +1625,7 @@ class PlannerStore {
       const res = await api.post<{ queued: number }>('/api/tasks/reset-day', {
         tasks: targets.map((t) => ({ gid: t.id, dueOn: t.dueOn })),
       });
+      trackEvent('Day', 'Reset', undefined, res.queued);
       for (const t of targets) this.setTaskDueFieldsLocally(t.id, t.dueOn, null);
       this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
       this.showToast(`Queued ${res.queued} task${res.queued === 1 ? '' : 's'} to reset`, {
@@ -2516,6 +2540,7 @@ class PlannerStore {
   /// confirms. The toast's Undo restores the task's previous due date
   /// (also fired in the background) and jumps focus back to it.
   private commitPlanLocally(task: Task, dueAtIso: string, toastMsg: string, dayKey: string) {
+    trackEvent('Task', 'Planned', dayKey);
     const previousDueOn = task.dueOn;
     const previousDueAt = task.dueAt;
     // Planning a task *for later* removes it from today's queue entirely

@@ -2,6 +2,11 @@ import { mount } from 'svelte';
 import './lib/tokens.css';
 import App from './App.svelte';
 import { captureInstallPromptEvent } from './lib/installPrompt';
+import { initAnalytics } from './lib/analytics';
+
+// As early as possible so a launch that never gets past the loading/login
+// screen still counts as a visit.
+initAnalytics();
 
 // Registered before mount() since beforeinstallprompt can fire as soon as
 // the page loads if install criteria are already met — attaching the

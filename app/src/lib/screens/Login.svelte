@@ -2,6 +2,7 @@
   import { planner } from '../store.svelte';
   import Icon from '../components/Icon.svelte';
   import Button from '../components/Button.svelte';
+  import { trackEvent } from '../analytics';
 
   // Standalone status can't change without a full app restart from a home
   // screen icon, so a plain one-time check at mount is enough — no need to
@@ -18,13 +19,13 @@
       becomes your primary login, and you'll connect the other one next.
     </div>
 
-    <a class="provider-row" href={planner.asanaLoginUrl}>
+    <a class="provider-row" href={planner.asanaLoginUrl} onclick={() => trackEvent('Auth', 'Login Click', 'Asana')}>
       <div class="avatar">A</div>
       <div class="provider-name">Continue with Asana</div>
       <Icon name="chevron-right" size={16} color="var(--color-text-muted)" />
     </a>
 
-    <a class="provider-row" style="margin-top:12px;" href={planner.outlookLoginUrl}>
+    <a class="provider-row" style="margin-top:12px;" href={planner.outlookLoginUrl} onclick={() => trackEvent('Auth', 'Login Click', 'Outlook')}>
       <div class="avatar">O</div>
       <div class="provider-name">Continue with Outlook</div>
       <Icon name="chevron-right" size={16} color="var(--color-text-muted)" />
