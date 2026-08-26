@@ -3,13 +3,14 @@
   import Icon from '../components/Icon.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Button from '../components/Button.svelte';
+  import { roundHours } from '../format';
 
   const dayFullKey = $derived(planner.pendingPlan ? (planner.pendingPlan.type === 'today' ? 'today' : planner.pendingPlan.key) : null);
   const dayFullDay = $derived(dayFullKey ? planner.workloadDays.find((d) => d.key === dayFullKey) : null);
   const dayFullLabel = $derived(dayFullDay?.label ?? 'This day');
   const dayFullDetail = $derived(
     dayFullDay
-      ? `You already allocated ${dayFullDay.planned}h of tasks. Your target is ${dayFullDay.capacity}h. What do you want to do?`
+      ? `You already allocated ${roundHours(dayFullDay.planned)}h of tasks. Your target is ${roundHours(dayFullDay.capacity)}h. What do you want to do?`
       : '',
   );
 </script>

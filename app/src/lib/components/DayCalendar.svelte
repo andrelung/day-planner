@@ -38,8 +38,30 @@
     /// reason to hide the early-morning/late-night hours the way a
     /// planning flow does.
     fullDay?: boolean;
+    /// Already-completed tasks due this day, drawn read-only (no drag, no
+    /// clear/plan-later actions — there's nothing left to plan) so a day
+    /// already looked at doesn't have its done work simply vanish once it's
+    /// checked off. Empty for every caller except CalendarView, the only
+    /// place completed tasks are fetched for at all (see its own comment on
+    /// why the client's regular `tasks` list is deliberately incomplete-only).
+    completedTasks?: Task[];
+    /// Fires whenever a block drag starts/ends — lets CalendarView suppress
+    /// its own swipe-to-change-day gesture for the whole life of a drag, not
+    /// just while the touch started on a block (see its own comment on why
+    /// that alone wasn't enough).
+    ondragstatechange?: (dragging: boolean) => void;
   }
-  let { date, excludeTaskId, outlookEvents, onPickTime, suggestedStartTime = null, allowPlacement = true, fullDay = false }: Props = $props();
+  let {
+    date,
+    excludeTaskId,
+    outlookEvents,
+    onPickTime,
+    suggestedStartTime = null,
+    allowPlacement = true,
+    fullDay = false,
+    completedTasks = [],
+    ondragstatechange,
+  }: Props = $props();
 
   const PX_PER_MIN = 1.4;
   const SNAP_MIN = 15;
@@ -68,6 +90,10 @@
   /// "doubled" flag, since removed) silently disappear from the calendar
   /// while it kept right on conflicting at confirm time.
   const otherTasks = $derived(planner.tasks.filter((t) => t.dueOn === date && t.dueAt && t.id !== excludeTaskId));
+  /// Same dueAt requirement as otherTasks above — a completed task with no
+  /// due time has no natural position on a time-based grid, so it's simply
+  /// not drawn (same as an incomplete one in that state already isn't).
+  const completedWithTime = $derived(completedTasks.filter((t) => t.dueAt));
 
   /// Minutes-of-day for an Outlook event's start, or a task's dueAt, in the
   /// user's own configured timezone — not the device's ambient one, which
@@ -91,13 +117,15 @@
     if (fullDay) return 0;
     const base = toMinutes(planner.prefStartTime) - 120;
     const earliestTask = otherTasks.reduce((min, t) => Math.min(min, isoStartMinutes(t.dueAt!)), base);
-    const earliest = outlookEvents.reduce((min, e) => Math.min(min, isoStartMinutes(e.start)), earliestTask);
+    const earliestCompleted = completedWithTime.reduce((min, t) => Math.min(min, isoStartMinutes(t.dueAt!)), earliestTask);
+    const earliest = outlookEvents.reduce((min, e) => Math.min(min, isoStartMinutes(e.start)), earliestCompleted);
     return Math.max(0, Math.floor(earliest / 60) * 60);
   });
   const endMin = $derived.by(() => {
     const base = fullDay ? 24 * 60 : toMinutes(planner.prefEndTime) + 120;
     const latestTask = otherTasks.reduce((max, t) => Math.max(max, isoStartMinutes(t.dueAt!) + t.hours * 60), base);
-    const latest = outlookEvents.reduce((max, e) => Math.max(max, isoStartMinutes(e.start) + isoDurationMinutes(e.start, e.end)), latestTask);
+    const latestCompleted = completedWithTime.reduce((max, t) => Math.max(max, isoStartMinutes(t.dueAt!) + t.hours * 60), latestTask);
+    const latest = outlookEvents.reduce((max, e) => Math.max(max, isoStartMinutes(e.start) + isoDurationMinutes(e.start, e.end)), latestCompleted);
     const rounded = Math.ceil(latest / 60) * 60;
     // fullDay deliberately doesn't cap at 24:00 the way the bounded
     // planning window below does — a task starting late enough to run past
@@ -189,7 +217,8 @@
 
   type CalItem =
     | ({ kind: 'task'; task: Task } & Positioned)
-    | ({ kind: 'outlook'; event: OutlookBlock } & Positioned);
+    | ({ kind: 'outlook'; event: OutlookBlock } & Positioned)
+    | ({ kind: 'completed'; task: Task } & Positioned);
 
   const rawBlocks = $derived<CalItem[]>(
     otherTasks.map((t) => ({
@@ -209,9 +238,21 @@
       overlapHeight: Math.max(1, isoDurationMinutes(e.start, e.end) * PX_PER_MIN),
     })),
   );
-  const columned = $derived(assignColumns([...rawBlocks, ...rawOutlookBlocks]));
+  const rawCompletedBlocks = $derived<CalItem[]>(
+    completedWithTime.map((t) => ({
+      kind: 'completed' as const,
+      task: t,
+      top: Math.max(0, (isoStartMinutes(t.dueAt!) - startMin) * PX_PER_MIN),
+      height: Math.max(MIN_BLOCK_HEIGHT, t.hours * 60 * PX_PER_MIN),
+      overlapHeight: Math.max(1, t.hours * 60 * PX_PER_MIN),
+    })),
+  );
+  const columned = $derived(assignColumns([...rawBlocks, ...rawOutlookBlocks, ...rawCompletedBlocks]));
   const blocks = $derived(columned.filter((b) => b.kind === 'task') as ((CalItem & { kind: 'task' }) & Columned)[]);
   const outlookBlocks = $derived(columned.filter((b) => b.kind === 'outlook') as ((CalItem & { kind: 'outlook' }) & Columned)[]);
+  const completedBlocks = $derived(
+    columned.filter((b) => b.kind === 'completed') as ((CalItem & { kind: 'completed' }) & Columned)[],
+  );
   /// The wrap-up/context-switch buffer findConflicts/computeFreeSlots
   /// already treat as unavailable after anything on the calendar (see
   /// freeSlots.ts) — drawn here too so it's visible *why* the next slot
@@ -314,6 +355,9 @@
   // --- drag-to-move, shared by already-placed tasks and the pending block ---
   type DragTarget = { kind: 'other'; taskId: string } | { kind: 'pending' };
   let dragTarget: DragTarget | null = $state(null);
+  $effect(() => {
+    ondragstatechange?.(dragTarget !== null);
+  });
   let dragTop = $state(0);
   let dragStartY = 0;
   let dragOrigTop = 0;
@@ -484,6 +528,25 @@
       {#if bufferPx > 0}
         <div class="buffer-segment" style="{colStyle(o.col, o.cols, o.stackDepth)} top:{o.top + o.overlapHeight}px; height:{bufferPx}px;"></div>
       {/if}
+    {/each}
+    {#each completedBlocks as c (c.task.id)}
+      <!-- Read-only — no drag/clear/plan-later, there's nothing left to do
+           with a task that's already done. stopPropagation just keeps a tap
+           here from conjuring a pending block on the track underneath it. -->
+      <div
+        class="completed-block"
+        class:completed-block--stacked={c.stackDepth > 0}
+        style="{colStyle(c.col, c.cols, c.stackDepth)} top:{c.top}px; height:{c.height}px; z-index:{1 + c.stackDepth};"
+        onclick={(e) => e.stopPropagation()}
+      >
+        <span class="completed-block__icon">
+          <Icon name="check-circle" size={11} color="var(--color-feedback-correct)" />
+        </span>
+        <div class="completed-block__text">
+          <div class="completed-block__name">{c.task.name}</div>
+          <div class="completed-block__time">{toHHMM(isoStartMinutes(c.task.dueAt!))}</div>
+        </div>
+      </div>
     {/each}
     {#if allowPlacement && pendingMin !== null}
       <div
@@ -849,6 +912,54 @@
     text-overflow: ellipsis;
   }
   .outlook-block__time {
+    font-family: var(--font-family-base);
+    font-size: 11px;
+    color: var(--color-text-muted);
+  }
+  /* Muted/strikethrough rather than the striped "needs a decision" look of
+     an unresolved Outlook block — a completed task isn't awaiting any
+     action, it's just there so the day doesn't look like the work never
+     happened. Read-only: no drag handlers, no icon-buttons. */
+  .completed-block {
+    position: absolute;
+    background: var(--color-bg-page);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    opacity: 0.6;
+  }
+  .completed-block--stacked {
+    box-shadow: -2px 0 4px rgba(22, 32, 60, 0.12);
+  }
+  .completed-block__icon {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .completed-block__text {
+    min-width: 0;
+  }
+  .completed-block__name {
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 12px;
+    color: var(--color-text-muted);
+    text-decoration: line-through;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .completed-block__time {
     font-family: var(--font-family-base);
     font-size: 11px;
     color: var(--color-text-muted);

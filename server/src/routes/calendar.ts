@@ -6,7 +6,7 @@ import { getValidAccessToken } from '../lib/tokens.js';
 import { computeFreeSlots } from '../lib/freeSlots.js';
 import { getOrCreateSettings } from '../lib/settings.js';
 import { listEvents } from '../providers/outlook.js';
-import { createBareTask, createSubtask, createTaskInProject } from '../providers/asana.js';
+import { createBareTask, createSubtask, createTaskInProject, listTasksForDate } from '../providers/asana.js';
 import { recordMatch } from '../lib/matchLog.js';
 import { addDaysToDateStr, dateStrInTz, hmInTz, weekdayNameOfDateStr, zonedMidnightUtc } from '../lib/tz.js';
 
@@ -176,6 +176,41 @@ calendarRouter.get('/free-slots', async (req, res) => {
 
   const slots = computeFreeSlots(dateStr, settings.timezone, settings.prefStartTime, settings.prefEndTime, settings.bufferMinutes, busy, Math.round(hours * 60));
   res.json({ slots, outlookEvents });
+});
+
+const dayTasksQuerySchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+
+/// GET /api/calendar/day-tasks?date=YYYY-MM-DD — every task (including
+/// already-completed ones) due on one specific date, for the standalone
+/// calendar view (CalendarView.svelte) to draw alongside the incomplete
+/// tasks it already has loaded client-side. Only completed tasks are
+/// actually new information here — the client's own `tasks` list already
+/// covers everything incomplete — but the whole set is returned so the
+/// client doesn't need to reconcile two different notions of "today's
+/// tasks" itself.
+calendarRouter.get('/day-tasks', async (req, res) => {
+  const parsed = dayTasksQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const accessToken = await getValidAccessToken(req.userId!, 'ASANA');
+  const settings = await getOrCreateSettings(req.userId!);
+  const tasks = await listTasksForDate(accessToken, parsed.data.date, settings.timezone, req.userId!);
+  res.json({
+    tasks: tasks.map((t) => ({
+      id: t.gid,
+      name: t.name,
+      project: t.project,
+      hours: t.hours,
+      hasExplicitHours: t.hasExplicitHours,
+      dueHour: t.dueHour,
+      dueAt: t.dueAt,
+      dueOn: t.dueOn,
+      permalinkUrl: t.permalinkUrl,
+      completed: t.completed,
+    })),
+  });
 });
 
 const linkSchema = z.object({

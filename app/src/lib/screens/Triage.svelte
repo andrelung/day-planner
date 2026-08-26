@@ -71,6 +71,11 @@
   // selectFocus itself was always index-agnostic (a plain findIndex by id),
   // so no change was needed there — only what's actually rendered.
   const restTasks = $derived(hasFocusTask ? planner.queueTasks : []);
+  // Calendar events from the active day onward — merged into restItems
+  // below alongside restTasks, so a fixed-time meeting shows in "Up next"
+  // too, not just tasks. Excludes currentEvent since that one's already
+  // shown prominently above as the gating focus card.
+  const restEvents = $derived(hasFocusTask ? planner.queueEventsFrom(currentEvent?.id ?? null) : []);
   // The header count is still "how many are ahead", not the full list's
   // length now that past tasks are included in it too — showing the total
   // there would read as "N tasks left" when most of them are already done.
@@ -85,21 +90,44 @@
   // the queue really is grouped by day, and a keyed {#each} that ever sees
   // the same key twice throws (each_key_duplicate) mid-render — which
   // aborts the whole update batch and leaves the app frozen on stale DOM
-  // whose handlers still fire. `tasks` is kept in day order for real (see
-  // sortedQueueOrder in store.svelte.ts); qualifying the header key with
-  // the index its run starts at means even a list that somehow isn't
-  // ordered degrades into a repeated header rather than a dead screen.
-  type UpNextItem = { key: string; kind: 'header'; label: string } | { key: string; kind: 'task'; task: (typeof restTasks)[number]; index: number };
+  // whose handlers still fire. Tasks and events are merged into one
+  // date+time-sorted run below (rather than each_key deriving from list
+  // position) precisely so that run stays properly grouped by day even
+  // once two different sources feed it, keeping that guarantee real.
+  type UpNextItem =
+    | { key: string; kind: 'header'; label: string }
+    | { key: string; kind: 'task'; task: (typeof restTasks)[number]; index: number }
+    | { key: string; kind: 'event'; event: (typeof restEvents)[number]['event'] };
   const restItems = $derived.by(() => {
+    type Entry =
+      | { date: string; timeMs: number | null; seq: number; kind: 'task'; task: (typeof restTasks)[number]; index: number }
+      | { date: string; timeMs: number | null; seq: number; kind: 'event'; event: (typeof restEvents)[number]['event'] };
+    const entries: Entry[] = [];
+    restTasks.forEach((t, index) => {
+      entries.push({ date: t.dueOn ?? '', timeMs: t.dueAt ? new Date(t.dueAt).getTime() : null, seq: index, kind: 'task', task: t, index });
+    });
+    restEvents.forEach(({ event, date }, i) => {
+      entries.push({ date, timeMs: new Date(event.start).getTime(), seq: restTasks.length + i, kind: 'event', event });
+    });
+    // Grouped by date first (so same-day entries stay contiguous for the
+    // header logic below), then untimed-before-timed within a day (matches
+    // sortedQueueOrder's own convention for tasks), then by time.
+    entries.sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      if ((a.timeMs === null) !== (b.timeMs === null)) return a.timeMs === null ? -1 : 1;
+      if (a.timeMs !== null && b.timeMs !== null && a.timeMs !== b.timeMs) return a.timeMs - b.timeMs;
+      return a.seq - b.seq;
+    });
     const items: UpNextItem[] = [];
     let lastLabel: string | null = null;
-    restTasks.forEach((t, index) => {
-      const label = planner.dayLabelFor(t.dueOn);
+    entries.forEach((entry) => {
+      const label = planner.dayLabelFor(entry.date || null);
       if (label !== lastLabel) {
-        items.push({ key: `day:${index}:${label}`, kind: 'header', label });
+        items.push({ key: `day:${entry.date}:${label}`, kind: 'header', label });
         lastLabel = label;
       }
-      items.push({ key: `task:${t.id}`, kind: 'task', task: t, index });
+      if (entry.kind === 'task') items.push({ key: `task:${entry.task.id}`, kind: 'task', task: entry.task, index: entry.index });
+      else items.push({ key: `event:${entry.event.id}`, kind: 'event', event: entry.event });
     });
     return items;
   });
@@ -293,11 +321,28 @@
           </span>
         </button>
       {/if}
-      {#if restTasks.length > 0 && !planner.upNextCollapsed}
+      {#if restItems.length > 0 && !planner.upNextCollapsed}
         {#each restItems as item (item.key)}
         <div animate:flip={{ duration: 220 }}>
           {#if item.kind === 'header'}
             <div class="day-divider">{item.label}</div>
+          {:else if item.kind === 'event'}
+            {@const ev = item.event}
+            <div class="up-next-row">
+              <div
+                class="up-next-row__main"
+                role="button"
+                tabindex="0"
+                onclick={() => planner.selectUpNextEvent(ev)}
+                onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && planner.selectUpNextEvent(ev)}
+              >
+                <Icon name="calendar" size={14} color="var(--color-text-muted)" />
+                <div class="up-next-row__text">
+                  <div class="up-next-row__name">{ev.title}</div>
+                  <div class="up-next-row__project">{ev.timeLabel}</div>
+                </div>
+              </div>
+            </div>
           {:else}
             {@const t = item.task}
             {@const isCurrent = item.index === planner.focusIndex}
@@ -710,7 +755,7 @@
     font-weight: var(--font-weight-bold);
     color: var(--color-text-muted);
     padding-top: 6px;
-    margin-top: 4px;
+    margin-top: 14px;
     border-top: 1px solid var(--color-border);
   }
   .day-divider:first-child {

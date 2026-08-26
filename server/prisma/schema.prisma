@@ -99,6 +99,10 @@ model Settings {
   /// Defaults true (ask) — turning it off silently double-books instead,
   /// same as always tapping "Double-book anyway" would.
   confirmDoubleBooking Boolean @default(true)
+  /// Whether Triage's "Up next" list is collapsed — synced across devices
+  /// (unlike the per-day-full dismissal above) since it's a deliberate
+  /// layout choice the user makes once, not a session-ish thing.
+  upNextCollapsed Boolean @default(false)
   updatedAt      DateTime @updatedAt
 }
 

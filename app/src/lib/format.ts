@@ -1,6 +1,13 @@
-export function fmtHours(h: number): string {
+/// Rounds to at most 1 decimal place, with no trailing zero and no unit —
+/// shared by fmtHours (adds "h") and badgeLabel strings like "6.5/6h" that
+/// need both sides of the slash rounded the same way.
+export function roundHours(h: number): string {
   const r = Math.round(h * 10) / 10;
-  return (r % 1 === 0 ? r.toFixed(0) : r.toFixed(1)) + 'h';
+  return r % 1 === 0 ? r.toFixed(0) : r.toFixed(1);
+}
+
+export function fmtHours(h: number): string {
+  return roundHours(h) + 'h';
 }
 
 /// Coarse "how long ago" for the Triage overdue badge — minutes under an

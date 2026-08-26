@@ -17,7 +17,7 @@ import type {
   WorkloadDay,
 } from './types';
 import { api, ApiError } from './api';
-import { fmtHours, slotStartTime } from './format';
+import { fmtHours, roundHours, slotStartTime } from './format';
 import { BUILD_ID } from './version';
 import { stringSimilarity } from 'string-similarity-js';
 import { addDaysToDateStr, dateStrInTz, hhmmInTz, monthDayOfDateStr, weekdayNameOfDateStr, weekdayOfDateStr, zonedMidnightUtc } from './tz';
@@ -145,6 +145,7 @@ interface MeResponse {
     timezone: string;
     skipDayFullWarning: boolean;
     confirmDoubleBooking: boolean;
+    upNextCollapsed: boolean;
   };
 }
 
@@ -216,16 +217,19 @@ class PlannerStore {
   editingRestId: string | null = $state(null);
   restHoursDraft = $state(0);
 
-  /// A pure display preference (not synced anywhere) — collapsing "Up next"
-  /// frees up vertical room for the focus card's own expanded details (see
-  /// Triage.svelte), for someone who'd rather see more about the one task
-  /// in front of them than a preview of what's coming after it. Persisted
-  /// so the choice survives a reload rather than resetting to shown every
-  /// time.
+  /// A display preference — collapsing "Up next" frees up vertical room for
+  /// the focus card's own expanded details (see Triage.svelte), for someone
+  /// who'd rather see more about the one task in front of them than a
+  /// preview of what's coming after it. Synced via Settings (see patchSettings
+  /// below and me.settings.upNextCollapsed's hydration) so the choice
+  /// follows the user across devices rather than resetting to shown on a
+  /// different one; the localStorage read here is just the pre-boot
+  /// placeholder until /api/me's real value lands.
   upNextCollapsed: boolean = $state(localStorage.getItem('upNextCollapsed') === '1');
   toggleUpNextCollapsed() {
     this.upNextCollapsed = !this.upNextCollapsed;
     localStorage.setItem('upNextCollapsed', this.upNextCollapsed ? '1' : '0');
+    void this.patchSettings({ upNextCollapsed: this.upNextCollapsed });
   }
 
   /// The extra detail shown alongside taskDetails below — description,
@@ -412,7 +416,7 @@ class PlannerStore {
   }
   get todayBadgeLabel() {
     const t = this.todayWorkload;
-    return t?.loaded ? `${t.planned}/${t.capacity}h` : '';
+    return t?.loaded ? `${roundHours(t.planned)}/${roundHours(t.capacity)}h` : '';
   }
   /// The user's own configured timezone (Settings → Timezone) — not the
   /// device's ambient one, which can silently differ from it (most
@@ -843,6 +847,8 @@ class PlannerStore {
     this.timezone = me.settings.timezone;
     this.skipDayFullWarning = me.settings.skipDayFullWarning;
     this.confirmDoubleBooking = me.settings.confirmDoubleBooking;
+    this.upNextCollapsed = me.settings.upNextCollapsed;
+    localStorage.setItem('upNextCollapsed', this.upNextCollapsed ? '1' : '0');
 
     if (onboarding && (!me.asanaConnected || !me.outlookConnected)) {
       this.screen = 'loginSecondary';
@@ -1384,7 +1390,16 @@ class PlannerStore {
     if (focusId) {
       const idx = this.queueTasks.findIndex((t) => t.id === focusId);
       if (idx !== -1) {
-        this.focusIndex = idx;
+        // Sets the raw index directly, bypassing the focusIndex setter's
+        // own activeDate-follows-focus behavior — that setter exists for
+        // genuine user-driven navigation (swipes, jumpToDate), not for this
+        // "re-find the same card after a sync" case. Going through it here
+        // used to snap the visible day to that task's *current* dueOn
+        // whenever a sync landed after the due date changed externally
+        // (e.g. set from Asana) while the app was backgrounded — jarring,
+        // since the whole point of resyncFocus is that the screen shouldn't
+        // move just because a sync happened.
+        this._focusIndex = idx;
         return;
       }
       const stillExists = this.tasks.some((t) => t.id === focusId) || this.tasksWithoutDueDate.some((t) => t.id === focusId);
@@ -1497,6 +1512,7 @@ class PlannerStore {
       timezone: string;
       skipDayFullWarning: boolean;
       confirmDoubleBooking: boolean;
+      upNextCollapsed: boolean;
     }>,
   ) {
     try {
@@ -1962,6 +1978,12 @@ class PlannerStore {
   // up.
   calendarViewDate: string = $state(this.toDateStr(new Date()));
   calendarViewOutlookEvents: OutlookBlock[] = $state([]);
+  /// Already-completed tasks due this day — fetched separately from the
+  /// client's own `tasks` list, which is deliberately incomplete-only (see
+  /// queueTasks). Without this, a task shown all day in the calendar view
+  /// simply vanishes the moment it's checked off, which read as done work
+  /// going missing rather than done.
+  calendarViewCompletedTasks: Task[] = $state([]);
   calendarViewLoading = $state(false);
   /// Deliberately its own thing rather than reusing dayLabelFor — that one
   /// is shared by Triage/Overview, which want a bare weekday name ("Monday")
@@ -1991,15 +2013,27 @@ class PlannerStore {
   }
   /// Reuses free-slots purely for its outlookEvents half (see calendar.ts) —
   /// hours/busyTasks don't matter here since this view never reads `slots`.
+  /// Fetched alongside day-tasks (completed tasks for the same day — see
+  /// calendarViewCompletedTasks) so both loads race together rather than
+  /// serially, same reasoning as every other boot-time Promise.all.
   async loadCalendarViewEvents() {
     this.calendarViewLoading = true;
+    const date = this.calendarViewDate;
     try {
-      const res = await api.get<{ slots: string[]; outlookEvents: OutlookBlock[] }>(`/api/calendar/free-slots?date=${this.calendarViewDate}&hours=1`);
-      this.calendarViewOutlookEvents = res.outlookEvents;
+      const [freeSlots, dayTasks] = await Promise.all([
+        api.get<{ slots: string[]; outlookEvents: OutlookBlock[] }>(`/api/calendar/free-slots?date=${date}&hours=1`),
+        api.get<{ tasks: (Task & { completed: boolean })[] }>(`/api/calendar/day-tasks?date=${date}`),
+      ]);
+      // The view may have already stepped to a different day by the time
+      // this resolves — a stale response landing after a newer one would
+      // otherwise flash the wrong day's tasks/events onto the current one.
+      if (this.calendarViewDate !== date) return;
+      this.calendarViewOutlookEvents = freeSlots.outlookEvents;
+      this.calendarViewCompletedTasks = dayTasks.tasks.filter((t) => t.completed);
     } catch (err) {
       this.reportError(err, 'Could not load calendar');
     } finally {
-      this.calendarViewLoading = false;
+      if (this.calendarViewDate === date) this.calendarViewLoading = false;
     }
   }
   /// "Tasks without Due Date" in Overview — opens the exact same Triage
@@ -2067,6 +2101,31 @@ class PlannerStore {
     this.jumpToDate(this.toLocalDateStr(event.start));
     this.pinnedEventId = event.id;
   }
+  /// Tapping a calendar event's own row directly in Triage's "Up next" list
+  /// (see queueEventsFrom) — same end state as openEventInTriage (jump to
+  /// its day, pin it as the focus card) but without Overview's
+  /// screen/justPlannedIds/reviewingBacklog resets, which don't apply since
+  /// we're already on Triage.
+  selectUpNextEvent(event: CalendarEvent) {
+    this.jumpToDate(this.toLocalDateStr(event.start));
+    this.pinnedEventId = event.id;
+  }
+  /// Calendar events from the active day onward, paired with their local
+  /// date string — for Triage's "Up next" list (restItems) to merge
+  /// alongside queueTasks so a fixed-time meeting shows up there too, not
+  /// just tasks. `excludeId` is whichever event is already shown as the
+  /// gating focus card above (Triage's currentEvent) so it isn't repeated.
+  /// Meaningless while reviewing the backlog (no due date to compare
+  /// against), same as activeDayUnlinkedEvents.
+  queueEventsFrom(excludeId: string | null): { event: CalendarEvent; date: string }[] {
+    if (this.reviewingBacklog) return [];
+    const active = this.activeDate;
+    return this.events
+      .filter((e) => e.id !== excludeId)
+      .map((e) => ({ event: e, date: this.toLocalDateStr(e.start) }))
+      .filter((x) => x.date >= active)
+      .sort((a, b) => a.event.start.localeCompare(b.event.start));
+  }
 
   /// workloadDays, minus the aggregate "Next week" bucket whenever it would
   /// be pure redundancy: "tomorrow" already skips weekends (see
@@ -2096,7 +2155,7 @@ class PlannerStore {
       .map((d) => ({
         key: d.key,
         label: d.label,
-        badgeLabel: d.loaded ? `${d.planned}/${d.capacity}h` : '—',
+        badgeLabel: d.loaded ? `${roundHours(d.planned)}/${roundHours(d.capacity)}h` : '—',
         tone: !d.loaded ? ('neutral' as const) : d.planned / d.capacity >= 1 ? ('wrong' as const) : ('correct' as const),
       }));
   }
@@ -2177,7 +2236,7 @@ class PlannerStore {
       const ratio = capacity > 0 ? planned / capacity : 0;
       const friday = addDaysToDateStr(date, 4);
       const range = `${this.fmtDayMonthStr(date)} - ${this.fmtDayMonthStr(friday)}`;
-      return { key: `week+${n}`, label: `Plan in ${n} weeks (${range})`, date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
+      return { key: `week+${n}`, label: `Plan in ${n} weeks (${range})`, date, badgeLabel: `${roundHours(planned)}/${roundHours(capacity)}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
     });
   }
 
@@ -2190,7 +2249,7 @@ class PlannerStore {
     return [0, 1, 2, 3, 4].map((n) => {
       const date = addDaysToDateStr(nextMonday, n);
       const { planned, capacity, ratio } = this.fullnessFor(date);
-      return { key: `nextweekday+${n}`, label: weekdayNameOfDateStr(date), date, badgeLabel: `${planned}/${capacity}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
+      return { key: `nextweekday+${n}`, label: weekdayNameOfDateStr(date), date, badgeLabel: `${roundHours(planned)}/${roundHours(capacity)}h`, tone: ratio >= 1 ? 'wrong' : 'correct' };
     });
   }
   openNextWeekDays() {

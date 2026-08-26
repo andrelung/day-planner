@@ -2,6 +2,7 @@
   import { planner } from '../store.svelte';
   import IconButton from '../components/IconButton.svelte';
   import Input from '../components/Input.svelte';
+  import { roundHours } from '../format';
 
   interface DayRow {
     label: string;
@@ -28,7 +29,7 @@
       const over = ratio >= 1;
       return {
         label: d.label,
-        hoursLabel: `${d.planned}/${d.capacity}h`,
+        hoursLabel: `${roundHours(d.planned)}/${roundHours(d.capacity)}h`,
         barWidth: Math.min(100, ratio * 100) + '%',
         barColor: over ? 'var(--color-feedback-wrong)' : 'var(--color-feedback-correct)',
         textColor: over ? 'var(--color-feedback-wrong)' : 'var(--color-text-muted)',

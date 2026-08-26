@@ -7,6 +7,30 @@
   const weeks = $derived(planner.calendarWeeks);
   const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+  // A swipe left/right steps the month, same as the chevron buttons —
+  // mirrors CalendarView's day-swipe (see its own comment on the
+  // threshold/off-axis reasoning). A day cell's own tap has ~0 dx, so it
+  // never crosses the threshold and stays a normal click.
+  const SWIPE_THRESHOLD_PX = 90;
+  const SWIPE_MAX_OFF_AXIS_RATIO = 0.5;
+  let touchStartX = 0;
+  let touchStartY = 0;
+  function onContentTouchStart(e: TouchEvent) {
+    if (e.touches.length !== 1) return;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }
+  function onContentTouchEnd(e: TouchEvent) {
+    const touch = e.changedTouches[0];
+    if (!touch) return;
+    const dx = touch.clientX - touchStartX;
+    const dy = touch.clientY - touchStartY;
+    if (Math.abs(dx) < SWIPE_THRESHOLD_PX) return;
+    if (Math.abs(dy) > Math.abs(dx) * SWIPE_MAX_OFF_AXIS_RATIO) return;
+    if (dx < 0) planner.calendarNextMonth();
+    else planner.calendarPrevMonth();
+  }
+
   function fullnessClass(ratio: number): string {
     if (ratio >= 1) return 'cell__dot--full';
     if (ratio > 0) return 'cell__dot--partial';
@@ -34,7 +58,7 @@
     <div class="subtitle">{planner.planTargetLabel}</div>
   </div>
 
-  <div class="content">
+  <div class="content" ontouchstart={onContentTouchStart} ontouchend={onContentTouchEnd}>
     <div class="month-nav">
       <IconButton
         icon="chevron-left"

@@ -570,6 +570,36 @@ async function searchNearTermTasks(accessToken: string, workspaceGid: string, du
   }
 }
 
+/// Every task (done or not) assigned to the caller, due on exactly one
+/// date — used only by the standalone calendar view (routes/calendar.ts's
+/// GET /day) so a day already looked at keeps showing its completed work
+/// instead of it vanishing the moment it's checked off. Deliberately
+/// separate from listIncompleteAssignedTasks/searchNearTermTasks, both of
+/// which exist specifically to filter completed tasks *out* for the
+/// swipeable triage queue — this is the one place that filter would be
+/// wrong. No completed=false in the query, and no breadcrumb resolution
+/// (resolveBreadcrumbs) either: this is a read-only day view, not
+/// something the queue logic depends on, so a subtask briefly showing
+/// "No project" instead of its full breadcrumb isn't worth the extra
+/// per-task lookups here.
+export async function listTasksForDate(accessToken: string, dateStr: string, timezone: string, userId: string): Promise<(RemoteTask & { completed: boolean })[]> {
+  const workspaces = await listWorkspaces(accessToken, { userId });
+  const results = await Promise.all(
+    workspaces.map(async (ws) => {
+      try {
+        const data = (await asanaFetch(
+          accessToken,
+          `/workspaces/${ws.gid}/tasks/search?assignee.any=me&due_on=${dateStr}&opt_fields=${TASK_OPT_FIELDS}`,
+        )) as AsanaTaskDto[];
+        return data.map((dto) => ({ ...toRemoteTask(dto, timezone), completed: dto.completed }));
+      } catch {
+        return [];
+      }
+    }),
+  );
+  return results.flat();
+}
+
 /// Boot fires several concurrent requests that each need the caller's
 /// *entire* task list — the tasks stream itself, and workload's own hours/
 /// capacity computation (routes/workload.ts) — and each used to run its own

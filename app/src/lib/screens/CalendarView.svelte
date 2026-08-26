@@ -9,16 +9,25 @@
   // listeners fire independently alongside that without fighting over the
   // same event stream, and since this never calls preventDefault it can't
   // interfere with the block drag or the page's own vertical scroll either.
-  const SWIPE_THRESHOLD_PX = 60;
+  const SWIPE_THRESHOLD_PX = 90;
   // A swipe is rarely perfectly horizontal — allow some vertical drift, but
   // require horizontal to still clearly dominate, so an intentional vertical
   // scroll (or a block drag) doesn't get misread as a day change.
-  const SWIPE_MAX_OFF_AXIS_RATIO = 0.6;
+  const SWIPE_MAX_OFF_AXIS_RATIO = 0.5;
   let touchStartX = 0;
   let touchStartY = 0;
   // A swipe starting on an existing block should move/expand that block,
   // not change the day — skip day-swipe tracking entirely for those.
   let touchStartOnBlock = false;
+  // Whether DayCalendar currently has a block drag in progress — reported
+  // live via ondragstatechange, not just inferred from where the touch
+  // started (touchStartOnBlock alone let a drag that was still active by
+  // touchend slip through and change the day out from under it, which is
+  // what made this feel "too sensitive" mid-drag).
+  let dragInProgress = false;
+  function onDragStateChange(dragging: boolean) {
+    dragInProgress = dragging;
+  }
   function onContentTouchStart(e: TouchEvent) {
     if (e.touches.length !== 1) return;
     const target = e.target as HTMLElement;
@@ -27,7 +36,7 @@
     touchStartY = e.touches[0].clientY;
   }
   function onContentTouchEnd(e: TouchEvent) {
-    if (touchStartOnBlock) return;
+    if (touchStartOnBlock || dragInProgress) return;
     const touch = e.changedTouches[0];
     if (!touch) return;
     const dx = touch.clientX - touchStartX;
@@ -56,7 +65,15 @@
     {:else}
       <!-- excludeTaskId="" matches nothing — every task on this day should
            show, since there's no task being placed here to exclude. -->
-      <DayCalendar date={planner.calendarViewDate} excludeTaskId="" outlookEvents={planner.calendarViewOutlookEvents} allowPlacement={false} fullDay />
+      <DayCalendar
+        date={planner.calendarViewDate}
+        excludeTaskId=""
+        outlookEvents={planner.calendarViewOutlookEvents}
+        completedTasks={planner.calendarViewCompletedTasks}
+        allowPlacement={false}
+        fullDay
+        ondragstatechange={onDragStateChange}
+      />
     {/if}
   </div>
 </div>
