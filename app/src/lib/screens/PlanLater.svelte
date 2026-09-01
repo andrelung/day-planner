@@ -20,6 +20,12 @@
   </div>
 
   <div class="content">
+    <label class="quick-mode-row">
+      <div class="quick-mode-row__text">
+        <div class="quick-mode-row__label">Quick-mode: Tapping a day moves without time confirmation</div>
+      </div>
+      <input type="checkbox" class="quick-mode-row__toggle" checked={planner.quickPlanMode} onchange={() => planner.toggleQuickPlanMode()} />
+    </label>
     {#each laterDays as d}
       <button class="day-row" onclick={() => (d.key === 'nextweek' ? planner.openNextWeekDays() : planner.selectLaterDay(d.key))}>
         <div class="day-row__label">{d.label}</div>
@@ -108,6 +114,39 @@
     font-weight: var(--font-weight-bold);
     font-size: 14px;
     color: var(--color-text-primary);
+  }
+  /* Same light-surface-on-dark-screen treatment as .day-row just below, so
+     var(--color-text-primary)/the checkbox's accent-color both read
+     correctly — laid directly on the screen's own --color-bg-inverse they
+     wouldn't. A dashed border (rather than day-row's plain card) sets it
+     apart as a toggle/setting, not another day to tap. */
+  .quick-mode-row {
+    width: 100%;
+    background: var(--color-bg-surface);
+    border: 1px dashed var(--color-border-strong);
+    border-radius: var(--radius-md);
+    padding: 11px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+    cursor: pointer;
+  }
+  .quick-mode-row__text {
+    min-width: 0;
+  }
+  .quick-mode-row__label {
+    font-family: var(--font-family-base);
+    font-weight: var(--font-weight-bold);
+    font-size: 14px;
+    color: var(--color-text-primary);
+  }
+  .quick-mode-row__toggle {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--color-brand-primary);
+    flex-shrink: 0;
   }
   .day-row--center {
     justify-content: center;

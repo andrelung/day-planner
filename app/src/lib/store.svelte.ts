@@ -2285,6 +2285,10 @@ class PlannerStore {
   /// bucket key to workloadDays — these days have no tracked capacity data
   /// of their own, same reasoning as weekDeferOptions above.
   selectSpecificDay(date: string, label: string) {
+    if (this.quickPlanMode) {
+      this.quickPlanTo(date, label);
+      return;
+    }
     this.customDateValue = date;
     this.customDayLabel = label;
     this.laterDayKey = 'custom';
@@ -2352,6 +2356,44 @@ class PlannerStore {
     const weeks: (typeof cells)[] = [];
     for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
     return weeks;
+  }
+
+  /// Persistent (localStorage) toggle for the later-day planning flows
+  /// below (selectLaterDay/selectSpecificDay — reached from PlanLater,
+  /// NextWeekDays and PickDate) — when on, picking a day commits straight
+  /// to it with no due time and no confirmations (skips the slot picker
+  /// and the day-full warning entirely, same as deferToWeek already does
+  /// for the further-out weeks), for someone working through a big
+  /// backlog who'd rather just get things onto the right day than pick an
+  /// exact time for every single task. Device-local, not synced — closer
+  /// to a keyboard-shortcut habit than a real setting.
+  quickPlanMode: boolean = $state(localStorage.getItem('quickPlanMode') === '1');
+  toggleQuickPlanMode() {
+    this.quickPlanMode = !this.quickPlanMode;
+    localStorage.setItem('quickPlanMode', this.quickPlanMode ? '1' : '0');
+  }
+  /// The quickPlanMode shortcut shared by selectLaterDay/selectSpecificDay
+  /// — commits the task being planned straight to `date` with no due time.
+  /// Same shape as deferToWeek just below (and reuses
+  /// restoreTaskDueFieldsLocally the same way, for the same reason).
+  private quickPlanTo(date: string, label: string) {
+    const task = this.planFlowTaskForCommit('quickPlanTo');
+    if (!task) return;
+    this.planFlowTaskId = null;
+    const previousDueOn = task.dueOn;
+    const previousDueAt = task.dueAt;
+    this.restoreTaskDueFieldsLocally(task.id, date, null);
+    if (!this.justPlannedIds.includes(task.id)) this.justPlannedIds = [...this.justPlannedIds, task.id];
+    this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
+    this.returnFromPlanLater = null;
+    this.screen = 'triage';
+    this.showToast(`Moved "${task.name}" to ${label} · syncing to Asana`, {
+      label: 'Undo',
+      onClick: () => {
+        this.justPlannedIds = this.justPlannedIds.filter((id) => id !== task.id);
+        this.restoreTaskDueFieldsAndRefocus(task.id, previousDueOn, previousDueAt);
+      },
+    });
   }
 
   /// Moves the task being planned out to a future week's Monday with no
@@ -2868,6 +2910,12 @@ class PlannerStore {
   }
 
   selectLaterDay(key: string) {
+    if (this.quickPlanMode) {
+      const date = this.dateFor(key);
+      const label = this.workloadDays.find((d) => d.key === key)?.label ?? 'that day';
+      if (date) this.quickPlanTo(date, label);
+      return;
+    }
     if (this.isDayFull(key)) {
       this.pendingPlan = { type: 'later', key };
       this.screen = 'dayFull';

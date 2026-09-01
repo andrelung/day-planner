@@ -102,7 +102,7 @@
           </div>
           {#if !e.linked}
             <div class="event-row__actions">
-              <IconButton icon="plus" title="Add as new subtask" size={32} iconSize={16} onclick={() => planner.openAddPanel(e.id)} />
+              <IconButton icon="plus" title="Create task" size={32} iconSize={16} onclick={() => planner.openAddPanel(e.id)} />
               <IconButton icon="chevron-right" title="More actions" size={32} iconSize={16} onclick={() => planner.openEventPopup(e.id)} />
             </div>
           {/if}
@@ -133,7 +133,7 @@
               </div>
             {/if}
             {#if mode === 'add'}
-              <button class="search-panel__bare-task" onclick={() => planner.addEventAsBareTask(e.id)}>Create "{e.title}" without a project</button>
+              <button class="search-panel__bare-task" onclick={() => planner.addEventAsBareTask(e.id)}>Create "{e.title}" without a project or task-parent</button>
             {/if}
           </div>
         {/if}
@@ -156,7 +156,7 @@
               planner.openAddPanel(id);
             }}
           >
-            Add as new subtask
+            Create task
           </button>
           <button
             class="popup__action"

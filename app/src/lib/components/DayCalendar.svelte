@@ -89,11 +89,25 @@
   /// task with a real but server-untrusted time (see taskQueue.ts's old
   /// "doubled" flag, since removed) silently disappear from the calendar
   /// while it kept right on conflicting at confirm time.
-  const otherTasks = $derived(planner.tasks.filter((t) => t.dueOn === date && t.dueAt && t.id !== excludeTaskId));
-  /// Same dueAt requirement as otherTasks above — a completed task with no
-  /// due time has no natural position on a time-based grid, so it's simply
-  /// not drawn (same as an incomplete one in that state already isn't).
-  const completedWithTime = $derived(completedTasks.filter((t) => t.dueAt));
+  /// A task linked to one of this day's Outlook events is deliberately left
+  /// out of the task blocks below — the Outlook block already shows it's
+  /// linked (see the outlook-block__icon link glyph and its "Linked to X"
+  /// detail-sheet status), so drawing both was the same appointment showing
+  /// up twice, side by side, at the exact same time (they share dueAt —
+  /// linking adopts the event's own time/duration — so assignColumns'
+  /// overlap detection genuinely can't tell them apart from two unrelated
+  /// things that happen to clash). This is what the "still showed up twice
+  /// after linking" report was seeing.
+  const linkedTaskIds = $derived(new Set(outlookEvents.filter((e) => e.linked && e.linkedTaskGid).map((e) => e.linkedTaskGid!)));
+  const otherTasks = $derived(
+    planner.tasks.filter((t) => t.dueOn === date && t.dueAt && t.id !== excludeTaskId && !linkedTaskIds.has(t.id)),
+  );
+  /// Same dueAt requirement and same linked-task exclusion as otherTasks
+  /// above — a completed task with no due time has no natural position on a
+  /// time-based grid, so it's simply not drawn (same as an incomplete one
+  /// in that state already isn't), and one linked to an Outlook event is
+  /// already represented by that event's own block.
+  const completedWithTime = $derived(completedTasks.filter((t) => t.dueAt && !linkedTaskIds.has(t.id)));
 
   /// Minutes-of-day for an Outlook event's start, or a task's dueAt, in the
   /// user's own configured timezone — not the device's ambient one, which
@@ -649,7 +663,7 @@
             </div>
           {/if}
           {#if mode === 'add'}
-            <button class="search-panel__bare-task" onclick={() => planner.addEventAsBareTask(de.id)}>Create "{de.title}" without a project</button>
+            <button class="search-panel__bare-task" onclick={() => planner.addEventAsBareTask(de.id)}>Create "{de.title}" without a project or task-parent</button>
           {/if}
         </div>
       {:else}
@@ -661,7 +675,7 @@
         {:else if de.ignored}
           <button class="detail-sheet__action" onclick={() => planner.unignoreEvent(de.id)}>Un-ignore</button>
         {:else}
-          <button class="detail-sheet__action" onclick={() => planner.openAddPanel(de.id)}>Add as new subtask</button>
+          <button class="detail-sheet__action" onclick={() => planner.openAddPanel(de.id)}>Create task</button>
           <button class="detail-sheet__action" onclick={() => planner.openLinkPanel(de.id)}>Link existing task</button>
           <button class="detail-sheet__action detail-sheet__action--danger" onclick={() => planner.ignoreEvent(de.id)}>Ignore this event</button>
         {/if}

@@ -409,17 +409,32 @@
     <div class="focus-wrap">
       <div class="focus-card">
         <div class="focus-card__top">
-          <Badge tone="neutral">Calendar event</Badge>
-          {#if currentEvent.linked && currentEvent.linkedTaskPermalinkUrl}
+          <Badge tone="neutral">
+            <span class="calendar-event-badge">
+              <Icon name="calendar" size={12} color="var(--color-text-primary)" />
+              Calendar event
+            </span>
+          </Badge>
+          <div class="focus-card__top-actions">
             <IconButton
               icon="external-link"
-              title="Open linked task"
+              title="Open in Outlook"
               size={32}
               iconSize={16}
               color="var(--color-text-muted)"
-              href={currentEvent.linkedTaskPermalinkUrl}
+              href={currentEvent.webLink}
             />
-          {/if}
+            {#if currentEvent.linked && currentEvent.linkedTaskPermalinkUrl}
+              <IconButton
+                icon="external-link"
+                title="Open linked task"
+                size={32}
+                iconSize={16}
+                color="var(--color-text-muted)"
+                href={currentEvent.linkedTaskPermalinkUrl}
+              />
+            {/if}
+          </div>
         </div>
 
         <div class="focus-card__name">{currentEvent.title}</div>
@@ -454,13 +469,13 @@
             {/if}
             {#if eventPanelMode === 'add'}
               <button class="search-panel__bare-task" onclick={() => planner.addEventAsBareTask(currentEvent.id)}>
-                Create "{currentEvent.title}" without a project
+                Create "{currentEvent.title}" without a project or task-parent
               </button>
             {/if}
           </div>
         {:else}
           <div class="focus-card__actions">
-            <Button variant="primary" size="md" fullWidth onclick={() => planner.openAddPanel(currentEvent.id)}>Add as new subtask</Button>
+            <Button variant="primary" size="md" fullWidth onclick={() => planner.openAddPanel(currentEvent.id)}>Create task</Button>
             <Button variant="secondary" size="md" fullWidth onclick={() => planner.openLinkPanel(currentEvent.id)}>
               {currentEvent.linked ? 'Change linked task' : 'Link existing task'}
             </Button>
@@ -935,6 +950,19 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+  }
+  .focus-card__top-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* A plain-text "Calendar event" badge read too similarly to the task
+     focus card's own overdue/due-time badge at a glance — the icon makes
+     the two kinds of card distinguishable without having to read the text. */
+  .calendar-event-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
   .focus-card__name {
     font-family: var(--font-family-base);
