@@ -10,3 +10,8 @@ match-log.xlsx
 task-load-log.jsonl
 anomaly-log.jsonl
 .dev-notes.local.json
+# Local dev-server preview config (Claude Code's launch.json) — a
+# per-developer convenience, not shared project config; being untracked
+# was also making every `scripts/publish.sh` run look "dirty" even on a
+# fully committed tree.
+.claude/
