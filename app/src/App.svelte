@@ -9,8 +9,10 @@
   import RenderErrorFallback from './lib/components/RenderErrorFallback.svelte';
   import Celebration from './lib/components/Celebration.svelte';
   import Icon from './lib/components/Icon.svelte';
+  import Welcome from './lib/screens/Welcome.svelte';
   import Login from './lib/screens/Login.svelte';
   import LoginSecondary from './lib/screens/LoginSecondary.svelte';
+  import Workday from './lib/screens/Workday.svelte';
   import Triage from './lib/screens/Triage.svelte';
   import Settings from './lib/screens/Settings.svelte';
   import Integrations from './lib/screens/Integrations.svelte';
@@ -137,7 +139,11 @@
     //    fix flaky again once boot() started streaming.
     let lastResumeAt = 0;
     function resume() {
-      if (planner.screen === 'loading') return;
+      // Nothing to resync before sign-in — welcome has no session yet, so
+      // these would just 401/error-toast for no reason (refreshTasks itself
+      // already no-ops without a connected Asana account, but
+      // refreshWorkload doesn't gate on that the same way).
+      if (planner.screen === 'loading' || planner.screen === 'welcome') return;
       // The three listeners below can all fire for the same real resume
       // (e.g. visibilitychange then focus within the same tick) — only act
       // on the first.
@@ -341,10 +347,14 @@
           {/if}
         </div>
       </div>
+    {:else if planner.screen === 'welcome'}
+      <Welcome />
     {:else if planner.screen === 'login'}
       <Login />
     {:else if planner.screen === 'loginSecondary'}
       <LoginSecondary />
+    {:else if planner.screen === 'workday'}
+      <Workday />
     {:else if planner.screen === 'triage'}
       <Triage />
     {:else if planner.screen === 'settings'}

@@ -1,7 +1,9 @@
 export type Screen =
   | 'loading'
+  | 'welcome'
   | 'login'
   | 'loginSecondary'
+  | 'workday'
   | 'triage'
   | 'settings'
   | 'integrations'

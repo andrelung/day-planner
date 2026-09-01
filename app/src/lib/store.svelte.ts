@@ -151,6 +151,41 @@ interface MeResponse {
   };
 }
 
+/// The 13 selectable start-time anchors for workday setup's timeframe list
+/// (see PlannerStore.workdayFrames) — half-hour steps from 6:00 to 12:00,
+/// matching the design handoff's own fixed row count regardless of the
+/// chosen duration.
+const WORKDAY_FRAME_STARTS = [
+  '06:00',
+  '06:30',
+  '07:00',
+  '07:30',
+  '08:00',
+  '08:30',
+  '09:00',
+  '09:30',
+  '10:00',
+  '10:30',
+  '11:00',
+  '11:30',
+  '12:00',
+];
+/// Index of '09:00' above — the design's default-selected row.
+const WORKDAY_DEFAULT_FRAME_INDEX = 6;
+function addHoursToHHMM(hhmm: string, hours: number): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  const total = h * 60 + m + Math.round(hours * 60);
+  const wrapped = ((total % 1440) + 1440) % 1440;
+  return `${String(Math.floor(wrapped / 60)).padStart(2, '0')}:${String(wrapped % 60).padStart(2, '0')}`;
+}
+/// "06:00" -> "6:00" — matches the design's no-leading-zero display
+/// convention (fmtDayMonthStr below does the same for dates) without
+/// touching the underlying zero-padded HH:MM value patchSettings expects.
+function hhmmDisplay(hhmm: string): string {
+  const [h, m] = hhmm.split(':');
+  return `${parseInt(h, 10)}:${m}`;
+}
+
 class PlannerStore {
   private _screen: Screen = $state('loading');
   /// Every screen change is a navigation the user made (or an automatic
@@ -384,6 +419,114 @@ class PlannerStore {
   timezone = $state('UTC');
   skipDayFullWarning = $state(false);
   confirmDoubleBooking = $state(true);
+
+  /// Whether this device has ever completed onboarding (welcome carousel +
+  /// workday setup) — gates both: unset shows the welcome carousel ahead of
+  /// a fresh sign-in (see boot()'s 401 branch), and routes the very first
+  /// real arrival at Triage through workday setup instead (see
+  /// enterTriage/enterTriageNow). Device-local by design, not synced — an
+  /// existing user reopening on a fresh browser/device just sees workday
+  /// setup once more, which is harmless: it seeds itself from whatever
+  /// prefStartTime/prefEndTime already came back from /api/me (see
+  /// seedWorkdayFromCurrentPrefs), so confirming it unchanged is a no-op
+  /// write, not silent data loss.
+  private hasOnboarded: boolean = $state(localStorage.getItem('hasOnboarded') === '1');
+
+  // --- onboarding: welcome carousel ---
+  onbSlide: 0 | 1 | 2 = $state(0);
+  get onbCtaLabel(): string {
+    return this.onbSlide === 2 ? 'Get started' : 'Next';
+  }
+  nextOnboardingSlide() {
+    if (this.onbSlide === 2) {
+      this.finishWelcome();
+      return;
+    }
+    this.onbSlide = ((this.onbSlide + 1) as 0 | 1 | 2);
+  }
+  prevOnboardingSlide() {
+    if (this.onbSlide > 0) this.onbSlide = ((this.onbSlide - 1) as 0 | 1 | 2);
+  }
+  skipOnboarding() {
+    this.finishWelcome();
+  }
+  /// "Skip onboarding" and "Get started" (last slide) both land here —
+  /// welcome is only ever reached from boot()'s 401 branch, so the
+  /// unauthenticated check already happened; no need to re-hit /api/me,
+  /// just move on to the real sign-in screen.
+  private finishWelcome() {
+    this.screen = 'login';
+  }
+
+  // --- onboarding: workday setup ---
+  workdayHours: number = $state(6);
+  workdayFrameIndex: number = $state(WORKDAY_DEFAULT_FRAME_INDEX);
+  /// The 13 selectable start times, each spanning workdayHours long — a
+  /// fixed set of half-hour anchors (06:00 through 12:00), not literally
+  /// re-picked per hour count, so the list stays a stable, memorizable
+  /// shape as the user adjusts the stepper above it.
+  get workdayFrames(): { label: string; start: string; end: string }[] {
+    return WORKDAY_FRAME_STARTS.map((start) => {
+      const end = addHoursToHHMM(start, this.workdayHours);
+      return { label: `${hhmmDisplay(start)} – ${hhmmDisplay(end)}`, start, end };
+    });
+  }
+  get workdaySummary(): string {
+    const f = this.workdayFrames[this.workdayFrameIndex];
+    return `${roundHours(this.workdayHours)} h of planned work per day · ${f.label}`;
+  }
+  decWorkdayHours() {
+    this.workdayHours = Math.max(1, this.workdayHours - 1);
+  }
+  incWorkdayHours() {
+    this.workdayHours = Math.min(12, this.workdayHours + 1);
+  }
+  selectWorkdayFrame(i: number) {
+    this.workdayFrameIndex = i;
+  }
+  /// Only ever reached mid-onboarding (see enterTriage's gate) — there's no
+  /// real "back" target once a returning user somehow lands here again
+  /// (hasOnboarded already true), but that's a harmless one-tap detour:
+  /// loginSecondary's own Skip re-enters via skipSecondaryProvider, and
+  /// hasOnboarded being true by then sends it straight past this screen.
+  onBackFromWorkday() {
+    this.screen = 'loginSecondary';
+  }
+  /// Approximates the device's *current* prefStartTime/prefEndTime (already
+  /// loaded from /api/me by the time this runs — see enterTriage) as a
+  /// workdayHours + nearest-anchor selection, so a returning user who ends
+  /// up on this screen (fresh browser storage, see hasOnboarded's own
+  /// comment) sees their real schedule reflected rather than the bare
+  /// 6hrs/9-17 default — confirming unchanged then writes back the same
+  /// values instead of silently overwriting a custom schedule.
+  private seedWorkdayFromCurrentPrefs() {
+    const toMin = (hhmm: string) => {
+      const [h, m] = hhmm.split(':').map(Number);
+      return h * 60 + m;
+    };
+    const startMin = toMin(this.prefStartTime);
+    const endMin = toMin(this.prefEndTime);
+    const hours = Math.round((endMin - startMin) / 60);
+    this.workdayHours = Math.min(12, Math.max(1, hours || 6));
+    let bestIdx = WORKDAY_DEFAULT_FRAME_INDEX;
+    let bestDiff = Infinity;
+    WORKDAY_FRAME_STARTS.forEach((s, i) => {
+      const diff = Math.abs(toMin(s) - startMin);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    });
+    this.workdayFrameIndex = bestIdx;
+  }
+  async onConfirmWorkday() {
+    const f = this.workdayFrames[this.workdayFrameIndex];
+    this.prefStartTime = f.start;
+    this.prefEndTime = f.end;
+    void this.patchSettings({ prefStartTime: f.start, prefEndTime: f.end });
+    this.showToast(`Workday set to ${f.label}`);
+    await this.enterTriageNow();
+  }
 
   activePanelEventId: string | null = $state(null);
   activePanelMode: 'add' | 'link' | null = $state(null);
@@ -693,9 +836,12 @@ class PlannerStore {
     this.tasks = sortedQueueOrder(this.tasks);
     this.tasksWithoutDueDate = sortedQueueOrder(this.tasksWithoutDueDate);
     this.focusIndex = Math.min(this.focusIndex, Math.max(0, this.queueTasks.length - 1));
-    // A boot that hasn't finished, or an unauthenticated session, has no
-    // Triage to fall back to — those screens stay where they are.
-    if (this.screen !== 'loading' && this.screen !== 'login' && this.screen !== 'loginSecondary') this.screen = 'triage';
+    // A boot that hasn't finished, an unauthenticated session, or a screen
+    // that comes before Triage even has real data to show (welcome has no
+    // auth yet; workday runs before bootRefreshTasks does) has no Triage to
+    // fall back to — those screens stay where they are.
+    const noTriageToFallBackTo: (typeof this.screen)[] = ['loading', 'welcome', 'login', 'loginSecondary', 'workday'];
+    if (!noTriageToFallBackTo.includes(this.screen)) this.screen = 'triage';
   }
 
   // --- boot ---
@@ -845,7 +991,11 @@ class PlannerStore {
       me = await api.get<MeResponse>('/api/me');
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        this.screen = 'login';
+        // A device that's never once reached Triage gets the welcome
+        // carousel ahead of the sign-in form; a returning-but-logged-out
+        // one (session expired, signed out) goes straight to login — the
+        // carousel already did its job for them.
+        this.screen = this.hasOnboarded ? 'login' : 'welcome';
         return;
       }
       this.bootError = err instanceof Error ? err.message : 'Failed to load';
@@ -875,7 +1025,26 @@ class PlannerStore {
     await this.enterTriage();
   }
 
+  /// Routes to Triage — except the very first time this device ever gets
+  /// here, which detours through workday setup instead (see hasOnboarded's
+  /// own comment for why that's safe to fire more than once in practice).
+  /// Both boot()'s direct success path and skipSecondaryProvider() call
+  /// this; workday's own Confirm calls enterTriageNow directly, once past
+  /// the gate.
   private async enterTriage() {
+    if (!this.hasOnboarded) {
+      this.seedWorkdayFromCurrentPrefs();
+      this.screen = 'workday';
+      return;
+    }
+    await this.enterTriageNow();
+  }
+
+  private async enterTriageNow() {
+    if (!this.hasOnboarded) {
+      this.hasOnboarded = true;
+      localStorage.setItem('hasOnboarded', '1');
+    }
     // Workload doesn't gate entering triage — it fills in the header badges
     // once it resolves, same as any other in-app refresh.
     void this.refreshWorkload();
@@ -1058,11 +1227,28 @@ class PlannerStore {
   /// that attempt — a possibly-unnecessary toast for a hiccup that would
   /// have self-healed is a far smaller cost than an unrecoverable stuck
   /// screen.
+  /// Whether *this* bootRefreshTasks() call has already done its one-time
+  /// "jump to Triage" transition (see applyTaskBatch below) — reset at the
+  /// top of every call, consumed by applyTaskBatch/the catch block here.
+  /// Explicit state rather than inferring "haven't transitioned yet" from
+  /// `this.screen === 'loading'`, which is what this used to check: that
+  /// inference is only ever true if Triage is reached by way of the literal
+  /// loading screen, and silently breaks — no error, no toast, just a
+  /// permanently stuck screen once the data it was waiting for actually
+  /// arrives — for any other pre-Triage screen the app might be on when
+  /// this runs (confirmed live: onboarding's workday setup, reached via
+  /// enterTriageNow, left the app stuck there after "Confirm" for exactly
+  /// this reason). Scoped to one call rather than a single persistent field
+  /// so a retry (bootRefreshTasks calling itself again in the catch block
+  /// below) gets its own fresh one-time transition too.
+  private enteredTriageThisBoot = false;
+
   private async bootRefreshTasks() {
     if (!this.asanaConnected) {
       this.screen = 'triage';
       return;
     }
+    this.enteredTriageThisBoot = false;
     this.bootStatus = 'Connecting to Asana…';
     this.loadingTasksCount = 0;
     // Both sides of this ratio have to count the same thing. They didn't:
@@ -1083,8 +1269,12 @@ class PlannerStore {
       this.logTaskLoadFailure('boot', err);
       this.reportRetryableError(err, 'Could not load tasks from Asana', () => void this.bootRefreshTasks());
       // Land on Triage with whatever (possibly nothing) came in rather than
-      // leaving the user stuck on the loading screen after a failure.
-      if (this.screen === 'loading') this.screen = 'triage';
+      // leaving the user stuck on whatever pre-Triage screen this started
+      // from after a failure.
+      if (!this.enteredTriageThisBoot) {
+        this.enteredTriageThisBoot = true;
+        this.screen = 'triage';
+      }
     }
   }
 
@@ -1101,9 +1291,10 @@ class PlannerStore {
     this.tasks = data.tasks;
     this.tasksWithoutDueDate = data.tasksWithoutDueDate;
     this.projects = data.projects;
-    if (this.screen === 'loading') {
+    if (!this.enteredTriageThisBoot) {
       // Nothing was focused yet — this is establishing the initial card,
       // not disturbing an existing one.
+      this.enteredTriageThisBoot = true;
       this.focusIndex = 0;
       this.screen = 'triage';
       return;
