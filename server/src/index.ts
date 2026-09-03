@@ -15,6 +15,7 @@ import { pendingActionsRouter } from './routes/pendingActions.js';
 import { diagnosticsRouter } from './routes/diagnostics.js';
 import { ProviderNotConfiguredError } from './providers/asana.js';
 import { ProviderNotConnectedError } from './lib/tokens.js';
+import { ProviderApiError } from './lib/providerApiError.js';
 import { startPendingActionWorker } from './lib/pendingActionQueue.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -75,6 +76,14 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   }
   if (err instanceof ProviderNotConfiguredError) {
     res.status(503).json({ error: err.message });
+    return;
+  }
+  // A provider said no — pass on *what* it said rather than a blanket
+  // 500. The full response body is still logged here; only the readable
+  // part reaches the client (see ProviderApiError.userMessage).
+  if (err instanceof ProviderApiError) {
+    console.error(err.message);
+    res.status(err.httpStatus).json({ error: err.userMessage });
     return;
   }
   console.error(err);

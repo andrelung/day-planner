@@ -1,4 +1,5 @@
 import { env } from '../lib/env.js';
+import { ProviderApiError, parseProviderMessage } from '../lib/providerApiError.js';
 import type { OAuthTokenSet } from './types.js';
 import { ProviderNotConfiguredError } from './asana.js';
 
@@ -109,7 +110,8 @@ async function graphFetch(accessToken: string, path: string): Promise<any> {
     signal: AbortSignal.timeout(GRAPH_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
-    throw new Error(`Graph API ${path} failed: ${res.status} ${await res.text()}`);
+    const body = await res.text();
+    throw new ProviderApiError('Outlook', res.status, path, parseProviderMessage(body), body);
   }
   return res.json();
 }

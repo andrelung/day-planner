@@ -3,6 +3,7 @@ import { cleanTitle, parseDurationFromTitle, titleWithDuration } from '../lib/ti
 import { recordChange } from '../lib/changeLog.js';
 import { addDaysToDateStr, dateStrInTz, hmInTz } from '../lib/tz.js';
 import { prisma } from '../lib/prisma.js';
+import { ProviderApiError, parseProviderMessage } from '../lib/providerApiError.js';
 import type { OAuthTokenSet, RemoteTask } from './types.js';
 
 const AUTHORIZE_URL = 'https://app.asana.com/-/oauth_authorize';
@@ -166,6 +167,13 @@ export async function refreshAsanaToken(refreshToken: string): Promise<OAuthToke
   };
 }
 
+/// Reads the failed response body once and wraps it — see ProviderApiError
+/// for why the raw message is kept rather than flattened to a status code.
+async function asanaError(path: string, res: Response): Promise<ProviderApiError> {
+  const body = await res.text();
+  return new ProviderApiError('Asana', res.status, path, parseProviderMessage(body), body);
+}
+
 async function asanaFetch(accessToken: string, path: string, init?: RequestInit): Promise<any> {
   const res = await fetchWithRetry(`${API_BASE}${path}`, {
     ...init,
@@ -176,7 +184,7 @@ async function asanaFetch(accessToken: string, path: string, init?: RequestInit)
     },
   });
   if (!res.ok) {
-    throw new Error(`Asana API ${path} failed: ${res.status} ${await res.text()}`);
+    throw await asanaError(path, res);
   }
   const json = (await res.json()) as any;
   return json.data;
@@ -211,7 +219,7 @@ async function asanaFetchAllPages(
     const pageStart = Date.now();
     const res = await fetchWithRetry(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!res.ok) {
-      throw new Error(`Asana API ${url} failed: ${res.status} ${await res.text()}`);
+      throw await asanaError(url, res);
     }
     const json = (await res.json()) as any;
     onPageMs?.(Date.now() - pageStart);
@@ -394,7 +402,7 @@ async function fetchTaskOrNull(accessToken: string, gid: string): Promise<AsanaT
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Asana API /tasks/${gid} failed: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw await asanaError(`/tasks/${gid}`, res);
   const json = (await res.json()) as { data: AsanaTaskDto };
   return json.data;
 }
@@ -442,7 +450,7 @@ export async function getTaskDetails(accessToken: string, gid: string): Promise<
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Asana API /tasks/${gid} failed: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw await asanaError(`/tasks/${gid}`, res);
   const json = (await res.json()) as { data: { notes: string; followers: { gid: string; name: string }[]; created_at: string } };
   return {
     description: json.data.notes ?? '',

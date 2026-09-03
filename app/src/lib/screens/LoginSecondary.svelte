@@ -17,7 +17,11 @@
     <div class="signed-in-hint">
       <Icon name="check-circle" size={16} color="var(--color-feedback-correct)" />
       <span>
-        Signed in with {planner.primaryProviderLabel}{#if primaryAccountDisplay}<span class="signed-in-hint__account"> as {primaryAccountDisplay}</span>{/if}
+        <!-- The separating space is its own expression, not a literal leading
+             space inside the span: Svelte trims whitespace at an element's
+             own start/end, which silently ate it and rendered "Asanaas André
+             Lung". `{' '}` isn't whitespace to the compiler, so it survives. -->
+        Signed in with {planner.primaryProviderLabel}{#if primaryAccountDisplay}{' '}<span class="signed-in-hint__account">as {primaryAccountDisplay}</span>{/if}
       </span>
     </div>
     <div class="heading">Connect {label}</div>
