@@ -39,6 +39,7 @@ meRouter.get('/', requireAuth, async (req, res) => {
       timezone: settings.timezone,
       skipDayFullWarning: settings.skipDayFullWarning,
       confirmDoubleBooking: settings.confirmDoubleBooking,
+      hasOnboarded: settings.hasOnboarded,
       upNextCollapsed: settings.upNextCollapsed,
     },
   });

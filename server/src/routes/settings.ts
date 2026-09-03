@@ -25,6 +25,7 @@ const patchSchema = z.object({
   timezone: z.string().min(1).refine(isValidTimezone, { message: 'not a valid IANA timezone name' }).optional(),
   skipDayFullWarning: z.boolean().optional(),
   confirmDoubleBooking: z.boolean().optional(),
+  hasOnboarded: z.boolean().optional(),
   upNextCollapsed: z.boolean().optional(),
 });
 

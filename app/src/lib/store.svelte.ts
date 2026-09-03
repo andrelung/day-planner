@@ -147,6 +147,7 @@ interface MeResponse {
     timezone: string;
     skipDayFullWarning: boolean;
     confirmDoubleBooking: boolean;
+    hasOnboarded: boolean;
     upNextCollapsed: boolean;
   };
 }
@@ -420,17 +421,22 @@ class PlannerStore {
   skipDayFullWarning = $state(false);
   confirmDoubleBooking = $state(true);
 
-  /// Whether this device has ever completed onboarding (welcome carousel +
+  /// Whether this *user* has completed onboarding (welcome carousel +
   /// workday setup) — gates both: unset shows the welcome carousel ahead of
   /// a fresh sign-in (see boot()'s 401 branch), and routes the very first
   /// real arrival at Triage through workday setup instead (see
-  /// enterTriage/enterTriageNow). Device-local by design, not synced — an
-  /// existing user reopening on a fresh browser/device just sees workday
-  /// setup once more, which is harmless: it seeds itself from whatever
-  /// prefStartTime/prefEndTime already came back from /api/me (see
-  /// seedWorkdayFromCurrentPrefs), so confirming it unchanged is a no-op
-  /// write, not silent data loss.
+  /// enterTriage/enterTriageNow). Synced via Settings (see patchSettings and
+  /// me.settings.hasOnboarded's hydration in boot) so signing in on a second
+  /// device doesn't ask again — onboarding is a property of the account, not
+  /// of the browser it was first done in. The localStorage mirror kept
+  /// alongside it exists only for the one decision that happens *before*
+  /// there's a session to read the account value from: welcome-carousel vs
+  /// plain login on a 401.
   private hasOnboarded: boolean = $state(localStorage.getItem('hasOnboarded') === '1');
+  private setHasOnboarded(v: boolean) {
+    this.hasOnboarded = v;
+    localStorage.setItem('hasOnboarded', v ? '1' : '0');
+  }
 
   // --- onboarding: welcome carousel ---
   onbSlide: 0 | 1 | 2 = $state(0);
@@ -492,13 +498,15 @@ class PlannerStore {
   onBackFromWorkday() {
     this.screen = 'loginSecondary';
   }
-  /// Approximates the device's *current* prefStartTime/prefEndTime (already
+  /// Approximates the account's *current* prefStartTime/prefEndTime (already
   /// loaded from /api/me by the time this runs — see enterTriage) as a
-  /// workdayHours + nearest-anchor selection, so a returning user who ends
-  /// up on this screen (fresh browser storage, see hasOnboarded's own
-  /// comment) sees their real schedule reflected rather than the bare
-  /// 6hrs/9-17 default — confirming unchanged then writes back the same
-  /// values instead of silently overwriting a custom schedule.
+  /// workdayHours + nearest-anchor selection, so anyone who reaches this
+  /// screen with a schedule already set sees it reflected rather than the
+  /// bare 6hrs/9-17 default — confirming unchanged then writes back the same
+  /// values instead of silently overwriting a custom schedule. Load-bearing
+  /// mainly for a genuinely new user who set a schedule in Settings before
+  /// ever finishing onboarding; the cross-device case it used to cover is
+  /// gone now that hasOnboarded is account-level.
   private seedWorkdayFromCurrentPrefs() {
     const toMin = (hhmm: string) => {
       const [h, m] = hhmm.split(':').map(Number);
@@ -523,7 +531,11 @@ class PlannerStore {
     const f = this.workdayFrames[this.workdayFrameIndex];
     this.prefStartTime = f.start;
     this.prefEndTime = f.end;
-    void this.patchSettings({ prefStartTime: f.start, prefEndTime: f.end });
+    // Onboarding is finished the moment this is confirmed — folded into the
+    // same PUT as the times rather than left to enterTriageNow's own gate
+    // below, purely to avoid two settings writes racing on one row.
+    this.setHasOnboarded(true);
+    void this.patchSettings({ prefStartTime: f.start, prefEndTime: f.end, hasOnboarded: true });
     this.showToast(`Workday set to ${f.label}`);
     await this.enterTriageNow();
   }
@@ -1016,6 +1028,11 @@ class PlannerStore {
     this.confirmDoubleBooking = me.settings.confirmDoubleBooking;
     this.upNextCollapsed = me.settings.upNextCollapsed;
     localStorage.setItem('upNextCollapsed', this.upNextCollapsed ? '1' : '0');
+    // The account is the source of truth from here on — a device that has
+    // never seen onboarding but whose user already finished it elsewhere
+    // goes straight to Triage, and the localStorage mirror is corrected to
+    // match so the pre-auth branch above agrees on the next cold start.
+    this.setHasOnboarded(me.settings.hasOnboarded);
 
     if (onboarding && (!me.asanaConnected || !me.outlookConnected)) {
       this.screen = 'loginSecondary';
@@ -1042,8 +1059,8 @@ class PlannerStore {
 
   private async enterTriageNow() {
     if (!this.hasOnboarded) {
-      this.hasOnboarded = true;
-      localStorage.setItem('hasOnboarded', '1');
+      this.setHasOnboarded(true);
+      void this.patchSettings({ hasOnboarded: true });
     }
     // Workload doesn't gate entering triage — it fills in the header badges
     // once it resolves, same as any other in-app refresh.
@@ -1725,6 +1742,7 @@ class PlannerStore {
       timezone: string;
       skipDayFullWarning: boolean;
       confirmDoubleBooking: boolean;
+      hasOnboarded: boolean;
       upNextCollapsed: boolean;
     }>,
   ) {

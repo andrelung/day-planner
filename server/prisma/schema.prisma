@@ -99,6 +99,13 @@ model Settings {
   /// Defaults true (ask) — turning it off silently double-books instead,
   /// same as always tapping "Double-book anyway" would.
   confirmDoubleBooking Boolean @default(true)
+  /// Whether this user has completed onboarding (welcome carousel +
+  /// workday setup). Account-level, not device-local: the setup screen is a
+  /// one-time thing per *user*, so signing in on a second device must not
+  /// ask again. The client keeps a localStorage mirror purely as a pre-auth
+  /// placeholder (it has to decide whether to show the welcome carousel
+  /// before there's any session to read this from) — see store.svelte.ts.
+  hasOnboarded Boolean @default(false)
   /// Whether Triage's "Up next" list is collapsed — synced across devices
   /// (unlike the per-day-full dismissal above) since it's a deliberate
   /// layout choice the user makes once, not a session-ish thing.
